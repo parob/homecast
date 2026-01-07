@@ -1,61 +1,70 @@
-steps:
-  # Build the container image
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'build'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:$COMMIT_SHA'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:latest'
-      - '--cache-from'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:latest'
-      - '.'
-    dir: 'server'
+# Cloud Build configuration to build and push the Docker image to Artifact Registry
+# Docs: https://cloud.google.com/build/docs/build-config-file-schema
 
-  # Push the container image to Container Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:$COMMIT_SHA'
-
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:latest'
-
-  # Deploy container image to Cloud Run
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
-    args:
-      - 'run'
-      - 'deploy'
-      - 'homekit-mcp'
-      - '--image'
-      - 'gcr.io/$PROJECT_ID/homekit-mcp:$COMMIT_SHA'
-      - '--region'
-      - 'europe-west1'
-      - '--platform'
-      - 'managed'
-      - '--allow-unauthenticated'
-      - '--memory'
-      - '512Mi'
-      - '--cpu'
-      - '1'
-      - '--min-instances'
-      - '0'
-      - '--max-instances'
-      - '10'
-      - '--timeout'
-      - '300'
-      - '--session-affinity'
-      - '--set-env-vars'
-      - 'DATABASE_URL=$$DATABASE_URL,JWT_SECRET=$$JWT_SECRET'
-      - '--set-secrets'
-      - 'DATABASE_URL=homekit-mcp-database-url:latest,JWT_SECRET=homekit-mcp-jwt-secret:latest'
-
-images:
-  - 'gcr.io/$PROJECT_ID/homekit-mcp:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/homekit-mcp:latest'
+substitutions:
+  # Artifact Registry hostname
+  _AR_HOSTNAME: "europe-west1-docker.pkg.dev"
+  # Artifact Registry repository name
+  _AR_REPO: "homekit-mcp"
+  # Image name within the repository
+  _IMAGE_NAME: "homekit-mcp"
+  # Service name to deploy to
+  _SERVICE_NAME: homekit-mcp
+  # Project ID
+  _PROJECT_ID: parob-297412
+  # Deploy region
+  _DEPLOY_REGION: europe-west1
 
 options:
+  substitutionOption: ALLOW_LOOSE
   logging: CLOUD_LOGGING_ONLY
+
+timeout: "1200s"
+
+steps:
+  - id: "Build image"
+    name: "gcr.io/cloud-builders/docker"
+    dir: "server"
+    env:
+      - DOCKER_BUILDKIT=1
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        export DOCKER_BUILDKIT=1
+        echo "Building ${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA and :latest"
+        docker build \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA" \
+          -t "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest" \
+          --cache-from "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest" \
+          .
+
+  - id: "Push image (commit)"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA"]
+
+  - id: "Push image (latest)"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest"]
+
+  - id: "Deploy"
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: "gcloud"
+    args:
+      - run
+      - services
+      - update
+      - $_SERVICE_NAME
+      - '--platform=managed'
+      - >-
+        --image=${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA
+      - >-
+        --labels=commit-sha=$SHORT_SHA
+      - '--region=$_DEPLOY_REGION'
+      - '--quiet'
+
+images:
+  - "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA"
+  - "${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest"
