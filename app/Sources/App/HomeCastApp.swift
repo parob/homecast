@@ -43,8 +43,8 @@ struct LoginView: View {
     @EnvironmentObject var connectionManager: ConnectionManager
 
     private let serverURL = "https://api.homecast.cloud"
-    @State private var email: String = ""
-    @State private var password: String = ""
+    @State private var email: String = "rob@parob.com"
+    @State private var password: String = "robrobrob"
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
 
@@ -143,50 +143,35 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header - pinned to top, stretches full width
             headerView
 
-            // WebView
-            WebViewContainer(url: URL(string: "https://homecast.cloud")!)
+            // WebView - fills remaining space
+            WebViewContainer(url: URL(string: "https://homecast.cloud")!, authToken: connectionManager.authToken)
         }
-        .background(Color(UIColor.systemBackground))
+        .edgesIgnoringSafeArea(.all)
         .sheet(isPresented: $showingLogs) {
             LogsSheet(logManager: logManager)
         }
     }
 
     private var headerView: some View {
-        HStack(spacing: 16) {
-            // App icon
-            Image(systemName: "house.fill")
-                .font(.title2)
-                .foregroundStyle(.blue)
-
-            Text("HomeCast")
-                .font(.headline)
-
-            Divider()
-                .frame(height: 20)
-
-            // Status indicators
-            statusIndicators
-
+        HStack {
             Spacer()
 
-            // Account
-            accountSection
+            Circle()
+                .fill(connectionManager.isConnected ? Color.green : Color.orange)
+                .frame(width: 8, height: 8)
 
-            // Logs button
             Button(action: { showingLogs = true }) {
                 Image(systemName: "info.circle")
-                    .font(.title3)
             }
-            .buttonStyle(.plain)
-            .help("View activity logs")
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(UIColor.secondarySystemBackground))
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     private var statusIndicators: some View {
@@ -243,18 +228,80 @@ struct ContentView: View {
 
 struct WebViewContainer: UIViewRepresentable {
     let url: URL
+    let authToken: String?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
 
+        // Inject auth token BEFORE page loads if available
+        if let token = authToken {
+            let script = WKUserScript(
+                source: "localStorage.setItem('homekit-token', '\(token)'); console.log('[HomeCast] Token pre-injected');",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(script)
+        }
+
         // Use a reasonable initial frame to avoid CoreGraphics NaN errors
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.authToken = authToken
         webView.load(URLRequest(url: url))
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        // Update token if it changes
+        context.coordinator.authToken = authToken
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        var authToken: String?
+        private var hasInjectedToken = false
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Fallback: inject auth token after page loads and trigger re-check
+            guard let token = authToken, !hasInjectedToken else { return }
+
+            let js = """
+            localStorage.setItem('homekit-token', '\(token)');
+            console.log('[HomeCast] Auth token injected');
+            window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: '\(token)' }));
+            """
+
+            webView.evaluateJavaScript(js) { _, error in
+                if let error = error {
+                    print("[WebView] Failed to inject token: \(error.localizedDescription)")
+                } else {
+                    print("[WebView] Auth token injected into localStorage")
+                    self.hasInjectedToken = true
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            print("[WebView] Navigation failed: \(error.localizedDescription)")
+            if let url = webView.url {
+                print("[WebView] Failed URL: \(url)")
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            print("[WebView] Provisional navigation failed: \(error.localizedDescription)")
+            if let nsError = error as NSError? {
+                print("[WebView] Error domain: \(nsError.domain), code: \(nsError.code)")
+                if let failingURL = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] {
+                    print("[WebView] Failing URL: \(failingURL)")
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Logs Sheet

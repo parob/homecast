@@ -16,7 +16,7 @@ class ConnectionManager: ObservableObject {
 
     let homeKitManager: HomeKitManager
     private var webSocketClient: WebSocketClient?
-    private var authToken: String?
+    private(set) var authToken: String?
 
     // MARK: - Keychain Keys
 
@@ -34,6 +34,11 @@ class ConnectionManager: ObservableObject {
         let newId = UUID().uuidString
         UserDefaults.standard.set(newId, forKey: deviceIdKey)
         return newId
+    }
+
+    // Device name from macOS system
+    private var deviceName: String {
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
     // MARK: - Computed Properties
@@ -87,38 +92,61 @@ class ConnectionManager: ObservableObject {
         }
 
         // Call GraphQL login mutation
-        let graphqlURL = URL(string: "\(normalizedURL)/graphql/")!
+        let graphqlURL = URL(string: "\(normalizedURL)/")!
+        print("[ConnectionManager] Authenticating to: \(graphqlURL.absoluteString)")
         var request = URLRequest(url: graphqlURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        // GraphQL mutation
-        let query = """
-        mutation Login($email: String!, $password: String!) {
-            login(email: $email, password: $password) {
-                success
-                token
-                error
-                userId
-                email
-            }
+        // GraphQL request body
+        struct GraphQLRequest: Encodable {
+            let query: String
+            let variables: [String: String]
         }
-        """
 
-        let body: [String: Any] = [
-            "query": query,
-            "variables": [
-                "email": email,
-                "password": password
-            ]
-        ]
+        let graphqlRequest = GraphQLRequest(
+            query: """
+            mutation Login($email: String!, $password: String!) {
+                login(email: $email, password: $password) {
+                    success
+                    token
+                    error
+                    userId
+                    email
+                }
+            }
+            """,
+            variables: ["email": email, "password": password]
+        )
 
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let bodyData = try JSONEncoder().encode(graphqlRequest)
+        request.httpBody = bodyData
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("[ConnectionManager] Request body: \(bodyString)")
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            print("[ConnectionManager] Network error: \(error)")
+            if let nsError = error as NSError? {
+                print("[ConnectionManager] Error domain: \(nsError.domain), code: \(nsError.code)")
+                print("[ConnectionManager] Error userInfo: \(nsError.userInfo)")
+            }
+            throw error
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ConnectionError.invalidResponse
+        }
+
+        print("[ConnectionManager] Response status: \(httpResponse.statusCode)")
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("[ConnectionManager] Response body: \(responseString)")
         }
 
         guard httpResponse.statusCode == 200 else {
@@ -194,6 +222,7 @@ class ConnectionManager: ObservableObject {
 
         components.queryItems = [
             URLQueryItem(name: "device_id", value: deviceId),
+            URLQueryItem(name: "device_name", value: deviceName),
             URLQueryItem(name: "token", value: token)
         ]
 

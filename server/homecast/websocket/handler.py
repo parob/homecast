@@ -80,7 +80,8 @@ class ConnectionManager:
         self,
         websocket: WebSocket,
         token: str,
-        device_id: str
+        device_id: str,
+        device_name: Optional[str] = None
     ) -> Optional[ConnectedDevice]:
         """
         Accept and register a new WebSocket connection.
@@ -89,6 +90,7 @@ class ConnectionManager:
             websocket: The WebSocket connection
             token: JWT token for authentication
             device_id: Unique device identifier
+            device_name: Optional device name (e.g., Mac's computer name)
 
         Returns:
             ConnectedDevice if successful, None if auth fails
@@ -122,6 +124,9 @@ class ConnectionManager:
             self.connections[device_id] = device
 
         # Auto-register device if not exists, then set online
+        # Use provided device_name or generate a default
+        name = device_name or f"HomeKit Device ({device_id[:8]})"
+
         with get_session() as session:
             existing = DeviceRepository.find_by_device_id(session, device_id)
             if not existing:
@@ -130,9 +135,14 @@ class ConnectionManager:
                     session=session,
                     user_id=auth.user_id,
                     device_id=device_id,
-                    name=f"HomeKit Device ({device_id[:8]})"
+                    name=name
                 )
-                logger.info(f"Auto-registered new device: {device_id}")
+                logger.info(f"Auto-registered new device: {device_id} as '{name}'")
+            elif device_name and existing.name != device_name:
+                # Update device name if it changed
+                existing.name = device_name
+                session.commit()
+                logger.info(f"Updated device name: {device_id} to '{device_name}'")
 
             DeviceRepository.set_online(session, device_id)
 
@@ -314,6 +324,21 @@ class ConnectionManager:
         devices = self.get_user_devices(user_id)
         return devices[0] if devices else None
 
+    async def send_logout_to_user_devices(self, user_id: uuid.UUID):
+        """Send logout message to all connected devices for a user."""
+        devices = self.get_user_devices(user_id)
+        for device_id in devices:
+            try:
+                conn = self.connections.get(device_id)
+                if conn:
+                    await conn.websocket.send_json({
+                        "type": "logout",
+                        "reason": "User logged out from web"
+                    })
+                    logger.info(f"Sent logout to device {device_id}")
+            except Exception as e:
+                logger.error(f"Failed to send logout to device {device_id}: {e}")
+
 
 # Global connection manager instance
 connection_manager = ConnectionManager()
@@ -344,6 +369,7 @@ async def websocket_endpoint(websocket: WebSocket):
         token = websocket.query_params.get("token")
 
     device_id = websocket.query_params.get("device_id")
+    device_name = websocket.query_params.get("device_name")
 
     # Must accept WebSocket before we can close it with a custom code
     if not token or not device_id:
@@ -354,7 +380,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     # Connect
-    device = await connection_manager.connect(websocket, token, device_id)
+    device = await connection_manager.connect(websocket, token, device_id, device_name)
     if not device:
         return
 

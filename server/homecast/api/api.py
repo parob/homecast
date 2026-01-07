@@ -482,7 +482,7 @@ class API:
         List all HomeKit homes from connected device.
         Requires authentication and a connected device.
         """
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -504,7 +504,7 @@ class API:
     @field
     async def rooms(self, home_id: str) -> List[HomeKitRoom]:
         """List rooms in a home. Requires authentication and connected device."""
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -530,7 +530,7 @@ class API:
         room_id: Optional[str] = None
     ) -> List[HomeKitAccessory]:
         """List accessories, optionally filtered by home or room."""
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -558,7 +558,7 @@ class API:
     @field
     async def accessory(self, accessory_id: str) -> Optional[HomeKitAccessory]:
         """Get a single accessory with full details."""
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -583,7 +583,7 @@ class API:
     @field
     async def scenes(self, home_id: str) -> List[HomeKitScene]:
         """List scenes in a home."""
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -620,7 +620,7 @@ class API:
         Returns:
             Result with success status
         """
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -657,7 +657,7 @@ class API:
     @field(mutable=True)
     async def execute_scene(self, scene_id: str) -> ExecuteSceneResult:
         """Execute a scene."""
-        from homecast.websocket.handler import route_request
+        from homecast.websocket.handler import route_request, connection_manager
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)

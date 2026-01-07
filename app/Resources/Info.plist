@@ -40,6 +40,13 @@
     <key>NSHumanReadableCopyright</key>
     <string>Copyright 2025. All rights reserved.</string>
 
+    <!-- App Transport Security - temporary for debugging -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+
     <!-- Prevent automatic termination -->
     <key>NSSupportsAutomaticTermination</key>
     <false/>

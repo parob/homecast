@@ -6,7 +6,7 @@
 	<true/>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.homekitmcp.app</string>
+		<string>$(AppIdentifierPrefix)cloud.homecast.app</string>
 	</array>
 	<key>com.apple.security.network.server</key>
 	<true/>

@@ -15,7 +15,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         homeKitManager = HomeKitManager()
 
         // Initialize and start HTTP server
-        httpServer = SimpleHTTPServer(homeKitManager: homeKitManager, port: 8080)
+        httpServer = SimpleHTTPServer(homeKitManager: homeKitManager, port: 5656)
         httpServer.start()
 
         // Initialize connection manager
@@ -160,15 +160,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         #if targetEnvironment(macCatalyst)
-        // Configure window for Mac
+        // Configure window for Mac with toolbar
         if let titlebar = windowScene.titlebar {
-            titlebar.titleVisibility = .visible
-            titlebar.toolbar = nil
+            titlebar.titleVisibility = .hidden
+            titlebar.toolbarStyle = .unified
         }
 
-        // Set window size
-        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 400, height: 350)
-        windowScene.sizeRestrictions?.maximumSize = CGSize(width: 600, height: 800)
+        // Set window size - allow flexible sizing
+        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 780, height: 500)
+        windowScene.sizeRestrictions?.maximumSize = CGSize(width: 1400, height: 1000)
         #endif
     }
 
