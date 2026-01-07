@@ -127,6 +127,20 @@ class DeviceRepository(BaseRepository):
         return list(session.exec(statement).all())
 
     @classmethod
+    def update_heartbeat(
+        cls,
+        session: Session,
+        device_id: str
+    ) -> Optional[Device]:
+        """Update last_seen_at timestamp for heartbeat."""
+        device = cls.find_by_device_id(session, device_id)
+        if not device:
+            return None
+
+        device.last_seen_at = datetime.now(timezone.utc)
+        return cls.update(session, device)
+
+    @classmethod
     def delete_by_device_id(
         cls,
         session: Session,

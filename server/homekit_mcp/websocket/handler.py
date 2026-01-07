@@ -118,8 +118,19 @@ class ConnectionManager:
             )
             self.connections[device_id] = device
 
-        # Update device status in database
+        # Auto-register device if not exists, then set online
         with get_session() as session:
+            existing = DeviceRepository.find_by_device_id(session, device_id)
+            if not existing:
+                # Auto-register the device
+                DeviceRepository.register_device(
+                    session=session,
+                    user_id=auth.user_id,
+                    device_id=device_id,
+                    name=f"HomeKit Device ({device_id[:8]})"
+                )
+                logger.info(f"Auto-registered new device: {device_id}")
+
             DeviceRepository.set_online(session, device_id)
 
         logger.info(f"Device connected: {device_id} (user: {auth.user_id})")
@@ -233,8 +244,9 @@ class ConnectionManager:
                 )
 
         elif msg_type == "pong":
-            # Heartbeat response
-            pass
+            # Heartbeat response - update last seen time
+            with get_session() as session:
+                DeviceRepository.update_heartbeat(session, device_id)
 
         else:
             logger.warning(f"Unknown message type from {device_id}: {msg_type}")

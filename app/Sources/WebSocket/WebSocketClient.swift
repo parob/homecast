@@ -72,35 +72,40 @@ class WebSocketClient {
         switch message.type {
         case .request:
             await handleRequest(message)
-        case .response:
-            // Responses from server (not expected - we only send responses)
+        case .ping:
+            // Respond to heartbeat
+            try? await send(ProtocolMessage.pong())
+        case .response, .pong:
+            // Not expected from server
             break
         }
     }
 
     private func handleRequest(_ message: ProtocolMessage) async {
+        let requestId = message.id ?? UUID().uuidString
+
         guard let action = message.action else {
-            await sendError(id: message.id, code: "INVALID_REQUEST", message: "Missing action")
+            await sendError(id: requestId, code: "INVALID_REQUEST", message: "Missing action")
             return
         }
 
         do {
             let result = try await executeAction(action: action, payload: message.payload)
             let response = ProtocolMessage(
-                id: message.id,
+                id: requestId,
                 type: .response,
                 action: action,
                 payload: result
             )
             try await send(response)
         } catch let error as HomeKitError {
-            await sendError(id: message.id, code: error.code, message: error.localizedDescription)
+            await sendError(id: requestId, code: error.code, message: error.localizedDescription)
         } catch {
-            await sendError(id: message.id, code: "INTERNAL_ERROR", message: error.localizedDescription)
+            await sendError(id: requestId, code: "INTERNAL_ERROR", message: error.localizedDescription)
         }
     }
 
-    private func sendError(id: String, code: String, message: String) async {
+    private func sendError(id: String?, code: String, message: String) async {
         let response = ProtocolMessage(
             id: id,
             type: .response,
@@ -313,7 +318,7 @@ class WebSocketClient {
 // MARK: - Protocol Message
 
 struct ProtocolMessage: Codable {
-    let id: String
+    let id: String?  // Optional for ping/pong messages
     let type: MessageType
     let action: String?
     var payload: [String: JSONValue]?
@@ -322,6 +327,22 @@ struct ProtocolMessage: Codable {
     enum MessageType: String, Codable {
         case request   // Server → App
         case response  // App → Server
+        case ping      // Server → App (heartbeat)
+        case pong      // App → Server (heartbeat response)
+    }
+
+    // Convenience init for pong
+    static func pong() -> ProtocolMessage {
+        ProtocolMessage(id: nil, type: .pong, action: nil, payload: nil, error: nil)
+    }
+
+    // Init for responses
+    init(id: String?, type: MessageType, action: String?, payload: [String: JSONValue]? = nil, error: ProtocolError? = nil) {
+        self.id = id
+        self.type = type
+        self.action = action
+        self.payload = payload
+        self.error = error
     }
 }
 
