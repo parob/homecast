@@ -159,12 +159,27 @@ class WebSocketClient {
 
         // MARK: Accessories
         case "accessories.list":
+            let startTime = CFAbsoluteTimeGetCurrent()
             let homeId = payload?["homeId"]?.stringValue
             let roomId = payload?["roomId"]?.stringValue
+
+            let fetchStart = CFAbsoluteTimeGetCurrent()
             let accessories = try await MainActor.run {
                 try homeKitManager.listAccessories(homeId: homeId, roomId: roomId)
             }
-            return ["accessories": .array(accessories.map { $0.toJSON() })]
+            let fetchTime = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+
+            let convertStart = CFAbsoluteTimeGetCurrent()
+            let jsonAccessories = accessories.map { $0.toJSON() }
+            let convertTime = (CFAbsoluteTimeGetCurrent() - convertStart) * 1000
+
+            let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+
+            await MainActor.run {
+                logManager.log("accessories.list: \(accessories.count) items - fetch: \(Int(fetchTime))ms, convert: \(Int(convertTime))ms, total: \(Int(totalTime))ms", category: .homekit)
+            }
+
+            return ["accessories": .array(jsonAccessories)]
 
         case "accessory.get":
             guard let accessoryId = payload?["accessoryId"]?.stringValue else {
@@ -267,9 +282,16 @@ class WebSocketClient {
     // MARK: - Low-level Send/Receive
 
     private func send(_ message: ProtocolMessage) async throws {
+        let encodeStart = CFAbsoluteTimeGetCurrent()
         let data = try JSONEncoder().encode(message)
+        let encodeTime = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
+
         let string = String(data: data, encoding: .utf8)!
+        let sizeKB = data.count / 1024
+
+        let sendStart = CFAbsoluteTimeGetCurrent()
         try await webSocketTask?.send(.string(string))
+        let sendTime = (CFAbsoluteTimeGetCurrent() - sendStart) * 1000
 
         await MainActor.run {
             let desc: String
@@ -280,7 +302,7 @@ class WebSocketClient {
                 if message.error != nil {
                     desc = "Response: error"
                 } else {
-                    desc = "Response: \(message.action ?? "unknown")"
+                    desc = "Response: \(message.action ?? "unknown") (\(sizeKB)KB, encode: \(Int(encodeTime))ms, send: \(Int(sendTime))ms)"
                 }
             default:
                 desc = message.type.rawValue
