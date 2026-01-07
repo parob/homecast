@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import SQLModel, Session, create_engine
 
-from homekit_mcp import config
+from homecast import config
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def create_db_and_tables():
     """Creates all database tables."""
     engine = get_engine()
     # Import models to register them with SQLModel.metadata
-    from homekit_mcp.models.db import models  # noqa: F401
+    from homecast.models.db import models  # noqa: F401
     SQLModel.metadata.create_all(engine)
 
 
@@ -93,7 +93,7 @@ def reset_engine():
 
 def validate_schema() -> bool:
     """Validate that the database schema matches SQLModel definitions."""
-    from homekit_mcp.models.db import models as _  # noqa: F401
+    from homecast.models.db import models as _  # noqa: F401
 
     try:
         engine = get_engine()
@@ -139,7 +139,7 @@ def validate_schema() -> bool:
 
 def wipe_and_recreate_db() -> None:
     """Drop all tables and recreate the database schema."""
-    from homekit_mcp.models.db import models as _  # noqa: F401
+    from homecast.models.db import models as _  # noqa: F401
 
     engine = get_engine()
     inspector = inspect(engine)

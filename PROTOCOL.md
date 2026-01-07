@@ -1,10 +1,10 @@
-# HomeKit MCP WebSocket Protocol
+# HomeCast WebSocket Protocol
 
-This document defines the WebSocket protocol used for communication between the HomeKit MCP Mac app and the Cloud Run backend.
+This document defines the WebSocket protocol used for communication between the HomeCast Mac app and the Cloud Run backend.
 
 ## Connection
 
-- **URL**: `wss://api.homekitmcp.com/ws`
+- **URL**: `wss://api.homecast.cloud/ws`
 - **Authentication**: Bearer token in initial handshake
 - **Heartbeat**: Ping/pong every 30 seconds
 

@@ -1,5 +1,5 @@
 """
-Database models for HomeKit MCP.
+Database models for HomeCast.
 
 Models:
 - User: User accounts for the web portal
@@ -61,7 +61,7 @@ class Device(BaseModel, table=True):
     """
     Connected HomeKit Mac apps.
 
-    Each device represents a Mac running the HomeKit MCP app
+    Each device represents a Mac running the HomeCast app
     that connects via WebSocket to relay HomeKit commands.
     """
     user_id: uuid.UUID = Field(

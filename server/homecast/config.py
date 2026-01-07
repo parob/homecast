@@ -19,15 +19,18 @@ PORT: int = 8080
 # Allowed CORS origins
 ALLOWED_CORS_ORIGINS: list[str] = [
     "http://localhost:3000",
-    "https://homekitmcp.com",
-    "https://www.homekitmcp.com",
+    "https://homecast.cloud",
+    "https://www.homecast.cloud",
     "https://fc18532a-51b0-461b-8f4d-d9ab847d3c95.lovableproject.com",
     "https://homekit-mcp.lovable.app",
     "https://preview--homekit-mcp.lovable.app",
 ]
 
 # Database Configuration
-DATABASE_URL: str = "sqlite:///./homekit_mcp.db"
+DATABASE_URL: str = "sqlite:///./homecast.db"
+
+# Redis Configuration (for WebSocket routing across instances)
+REDIS_URL: str = ""  # e.g., "redis://10.0.0.1:6379" - empty means local-only mode
 
 # JWT Configuration
 JWT_SECRET: str = "change-me-in-production"

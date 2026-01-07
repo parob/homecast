@@ -1,7 +1,7 @@
 [project]
-name = "homekit-mcp"
+name = "homecast"
 dynamic = ["version"]
-description = "HomeKit MCP Server - Remote HomeKit control via WebSocket"
+description = "HomeCast Server - Remote HomeKit control via WebSocket"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.14"
@@ -18,10 +18,11 @@ dependencies = [
     "python-dotenv",
     "pyjwt[crypto]",
     "websockets",
+    "redis>=5.0.0",
 ]
 
 [project.urls]
-Repository = "https://github.com/parob/homekit-mcp"
+Repository = "https://github.com/parob/homecast"
 
 [dependency-groups]
 dev = [
@@ -42,7 +43,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["homekit_mcp*"]
+include = ["homecast*"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

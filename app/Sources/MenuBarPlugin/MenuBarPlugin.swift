@@ -36,7 +36,7 @@ public class MenuBarPlugin: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast")
             button.image?.isTemplate = true
             button.target = self
             button.action = #selector(statusItemClicked)
@@ -58,11 +58,11 @@ public class MenuBarPlugin: NSObject {
         self.menu = menu  // Store reference but don't assign to statusItem
 
         // App title
-        let titleItem = NSMenuItem(title: "HomeKit MCP", action: nil, keyEquivalent: "")
+        let titleItem = NSMenuItem(title: "HomeCast", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         if let font = NSFont.boldSystemFont(ofSize: 13) as NSFont? {
             titleItem.attributedTitle = NSAttributedString(
-                string: "HomeKit MCP",
+                string: "HomeCast",
                 attributes: [.font: font]
             )
         }
@@ -106,8 +106,7 @@ public class MenuBarPlugin: NSObject {
         let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(reconnectRelay), keyEquivalent: "r")
         reconnectItem.tag = reconnectTag
         reconnectItem.target = self
-        reconnectItem.indentationLevel = 1
-        reconnectItem.isHidden = true
+        reconnectItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
         menu.addItem(reconnectItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -133,7 +132,7 @@ public class MenuBarPlugin: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         // Open window
-        let openItem = NSMenuItem(title: "Open HomeKit MCP...", action: #selector(openWindow), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open HomeCast...", action: #selector(openWindow), keyEquivalent: "o")
         openItem.target = self
         openItem.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
         menu.addItem(openItem)
@@ -141,7 +140,7 @@ public class MenuBarPlugin: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         // Quit
-        let quitItem = NSMenuItem(title: "Quit HomeKit MCP", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit HomeCast", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -295,12 +294,6 @@ public class MenuBarPlugin: NSObject {
             }
         }
 
-        // Update reconnect option visibility
-        if let reconnectItem = menu.item(withTag: reconnectTag) {
-            // Show reconnect when authenticated but not connected
-            reconnectItem.isHidden = !(isAuthenticated && !relayConnected)
-        }
-
         // Update homes list
         updateHomesList(menu: menu, homeNames: homeNames, accessoryCounts: accessoryCounts)
 
@@ -351,22 +344,22 @@ public class MenuBarPlugin: NSObject {
 
         if homeKitReady && serverRunning && relayConnected {
             // All good - green filled house
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Connected")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Connected")
             button.contentTintColor = .systemGreen
             button.image?.isTemplate = false
         } else if homeKitReady && isAuthenticated {
             // HomeKit ready, authenticated but not fully connected - orange
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Connecting")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Connecting")
             button.contentTintColor = .systemOrange
             button.image?.isTemplate = false
         } else if homeKitReady {
             // HomeKit ready but not authenticated - yellow
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Not signed in")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Not signed in")
             button.contentTintColor = .systemYellow
             button.image?.isTemplate = false
         } else {
             // Loading/not ready - gray outline
-            button.image = NSImage(systemSymbolName: "house", accessibilityDescription: "HomeKit MCP - Loading")
+            button.image = NSImage(systemSymbolName: "house", accessibilityDescription: "HomeCast - Loading")
             button.contentTintColor = nil
             button.image?.isTemplate = true
         }

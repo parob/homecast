@@ -1,5 +1,5 @@
 """
-Authentication utilities for HomeKit MCP.
+Authentication utilities for HomeCast.
 
 Handles JWT token generation and verification.
 """
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import jwt
 
-from homekit_mcp import config
+from homecast import config
 
 logger = logging.getLogger(__name__)
 

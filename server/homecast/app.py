@@ -1,5 +1,5 @@
 """
-HomeKit MCP Server Application.
+HomeCast Server Application.
 
 Main entry point for the Cloud Run deployment.
 """
@@ -14,18 +14,23 @@ from starlette.responses import JSONResponse
 from graphql_api import GraphQLAPI
 from graphql_http import GraphQLHTTP
 
-from homekit_mcp import config
-from homekit_mcp.api.api import API
-from homekit_mcp.middleware import (
+from homecast import config
+from homecast.api.api import API
+from homecast.middleware import (
     CORSMiddleware,
     RequestContextMiddleware,
 )
-from homekit_mcp.models.db.database import (
+from homecast.models.db.database import (
     create_db_and_tables,
     validate_schema,
     wipe_and_recreate_db,
 )
-from homekit_mcp.websocket.handler import websocket_endpoint, ping_clients
+from homecast.websocket.handler import (
+    websocket_endpoint,
+    ping_clients,
+    init_redis_router,
+    shutdown_redis_router,
+)
 
 
 logging.basicConfig(
@@ -51,7 +56,7 @@ def create_app() -> Starlette:
     # Lifespan handler for startup/shutdown
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        logger.info("HomeKit MCP server starting up...")
+        logger.info("HomeCast server starting up...")
 
         # Database setup
         if getattr(config, "VALIDATE_OR_WIPE_DB_ON_STARTUP", False):
@@ -60,7 +65,7 @@ def create_app() -> Starlette:
                 wipe_and_recreate_db()
             else:
                 from sqlalchemy import inspect
-                from homekit_mcp.models.db.database import get_engine
+                from homecast.models.db.database import get_engine
                 engine = get_engine()
                 inspector = inspect(engine)
                 if not inspector.get_table_names():
@@ -69,10 +74,13 @@ def create_app() -> Starlette:
         elif getattr(config, "CREATE_DB_ON_STARTUP", False):
             create_db_and_tables()
 
+        # Initialize Redis router for cross-instance WebSocket routing
+        await init_redis_router()
+
         # Start background tasks
         ping_task = asyncio.create_task(ping_clients())
 
-        logger.info("HomeKit MCP server ready")
+        logger.info("HomeCast server ready")
         yield
 
         # Cleanup
@@ -82,7 +90,8 @@ def create_app() -> Starlette:
         except asyncio.CancelledError:
             pass
 
-        logger.info("HomeKit MCP server shutting down")
+        await shutdown_redis_router()
+        logger.info("HomeCast server shutting down")
 
     # Create main app
     app = Starlette(

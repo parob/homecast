@@ -15,9 +15,10 @@ from typing import Dict, Optional, Any, List
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from homekit_mcp.auth import verify_token, extract_token_from_header
-from homekit_mcp.models.db.database import get_session
-from homekit_mcp.models.db.repositories import DeviceRepository
+from homecast.auth import verify_token, extract_token_from_header
+from homecast.models.db.database import get_session
+from homecast.models.db.repositories import DeviceRepository
+from homecast.websocket.redis_router import router as redis_router
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,9 @@ class ConnectionManager:
 
         logger.info(f"Device connected: {device_id} (user: {auth.user_id})")
 
+        # Register with Redis router for cross-instance routing
+        await redis_router.register_device(device_id, str(auth.user_id))
+
         return device
 
     async def disconnect(self, device_id: str):
@@ -144,6 +148,9 @@ class ConnectionManager:
         async with self._lock:
             if device_id in self.connections:
                 del self.connections[device_id]
+
+        # Unregister from Redis router
+        await redis_router.unregister_device(device_id)
 
         # Update device status in database
         with get_session() as session:
@@ -284,6 +291,9 @@ class ConnectionManager:
             with get_session() as session:
                 DeviceRepository.update_heartbeat(session, device_id)
 
+            # Refresh Redis TTL to keep device registered
+            await redis_router.refresh_device(device_id)
+
         else:
             logger.warning(f"Unknown message type from {device_id}: {msg_type}")
 
@@ -394,3 +404,39 @@ async def ping_clients():
 
         for device_id in disconnected:
             await connection_manager.disconnect(device_id)
+
+
+async def init_redis_router():
+    """Initialize Redis router for cross-instance WebSocket routing."""
+    # Set the local handler for requests to devices on this instance
+    redis_router.set_local_handler(connection_manager.send_request)
+
+    # Connect to Redis
+    await redis_router.connect()
+
+    logger.info(f"Redis router initialized (enabled={redis_router.enabled})")
+
+
+async def shutdown_redis_router():
+    """Shutdown Redis router on app shutdown."""
+    await redis_router.disconnect()
+    logger.info("Redis router disconnected")
+
+
+async def route_request(
+    device_id: str,
+    action: str,
+    payload: Dict[str, Any],
+    timeout: float = 30.0
+) -> Dict[str, Any]:
+    """
+    Route a request to a device, using Redis if needed for cross-instance routing.
+
+    This is the main entry point for sending requests to devices - it handles
+    both local and remote devices transparently.
+    """
+    if redis_router.enabled:
+        return await redis_router.send_request(device_id, action, payload, timeout)
+    else:
+        # Local-only mode
+        return await connection_manager.send_request(device_id, action, payload, timeout)

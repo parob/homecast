@@ -20,7 +20,7 @@ WORKDIR /app
 
 # Copy dependency files and source code
 COPY pyproject.toml uv.lock VERSION ./
-COPY homekit_mcp ./homekit_mcp
+COPY homecast ./homecast
 
 # Create virtual environment and install dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -49,4 +49,4 @@ EXPOSE 8080
 ENV PORT=8080
 
 # Run application
-CMD ["sh", "-c", "uvicorn homekit_mcp.app:app --host 0.0.0.0 --port ${PORT:-8080} --timeout-keep-alive 120"]
+CMD ["sh", "-c", "uvicorn homecast.app:app --host 0.0.0.0 --port ${PORT:-8080} --timeout-keep-alive 120"]

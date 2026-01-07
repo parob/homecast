@@ -20,7 +20,7 @@ class ConnectionManager: ObservableObject {
 
     // MARK: - Keychain Keys
 
-    private let keychainService = "com.homekitmcp.app"
+    private let keychainService = "cloud.homecast.app"
     private let serverURLKey = "serverURL"
     private let emailKey = "email"
     private let tokenKey = "authToken"

@@ -53,17 +53,17 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         // Load the AppKit bundle for menu bar functionality
         guard let pluginURL = Bundle.main.builtInPlugInsURL?
             .appendingPathComponent("MenuBarPlugin.bundle") else {
-            print("[HomeKitMCP] MenuBarPlugin.bundle not found in PlugIns")
+            print("[HomeCast] MenuBarPlugin.bundle not found in PlugIns")
             return
         }
 
         guard let bundle = Bundle(url: pluginURL), bundle.load() else {
-            print("[HomeKitMCP] Failed to load MenuBarPlugin bundle")
+            print("[HomeCast] Failed to load MenuBarPlugin bundle")
             return
         }
 
         guard let pluginClass = bundle.principalClass as? NSObject.Type else {
-            print("[HomeKitMCP] Failed to get principal class from MenuBarPlugin")
+            print("[HomeCast] Failed to get principal class from MenuBarPlugin")
             return
         }
 
@@ -78,7 +78,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             }
         }
 
-        print("[HomeKitMCP] Menu bar plugin loaded successfully")
+        print("[HomeCast] Menu bar plugin loaded successfully")
     }
 
     // MARK: - Menu Bar Plugin Data Providers
@@ -174,15 +174,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidDisconnect(_ scene: UIScene) {
         // Window closed - app continues running in menu bar
-        print("[HomeKitMCP] Window closed - continuing in background")
+        print("[HomeCast] Window closed - continuing in background")
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        print("[HomeKitMCP] Window became active")
+        print("[HomeCast] Window became active")
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
-        print("[HomeKitMCP] Window will resign active")
+        print("[HomeCast] Window will resign active")
     }
 }
 

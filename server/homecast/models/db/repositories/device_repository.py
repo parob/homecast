@@ -9,8 +9,8 @@ from typing import List, Optional
 
 from sqlmodel import Session, select
 
-from homekit_mcp.models.db.models import Device, DeviceStatus
-from homekit_mcp.models.db.repositories.base_repository import BaseRepository
+from homecast.models.db.models import Device, DeviceStatus
+from homecast.models.db.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 

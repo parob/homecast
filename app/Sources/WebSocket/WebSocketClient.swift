@@ -1,7 +1,7 @@
 import Foundation
 
 /// WebSocket client for communicating with the relay server
-/// Implements the HomeKit MCP Protocol (see PROTOCOL.md)
+/// Implements the HomeCast Protocol (see PROTOCOL.md)
 class WebSocketClient {
     private let url: URL
     private let token: String

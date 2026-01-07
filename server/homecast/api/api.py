@@ -1,5 +1,5 @@
 """
-GraphQL API for HomeKit MCP.
+GraphQL API for HomeCast.
 
 Combined API with public endpoints (signup, login) and authenticated endpoints.
 """
@@ -11,10 +11,10 @@ from dataclasses import dataclass
 
 from graphql_api import field
 
-from homekit_mcp.models.db.database import get_session
-from homekit_mcp.models.db.repositories import UserRepository, DeviceRepository
-from homekit_mcp.auth import generate_token, AuthContext
-from homekit_mcp.middleware import get_auth_context
+from homecast.models.db.database import get_session
+from homecast.models.db.repositories import UserRepository, DeviceRepository
+from homecast.auth import generate_token, AuthContext
+from homecast.middleware import get_auth_context
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ def parse_scene(data: Any) -> HomeKitScene:
 # --- API ---
 
 class API:
-    """HomeKit MCP GraphQL API."""
+    """HomeCast GraphQL API."""
 
     # --- Public Endpoints (no auth required) ---
 
@@ -482,7 +482,7 @@ class API:
         List all HomeKit homes from connected device.
         Requires authentication and a connected device.
         """
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -491,7 +491,7 @@ class API:
             raise ValueError("No connected device")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="homes.list",
                 payload={}
@@ -504,7 +504,7 @@ class API:
     @field
     async def rooms(self, home_id: str) -> List[HomeKitRoom]:
         """List rooms in a home. Requires authentication and connected device."""
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -513,7 +513,7 @@ class API:
             raise ValueError("No connected device")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="rooms.list",
                 payload={"homeId": home_id}
@@ -530,7 +530,7 @@ class API:
         room_id: Optional[str] = None
     ) -> List[HomeKitAccessory]:
         """List accessories, optionally filtered by home or room."""
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -545,7 +545,7 @@ class API:
             payload["roomId"] = room_id
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="accessories.list",
                 payload=payload
@@ -558,7 +558,7 @@ class API:
     @field
     async def accessory(self, accessory_id: str) -> Optional[HomeKitAccessory]:
         """Get a single accessory with full details."""
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -567,7 +567,7 @@ class API:
             raise ValueError("No connected device")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="accessory.get",
                 payload={"accessoryId": accessory_id}
@@ -583,7 +583,7 @@ class API:
     @field
     async def scenes(self, home_id: str) -> List[HomeKitScene]:
         """List scenes in a home."""
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -592,7 +592,7 @@ class API:
             raise ValueError("No connected device")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="scenes.list",
                 payload={"homeId": home_id}
@@ -620,7 +620,7 @@ class API:
         Returns:
             Result with success status
         """
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -635,7 +635,7 @@ class API:
             raise ValueError(f"Invalid JSON value: {value}")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="characteristic.set",
                 payload={
@@ -657,7 +657,7 @@ class API:
     @field(mutable=True)
     async def execute_scene(self, scene_id: str) -> ExecuteSceneResult:
         """Execute a scene."""
-        from homekit_mcp.websocket.handler import connection_manager
+        from homecast.websocket.handler import route_request
 
         auth = require_auth()
         device_id = await connection_manager.get_user_device(auth.user_id)
@@ -666,7 +666,7 @@ class API:
             raise ValueError("No connected device")
 
         try:
-            result = await connection_manager.send_request(
+            result = await route_request(
                 device_id=device_id,
                 action="scene.execute",
                 payload={"sceneId": scene_id}

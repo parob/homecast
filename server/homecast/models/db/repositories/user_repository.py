@@ -11,8 +11,8 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from homekit_mcp.models.db.models import User
-from homekit_mcp.models.db.repositories.base_repository import BaseRepository
+from homecast.models.db.models import User
+from homecast.models.db.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 
