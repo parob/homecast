@@ -59,7 +59,7 @@ class PubSubRouter:
         self._publisher = None
         self._subscriber = None
         self._subscription_future = None
-        self._pending_requests: Dict[str, asyncio.Future] = {}
+        self._pending_requests: Dict[str, tuple[asyncio.Future, asyncio.AbstractEventLoop]] = {}
         self._local_handler: Optional[Callable] = None
         self._enabled = bool(config.GCP_PROJECT_ID)
         self._topic_path = None
@@ -258,8 +258,11 @@ class PubSubRouter:
         # Route to remote instance via Pub/Sub
         correlation_id = str(uuid.uuid4())
 
-        future: asyncio.Future = self._loop.create_future()
-        self._pending_requests[correlation_id] = future
+        # Use the current running loop, not the stored one (they may differ in async contexts)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        # Store both the future and its loop so the callback can resolve it correctly
+        self._pending_requests[correlation_id] = (future, loop)
 
         logger.info(f"Routing request {correlation_id[:8]}: {self._slot_name} -> {target_slot} (instance: {device_instance_id}, device: {device_id}, action: {action})")
 
@@ -293,22 +296,31 @@ class PubSubRouter:
         finally:
             self._pending_requests.pop(correlation_id, None)
 
+    def _resolve_future(self, correlation_id: str, data: Dict[str, Any]):
+        """Thread-safe resolution of a pending future."""
+        if correlation_id not in self._pending_requests:
+            logger.warning(f"No pending request for correlation_id {correlation_id[:8]}")
+            return
+
+        future, loop = self._pending_requests[correlation_id]
+        if future.done():
+            logger.warning(f"Future already done for {correlation_id[:8]}")
+            return
+
+        # Schedule the result to be set on the future's own loop
+        loop.call_soon_threadsafe(future.set_result, data)
+        logger.info(f"Resolved Future for {correlation_id[:8]}")
+
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle an incoming Pub/Sub message."""
         msg_type = data.get("type")
         correlation_id = data.get("correlation_id")
 
         if msg_type == "response":
-            logger.info(f"Processing response {correlation_id[:8] if correlation_id else 'none'}, pending={list(self._pending_requests.keys())[:3]}")
-            if correlation_id and correlation_id in self._pending_requests:
-                future = self._pending_requests[correlation_id]
-                if not future.done():
-                    future.set_result(data)
-                    logger.info(f"Resolved Future for {correlation_id[:8]}")
-                else:
-                    logger.warning(f"Future already done for {correlation_id[:8]}")
-            else:
-                logger.warning(f"No pending request for correlation_id {correlation_id[:8] if correlation_id else 'none'}")
+            pending_keys = [k[:8] for k in list(self._pending_requests.keys())[:3]]
+            logger.info(f"Processing response {correlation_id[:8] if correlation_id else 'none'}, pending={pending_keys}")
+            if correlation_id:
+                self._resolve_future(correlation_id, data)
 
         elif msg_type == "request":
             await self._handle_remote_request(data)
