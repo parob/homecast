@@ -332,6 +332,36 @@ class API:
     # --- HomeKit Commands (via WebSocket to Mac app) ---
 
     @field
+    async def accessories_raw(self, home_id: Optional[str] = None) -> str:
+        """
+        Return accessories as a raw JSON string (for performance testing).
+        Bypasses all parsing/serialization overhead.
+        """
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        payload = {}
+        if home_id:
+            payload["homeId"] = home_id
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="accessories.list",
+                payload=payload
+            )
+            # Return as raw JSON string - no parsing
+            return json.dumps(result.get("accessories", []))
+        except Exception as e:
+            logger.error(f"accessories_raw error: {e}")
+            raise
+
+    @field
     async def homes(self) -> List[dict]:
         """
         List all HomeKit homes from connected device.
