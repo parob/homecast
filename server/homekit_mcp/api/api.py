@@ -11,22 +11,6 @@ from dataclasses import dataclass
 
 from graphql_api import field
 
-
-def parse_json_strings(items: List[Any]) -> List[dict]:
-    """Parse any JSON strings in a list to dicts."""
-    result = []
-    for item in items:
-        if isinstance(item, str):
-            try:
-                result.append(json.loads(item))
-            except json.JSONDecodeError:
-                result.append({"raw": item})
-        elif isinstance(item, dict):
-            result.append(item)
-        else:
-            result.append(item)
-    return result
-
 from homekit_mcp.models.db.database import get_session
 from homekit_mcp.models.db.repositories import UserRepository, DeviceRepository
 from homekit_mcp.auth import generate_token, AuthContext
@@ -88,6 +72,167 @@ class DeviceRegistration:
     success: bool
     device_id: Optional[str] = None
     error: Optional[str] = None
+
+
+# --- HomeKit Types ---
+
+@dataclass
+class HomeKitCharacteristic:
+    """A characteristic of a HomeKit service."""
+    id: str
+    characteristic_type: str
+    is_readable: bool
+    is_writable: bool
+    value: Optional[str] = None
+
+
+@dataclass
+class HomeKitService:
+    """A service provided by a HomeKit accessory."""
+    id: str
+    name: str
+    service_type: str
+    characteristics: List["HomeKitCharacteristic"]
+
+
+@dataclass
+class HomeKitAccessory:
+    """A HomeKit accessory (device)."""
+    id: str
+    name: str
+    category: str
+    is_reachable: bool
+    services: List["HomeKitService"]
+    room_id: Optional[str] = None
+    room_name: Optional[str] = None
+
+
+@dataclass
+class HomeKitHome:
+    """A HomeKit home."""
+    id: str
+    name: str
+    is_primary: bool
+    room_count: int
+    accessory_count: int
+
+
+@dataclass
+class HomeKitRoom:
+    """A room in a HomeKit home."""
+    id: str
+    name: str
+    accessory_count: int
+
+
+@dataclass
+class HomeKitScene:
+    """A HomeKit scene/action set."""
+    id: str
+    name: str
+    action_count: int
+
+
+@dataclass
+class SetCharacteristicResult:
+    """Result of setting a characteristic."""
+    success: bool
+    accessory_id: str
+    characteristic_type: str
+    value: Optional[str] = None
+
+
+@dataclass
+class ExecuteSceneResult:
+    """Result of executing a scene."""
+    success: bool
+    scene_id: str
+
+
+# --- Helper Functions ---
+
+def parse_characteristic(data: dict) -> HomeKitCharacteristic:
+    """Parse a characteristic dict into a typed object."""
+    return HomeKitCharacteristic(
+        id=data.get("id", ""),
+        characteristic_type=data.get("characteristicType", ""),
+        is_readable=data.get("isReadable", False),
+        is_writable=data.get("isWritable", False),
+        value=data.get("value")
+    )
+
+
+def parse_service(data: dict) -> HomeKitService:
+    """Parse a service dict into a typed object."""
+    characteristics = [
+        parse_characteristic(c)
+        for c in data.get("characteristics", [])
+    ]
+    return HomeKitService(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        service_type=data.get("serviceType", ""),
+        characteristics=characteristics
+    )
+
+
+def parse_accessory(data: Any) -> HomeKitAccessory:
+    """Parse an accessory dict (or JSON string) into a typed object."""
+    # Handle JSON strings from Mac app
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    services = [
+        parse_service(s)
+        for s in data.get("services", [])
+    ]
+    return HomeKitAccessory(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        category=data.get("category", ""),
+        is_reachable=data.get("isReachable", False),
+        services=services,
+        room_id=data.get("roomId"),
+        room_name=data.get("roomName")
+    )
+
+
+def parse_home(data: Any) -> HomeKitHome:
+    """Parse a home dict (or JSON string) into a typed object."""
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    return HomeKitHome(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        is_primary=data.get("isPrimary", False),
+        room_count=data.get("roomCount", 0),
+        accessory_count=data.get("accessoryCount", 0)
+    )
+
+
+def parse_room(data: Any) -> HomeKitRoom:
+    """Parse a room dict (or JSON string) into a typed object."""
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    return HomeKitRoom(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        accessory_count=data.get("accessoryCount", 0)
+    )
+
+
+def parse_scene(data: Any) -> HomeKitScene:
+    """Parse a scene dict (or JSON string) into a typed object."""
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    return HomeKitScene(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        action_count=data.get("actionCount", 0)
+    )
 
 
 # --- API ---
@@ -332,40 +477,7 @@ class API:
     # --- HomeKit Commands (via WebSocket to Mac app) ---
 
     @field
-    async def accessories_raw(self, home_id: Optional[str] = None) -> str:
-        """
-        Return accessories as a raw JSON string (for performance testing).
-        Bypasses all parsing/serialization overhead.
-        """
-        from homekit_mcp.websocket.handler import connection_manager
-
-        auth = require_auth()
-        device_id = await connection_manager.get_user_device(auth.user_id)
-
-        if not device_id:
-            # Debug: log connected devices
-            connected = list(connection_manager.connections.keys())
-            logger.warning(f"No device for user {auth.user_id}, connected devices: {connected}")
-            raise ValueError(f"No connected device for user {auth.user_id}")
-
-        payload = {}
-        if home_id:
-            payload["homeId"] = home_id
-
-        try:
-            result = await connection_manager.send_request(
-                device_id=device_id,
-                action="accessories.list",
-                payload=payload
-            )
-            # Return as raw JSON string - no parsing
-            return json.dumps(result.get("accessories", []))
-        except Exception as e:
-            logger.error(f"accessories_raw error: {e}")
-            raise
-
-    @field
-    async def homes(self) -> List[dict]:
+    async def homes(self) -> List[HomeKitHome]:
         """
         List all HomeKit homes from connected device.
         Requires authentication and a connected device.
@@ -384,13 +496,13 @@ class API:
                 action="homes.list",
                 payload={}
             )
-            return parse_json_strings(result.get("homes", []))
+            return [parse_home(h) for h in result.get("homes", [])]
         except Exception as e:
             logger.error(f"homes.list error: {e}")
             raise
 
     @field
-    async def rooms(self, home_id: str) -> List[dict]:
+    async def rooms(self, home_id: str) -> List[HomeKitRoom]:
         """List rooms in a home. Requires authentication and connected device."""
         from homekit_mcp.websocket.handler import connection_manager
 
@@ -406,7 +518,7 @@ class API:
                 action="rooms.list",
                 payload={"homeId": home_id}
             )
-            return parse_json_strings(result.get("rooms", []))
+            return [parse_room(r) for r in result.get("rooms", [])]
         except Exception as e:
             logger.error(f"rooms.list error: {e}")
             raise
@@ -416,7 +528,7 @@ class API:
         self,
         home_id: Optional[str] = None,
         room_id: Optional[str] = None
-    ) -> List[dict]:
+    ) -> List[HomeKitAccessory]:
         """List accessories, optionally filtered by home or room."""
         from homekit_mcp.websocket.handler import connection_manager
 
@@ -438,13 +550,13 @@ class API:
                 action="accessories.list",
                 payload=payload
             )
-            return parse_json_strings(result.get("accessories", []))
+            return [parse_accessory(a) for a in result.get("accessories", [])]
         except Exception as e:
             logger.error(f"accessories.list error: {e}")
             raise
 
     @field
-    async def accessory(self, accessory_id: str) -> Optional[dict]:
+    async def accessory(self, accessory_id: str) -> Optional[HomeKitAccessory]:
         """Get a single accessory with full details."""
         from homekit_mcp.websocket.handler import connection_manager
 
@@ -460,16 +572,16 @@ class API:
                 action="accessory.get",
                 payload={"accessoryId": accessory_id}
             )
-            accessory = result.get("accessory")
-            if isinstance(accessory, str):
-                return json.loads(accessory)
-            return accessory
+            accessory_data = result.get("accessory")
+            if accessory_data:
+                return parse_accessory(accessory_data)
+            return None
         except Exception as e:
             logger.error(f"accessory.get error: {e}")
             raise
 
     @field
-    async def scenes(self, home_id: str) -> List[dict]:
+    async def scenes(self, home_id: str) -> List[HomeKitScene]:
         """List scenes in a home."""
         from homekit_mcp.websocket.handler import connection_manager
 
@@ -485,7 +597,7 @@ class API:
                 action="scenes.list",
                 payload={"homeId": home_id}
             )
-            return parse_json_strings(result.get("scenes", []))
+            return [parse_scene(s) for s in result.get("scenes", [])]
         except Exception as e:
             logger.error(f"scenes.list error: {e}")
             raise
@@ -496,7 +608,7 @@ class API:
         accessory_id: str,
         characteristic_type: str,
         value: str  # JSON-encoded value
-    ) -> dict:
+    ) -> SetCharacteristicResult:
         """
         Set a characteristic value (control a device).
 
@@ -508,7 +620,6 @@ class API:
         Returns:
             Result with success status
         """
-        import json as json_module
         from homekit_mcp.websocket.handler import connection_manager
 
         auth = require_auth()
@@ -519,8 +630,8 @@ class API:
 
         # Parse the JSON value
         try:
-            parsed_value = json_module.loads(value)
-        except json_module.JSONDecodeError:
+            parsed_value = json.loads(value)
+        except json.JSONDecodeError:
             raise ValueError(f"Invalid JSON value: {value}")
 
         try:
@@ -533,13 +644,18 @@ class API:
                     "value": parsed_value
                 }
             )
-            return result
+            return SetCharacteristicResult(
+                success=result.get("success", True),
+                accessory_id=accessory_id,
+                characteristic_type=characteristic_type,
+                value=str(result.get("value", parsed_value))
+            )
         except Exception as e:
             logger.error(f"characteristic.set error: {e}")
             raise
 
     @field(mutable=True)
-    async def execute_scene(self, scene_id: str) -> dict:
+    async def execute_scene(self, scene_id: str) -> ExecuteSceneResult:
         """Execute a scene."""
         from homekit_mcp.websocket.handler import connection_manager
 
@@ -555,7 +671,10 @@ class API:
                 action="scene.execute",
                 payload={"sceneId": scene_id}
             )
-            return result
+            return ExecuteSceneResult(
+                success=result.get("success", True),
+                scene_id=scene_id
+            )
         except Exception as e:
             logger.error(f"scene.execute error: {e}")
             raise
