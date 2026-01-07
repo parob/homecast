@@ -149,6 +149,9 @@ class PubSubRouter:
         """Sync callback from Pub/Sub - schedules async handling."""
         try:
             data = json.loads(message.data.decode("utf-8"))
+            msg_type = data.get("type", "unknown")
+            correlation_id = data.get("correlation_id", "")[:8]
+            logger.info(f"Received Pub/Sub message: type={msg_type}, correlation={correlation_id}")
 
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._handle_message(data), self._loop)
@@ -227,6 +230,8 @@ class PubSubRouter:
         future: asyncio.Future = self._loop.create_future()
         self._pending_requests[correlation_id] = future
 
+        logger.info(f"Routing request {correlation_id[:8]}: {self._slot_name} -> {target_slot} (device: {device_id}, action: {action})")
+
         try:
             target_topic = self._get_topic_path(target_slot)
 
@@ -241,7 +246,7 @@ class PubSubRouter:
 
             try:
                 self._publisher.publish(target_topic, message_data).result(timeout=5)
-                logger.info(f"Routed request {correlation_id[:8]} to slot {target_slot}")
+                logger.info(f"Published request {correlation_id[:8]} to topic {target_topic}")
             except Exception as e:
                 raise ValueError(f"Failed to route to slot {target_slot}: {e}")
 
@@ -263,11 +268,16 @@ class PubSubRouter:
         correlation_id = data.get("correlation_id")
 
         if msg_type == "response":
+            logger.info(f"Processing response {correlation_id[:8] if correlation_id else 'none'}, pending={list(self._pending_requests.keys())[:3]}")
             if correlation_id and correlation_id in self._pending_requests:
                 future = self._pending_requests[correlation_id]
                 if not future.done():
                     future.set_result(data)
-                logger.info(f"Received response for {correlation_id[:8]}")
+                    logger.info(f"Resolved Future for {correlation_id[:8]}")
+                else:
+                    logger.warning(f"Future already done for {correlation_id[:8]}")
+            else:
+                logger.warning(f"No pending request for correlation_id {correlation_id[:8] if correlation_id else 'none'}")
 
         elif msg_type == "request":
             await self._handle_remote_request(data)
@@ -283,7 +293,7 @@ class PubSubRouter:
         action = data["action"]
         payload = data.get("payload", {})
 
-        logger.info(f"Handling remote request {correlation_id[:8]} for device {device_id}")
+        logger.info(f"Handling remote request {correlation_id[:8]}: device={device_id}, action={action}, reply_to={source_slot}")
 
         try:
             if self._local_handler:
@@ -305,12 +315,15 @@ class PubSubRouter:
         # Send response back to source slot's topic
         source_topic = self._get_topic_path(source_slot)
         message_data = json.dumps(response).encode("utf-8")
+        has_error = "error" in response
+
+        logger.info(f"Sending response {correlation_id[:8]} to {source_topic} (error={has_error})")
 
         try:
             self._publisher.publish(source_topic, message_data).result(timeout=5)
-            logger.info(f"Sent response for {correlation_id[:8]} to slot {source_slot}")
+            logger.info(f"Published response {correlation_id[:8]} to slot {source_slot}")
         except Exception as e:
-            logger.error(f"Failed to send response to slot {source_slot}: {e}")
+            logger.error(f"Failed to publish response to slot {source_slot}: {e}")
 
 
 # Global router instance
