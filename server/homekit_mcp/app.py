@@ -89,7 +89,7 @@ def create_app() -> Starlette:
         routes=[
             Route('/health', endpoint=health, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),
-            Mount('/graphql', app=graphql_app, name='graphql'),
+            Mount('/', app=graphql_app, name='graphql'),
         ],
         lifespan=lifespan
     )

@@ -4,6 +4,7 @@ import SwiftUI
 class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     @Published var homeKitManager: HomeKitManager!
     @Published var httpServer: SimpleHTTPServer!
+    @Published var connectionManager: ConnectionManager!
     private var menuBarPlugin: AnyObject?
 
     func application(
@@ -17,10 +18,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         httpServer = SimpleHTTPServer(homeKitManager: homeKitManager, port: 8080)
         httpServer.start()
 
+        // Initialize connection manager
+        connectionManager = ConnectionManager(homeKitManager: homeKitManager)
+
         // Load menu bar plugin on Mac
         #if targetEnvironment(macCatalyst)
         loadMenuBarPlugin()
         #endif
+
+        // Try to restore previous session
+        Task {
+            await connectionManager.restoreSession()
+        }
 
         return true
     }
@@ -92,6 +101,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
     @objc func accessoryCounts() -> [NSNumber] {
         return homeKitManager?.homes.map { NSNumber(value: $0.accessories.count) } ?? []
+    }
+
+    @objc func isConnectedToRelay() -> NSNumber {
+        return NSNumber(value: connectionManager?.isConnected ?? false)
+    }
+
+    @objc func isAuthenticated() -> NSNumber {
+        return NSNumber(value: connectionManager?.isAuthenticated ?? false)
+    }
+
+    @objc func connectedEmail() -> String {
+        return connectionManager?.savedEmail ?? ""
     }
 
     // Legacy status method (kept for compatibility)

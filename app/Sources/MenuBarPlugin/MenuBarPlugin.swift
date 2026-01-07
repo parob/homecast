@@ -11,6 +11,8 @@ public class MenuBarPlugin: NSObject {
     // Menu item tags for dynamic updates
     private let homeKitStatusTag = 100
     private let serverStatusTag = 101
+    private let relayStatusTag = 102
+    private let userEmailTag = 103
     private let homesHeaderTag = 200
     private let homeItemsStartTag = 300
 
@@ -67,6 +69,26 @@ public class MenuBarPlugin: NSObject {
         serverItem.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: nil)
         menu.addItem(serverItem)
 
+        // Relay Status
+        let relayItem = NSMenuItem(title: "Relay: Not signed in", action: nil, keyEquivalent: "")
+        relayItem.tag = relayStatusTag
+        relayItem.image = NSImage(systemSymbolName: "network", accessibilityDescription: nil)
+        menu.addItem(relayItem)
+
+        // User Email
+        let userItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        userItem.tag = userEmailTag
+        userItem.indentationLevel = 1
+        userItem.isEnabled = false
+        userItem.isHidden = true
+        if let font = NSFont.systemFont(ofSize: 11) as NSFont? {
+            userItem.attributedTitle = NSAttributedString(
+                string: "",
+                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+            )
+        }
+        menu.addItem(userItem)
+
         menu.addItem(NSMenuItem.separator())
 
         // Homes section header
@@ -121,6 +143,9 @@ public class MenuBarPlugin: NSObject {
         var serverPort: Int = 0
         var homeNames: [String] = []
         var accessoryCounts: [Int] = []
+        var relayConnected = false
+        var isAuthenticated = false
+        var userEmail = ""
 
         // HomeKit ready
         let readySelector = NSSelectorFromString("isHomeKitReady")
@@ -152,13 +177,34 @@ public class MenuBarPlugin: NSObject {
             accessoryCounts = (provider.perform(countsSelector)?.takeUnretainedValue() as? [NSNumber])?.map { $0.intValue } ?? []
         }
 
+        // Relay connection status
+        let relaySelector = NSSelectorFromString("isConnectedToRelay")
+        if provider.responds(to: relaySelector) {
+            relayConnected = (provider.perform(relaySelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
+        }
+
+        // Authentication status
+        let authSelector = NSSelectorFromString("isAuthenticated")
+        if provider.responds(to: authSelector) {
+            isAuthenticated = (provider.perform(authSelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
+        }
+
+        // User email
+        let emailSelector = NSSelectorFromString("connectedEmail")
+        if provider.responds(to: emailSelector) {
+            userEmail = (provider.perform(emailSelector)?.takeUnretainedValue() as? String) ?? ""
+        }
+
         DispatchQueue.main.async {
             self.updateMenuWithStatus(
                 homeKitReady: homeKitReady,
                 serverRunning: serverRunning,
                 serverPort: serverPort,
                 homeNames: homeNames,
-                accessoryCounts: accessoryCounts
+                accessoryCounts: accessoryCounts,
+                relayConnected: relayConnected,
+                isAuthenticated: isAuthenticated,
+                userEmail: userEmail
             )
         }
     }
@@ -168,7 +214,10 @@ public class MenuBarPlugin: NSObject {
         serverRunning: Bool,
         serverPort: Int,
         homeNames: [String],
-        accessoryCounts: [Int]
+        accessoryCounts: [Int],
+        relayConnected: Bool,
+        isAuthenticated: Bool,
+        userEmail: String
     ) {
         guard let menu = statusItem?.menu else { return }
 
@@ -197,11 +246,38 @@ public class MenuBarPlugin: NSObject {
             }
         }
 
+        // Update Relay status
+        if let relayItem = menu.item(withTag: relayStatusTag) {
+            if isAuthenticated {
+                if relayConnected {
+                    relayItem.title = "Relay: Connected"
+                    relayItem.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
+                    relayItem.image?.isTemplate = false
+                } else {
+                    relayItem.title = "Relay: Connecting..."
+                    relayItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
+                }
+            } else {
+                relayItem.title = "Relay: Not signed in"
+                relayItem.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            }
+        }
+
+        // Update user email
+        if let userItem = menu.item(withTag: userEmailTag) {
+            if !userEmail.isEmpty {
+                userItem.title = userEmail
+                userItem.isHidden = false
+            } else {
+                userItem.isHidden = true
+            }
+        }
+
         // Update homes list
         updateHomesList(menu: menu, homeNames: homeNames, accessoryCounts: accessoryCounts)
 
         // Update menu bar icon
-        updateMenuBarIcon(homeKitReady: homeKitReady, serverRunning: serverRunning)
+        updateMenuBarIcon(homeKitReady: homeKitReady, serverRunning: serverRunning, relayConnected: relayConnected, isAuthenticated: isAuthenticated)
     }
 
     private func updateHomesList(menu: NSMenu, homeNames: [String], accessoryCounts: [Int]) {
@@ -242,18 +318,23 @@ public class MenuBarPlugin: NSObject {
         }
     }
 
-    private func updateMenuBarIcon(homeKitReady: Bool, serverRunning: Bool) {
+    private func updateMenuBarIcon(homeKitReady: Bool, serverRunning: Bool, relayConnected: Bool, isAuthenticated: Bool) {
         guard let button = statusItem?.button else { return }
 
-        if homeKitReady && serverRunning {
+        if homeKitReady && serverRunning && relayConnected {
             // All good - green filled house
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Running")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Connected")
             button.contentTintColor = .systemGreen
             button.image?.isTemplate = false
-        } else if homeKitReady {
-            // HomeKit ready but server not running - orange
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Server Stopped")
+        } else if homeKitReady && isAuthenticated {
+            // HomeKit ready, authenticated but not fully connected - orange
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Connecting")
             button.contentTintColor = .systemOrange
+            button.image?.isTemplate = false
+        } else if homeKitReady {
+            // HomeKit ready but not authenticated - yellow
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP - Not signed in")
+            button.contentTintColor = .systemYellow
             button.image?.isTemplate = false
         } else {
             // Loading/not ready - gray outline

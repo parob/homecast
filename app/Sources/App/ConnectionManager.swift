@@ -75,14 +75,34 @@ class ConnectionManager: ObservableObject {
             normalizedURL.removeLast()
         }
 
-        // Call login API
-        let loginURL = URL(string: "\(normalizedURL)/auth/login")!
-        var request = URLRequest(url: loginURL)
+        // Call GraphQL login mutation
+        let graphqlURL = URL(string: "\(normalizedURL)/graphql/")!
+        var request = URLRequest(url: graphqlURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let body = ["email": email, "password": password]
-        request.httpBody = try JSONEncoder().encode(body)
+        // GraphQL mutation
+        let query = """
+        mutation Login($email: String!, $password: String!) {
+            login(email: $email, password: $password) {
+                success
+                token
+                error
+                userId
+                email
+            }
+        }
+        """
+
+        let body: [String: Any] = [
+            "query": query,
+            "variables": [
+                "email": email,
+                "password": password
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -91,18 +111,29 @@ class ConnectionManager: ObservableObject {
         }
 
         guard httpResponse.statusCode == 200 else {
-            if let errorData = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
-                throw ConnectionError.serverError(errorData.message)
-            }
             throw ConnectionError.authenticationFailed
         }
 
-        let authResponse = try JSONDecoder().decode(AuthResponse.self, from: data)
+        // Parse GraphQL response
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataObj = json["data"] as? [String: Any],
+              let loginResult = dataObj["login"] as? [String: Any] else {
+            throw ConnectionError.invalidResponse
+        }
+
+        guard let success = loginResult["success"] as? Bool, success else {
+            let errorMessage = loginResult["error"] as? String ?? "Authentication failed"
+            throw ConnectionError.serverError(errorMessage)
+        }
+
+        guard let token = loginResult["token"] as? String else {
+            throw ConnectionError.invalidResponse
+        }
 
         // Save credentials
         self.serverURL = normalizedURL
         self.savedEmail = email
-        self.authToken = authResponse.token
+        self.authToken = token
         self.isAuthenticated = true
 
         saveCredentials()

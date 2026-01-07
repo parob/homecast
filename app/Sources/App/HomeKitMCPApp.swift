@@ -38,9 +38,10 @@ struct HomeKitMCPApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(appDelegate.homeKitManager)
                 .environmentObject(appDelegate.httpServer)
+                .environmentObject(appDelegate.connectionManager)
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -48,13 +49,14 @@ struct HomeKitMCPApp: App {
     }
 }
 
-struct ContentView: View {
-    @EnvironmentObject var homeKitManager: HomeKitManager
-    @EnvironmentObject var httpServer: SimpleHTTPServer
+// MARK: - Root View (Login or Main Content)
+
+struct RootView: View {
+    @EnvironmentObject var connectionManager: ConnectionManager
 
     var body: some View {
         ZStack {
-            // Background gradient
+            // Background gradient (always present)
             LinearGradient(
                 colors: [
                     Color(red: 0.1, green: 0.1, blue: 0.2),
@@ -66,19 +68,208 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                headerView
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-
-                if homeKitManager.isReady {
-                    homeKitDetailsView
-                } else {
-                    loadingView
-                }
+            if connectionManager.isAuthenticated {
+                ContentView()
+            } else {
+                LoginView()
             }
         }
         .frame(minWidth: 550, minHeight: 500)
+    }
+}
+
+// MARK: - Login View
+
+struct LoginView: View {
+    @EnvironmentObject var connectionManager: ConnectionManager
+
+    @State private var serverURL: String = "https://homekit-mcp-git-150613300327.europe-west1.run.app"
+    @State private var email: String = ""
+    @State private var password: String = ""
+    @State private var isLoading: Bool = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            // Logo
+            ZStack {
+                Circle()
+                    .fill(.linearGradient(
+                        colors: [.blue, .cyan],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+                    .frame(width: 80, height: 80)
+
+                Image(systemName: "house.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .compatibleGlassCircle()
+
+            Text("HomeKit MCP")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+                .foregroundStyle(.white)
+
+            Text("Sign in to connect your HomeKit devices")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.7))
+
+            // Login Form
+            VStack(spacing: 16) {
+                // Server URL
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Server URL")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    TextField("https://...", text: $serverURL)
+                        .textFieldStyle(.plain)
+                        .padding(12)
+                        .background(.white.opacity(0.1))
+                        .cornerRadius(10)
+                        .foregroundStyle(.white)
+                        .autocorrectionDisabled()
+                        #if !os(macOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        #endif
+                }
+
+                // Email
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Email")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    TextField("you@example.com", text: $email)
+                        .textFieldStyle(.plain)
+                        .padding(12)
+                        .background(.white.opacity(0.1))
+                        .cornerRadius(10)
+                        .foregroundStyle(.white)
+                        .autocorrectionDisabled()
+                        #if !os(macOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        #endif
+                }
+
+                // Password
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Password")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(.plain)
+                        .padding(12)
+                        .background(.white.opacity(0.1))
+                        .cornerRadius(10)
+                        .foregroundStyle(.white)
+                }
+
+                // Error message
+                if let error = errorMessage {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity)
+                    .background(.red.opacity(0.2))
+                    .cornerRadius(8)
+                }
+
+                // Login button
+                Button(action: login) {
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(0.8)
+                                .tint(.white)
+                        } else {
+                            Text("Sign In")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(14)
+                    .background(canLogin ? .blue : .gray)
+                    .foregroundStyle(.white)
+                    .cornerRadius(10)
+                }
+                .disabled(!canLogin || isLoading)
+            }
+            .padding(24)
+            .compatibleGlassRounded(cornerRadius: 20)
+            .frame(maxWidth: 360)
+
+            Spacer()
+
+            Text("Your HomeKit data stays on your device")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.5))
+        }
+        .padding()
+        .onAppear {
+            // Load saved values
+            if !connectionManager.serverURL.isEmpty {
+                serverURL = connectionManager.serverURL
+            }
+            if !connectionManager.savedEmail.isEmpty {
+                email = connectionManager.savedEmail
+            }
+        }
+    }
+
+    private var canLogin: Bool {
+        !serverURL.isEmpty && !email.isEmpty && !password.isEmpty
+    }
+
+    private func login() {
+        isLoading = true
+        errorMessage = nil
+
+        Task {
+            do {
+                try await connectionManager.authenticate(
+                    serverURL: serverURL,
+                    email: email,
+                    password: password
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+}
+
+struct ContentView: View {
+    @EnvironmentObject var homeKitManager: HomeKitManager
+    @EnvironmentObject var httpServer: SimpleHTTPServer
+    @EnvironmentObject var connectionManager: ConnectionManager
+
+    var body: some View {
+        VStack(spacing: 0) {
+            headerView
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            if homeKitManager.isReady {
+                homeKitDetailsView
+            } else {
+                loadingView
+            }
+        }
     }
 
     // MARK: - Header
@@ -127,20 +318,27 @@ struct ContentView: View {
     }
 
     private var serverStatusPill: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(httpServer.isRunning ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(httpServer.isRunning ? "Server Running" : "Server Stopped")
+        HStack(spacing: 12) {
+            // Relay connection status
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(connectionManager.isConnected ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(connectionManager.isConnected ? "Connected" : "Connecting...")
                     .font(.caption)
-                    .fontWeight(.medium)
-                if httpServer.isRunning {
-                    Text("localhost:\(String(httpServer.port))")
-                        .font(.caption2)
-                        .opacity(0.7)
-                }
+            }
+
+            Divider()
+                .frame(height: 16)
+                .background(.white.opacity(0.3))
+
+            // Local server status
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(httpServer.isRunning ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+                Text(":\(String(httpServer.port))")
+                    .font(.caption)
             }
         }
         .foregroundStyle(.white)
@@ -191,6 +389,10 @@ struct ContentView: View {
 
                 // Server Info
                 serverInfoCard
+                    .padding(.horizontal)
+
+                // Account Info
+                accountCard
                     .padding(.horizontal)
                     .padding(.bottom, 16)
             }
@@ -386,6 +588,59 @@ struct ContentView: View {
                 Text("Server is not running")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.6))
+            }
+        }
+        .padding()
+        .compatibleGlassRounded(cornerRadius: 16)
+    }
+
+    private var accountCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "person.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.purple)
+
+                Text("Account")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+
+                Spacer()
+            }
+
+            Divider()
+                .background(.white.opacity(0.2))
+
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(connectionManager.savedEmail)
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(connectionManager.isConnected ? Color.green : Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text(connectionManager.isConnected ? "Connected to relay" : "Connecting...")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+
+                Spacer()
+
+                Button(action: {
+                    connectionManager.signOut()
+                }) {
+                    Text("Sign Out")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.red.opacity(0.2))
+                        .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding()

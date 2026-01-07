@@ -311,3 +311,198 @@ class API:
                 )
                 for device in devices
             ]
+
+    # --- HomeKit Commands (via WebSocket to Mac app) ---
+
+    @field
+    async def homes(self) -> List[dict]:
+        """
+        List all HomeKit homes from connected device.
+        Requires authentication and a connected device.
+        """
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="homes.list",
+                payload={}
+            )
+            return result.get("homes", [])
+        except Exception as e:
+            logger.error(f"homes.list error: {e}")
+            raise
+
+    @field
+    async def rooms(self, home_id: str) -> List[dict]:
+        """List rooms in a home. Requires authentication and connected device."""
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="rooms.list",
+                payload={"homeId": home_id}
+            )
+            return result.get("rooms", [])
+        except Exception as e:
+            logger.error(f"rooms.list error: {e}")
+            raise
+
+    @field
+    async def accessories(
+        self,
+        home_id: Optional[str] = None,
+        room_id: Optional[str] = None
+    ) -> List[dict]:
+        """List accessories, optionally filtered by home or room."""
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        payload = {}
+        if home_id:
+            payload["homeId"] = home_id
+        if room_id:
+            payload["roomId"] = room_id
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="accessories.list",
+                payload=payload
+            )
+            return result.get("accessories", [])
+        except Exception as e:
+            logger.error(f"accessories.list error: {e}")
+            raise
+
+    @field
+    async def accessory(self, accessory_id: str) -> Optional[dict]:
+        """Get a single accessory with full details."""
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="accessory.get",
+                payload={"accessoryId": accessory_id}
+            )
+            return result.get("accessory")
+        except Exception as e:
+            logger.error(f"accessory.get error: {e}")
+            raise
+
+    @field
+    async def scenes(self, home_id: str) -> List[dict]:
+        """List scenes in a home."""
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="scenes.list",
+                payload={"homeId": home_id}
+            )
+            return result.get("scenes", [])
+        except Exception as e:
+            logger.error(f"scenes.list error: {e}")
+            raise
+
+    @field(mutable=True)
+    async def set_characteristic(
+        self,
+        accessory_id: str,
+        characteristic_type: str,
+        value: str  # JSON-encoded value
+    ) -> dict:
+        """
+        Set a characteristic value (control a device).
+
+        Args:
+            accessory_id: The accessory UUID
+            characteristic_type: Type like "power-state", "brightness"
+            value: JSON-encoded value (e.g., "true", "75", "\"hello\"")
+
+        Returns:
+            Result with success status
+        """
+        import json as json_module
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        # Parse the JSON value
+        try:
+            parsed_value = json_module.loads(value)
+        except json_module.JSONDecodeError:
+            raise ValueError(f"Invalid JSON value: {value}")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="characteristic.set",
+                payload={
+                    "accessoryId": accessory_id,
+                    "characteristicType": characteristic_type,
+                    "value": parsed_value
+                }
+            )
+            return result
+        except Exception as e:
+            logger.error(f"characteristic.set error: {e}")
+            raise
+
+    @field(mutable=True)
+    async def execute_scene(self, scene_id: str) -> dict:
+        """Execute a scene."""
+        from homekit_mcp.websocket.handler import connection_manager
+
+        auth = require_auth()
+        device_id = await connection_manager.get_user_device(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await connection_manager.send_request(
+                device_id=device_id,
+                action="scene.execute",
+                payload={"sceneId": scene_id}
+            )
+            return result
+        except Exception as e:
+            logger.error(f"scene.execute error: {e}")
+            raise
