@@ -1,0 +1,52 @@
+[project]
+name = "homekit-mcp"
+dynamic = ["version"]
+description = "HomeKit MCP Server - Remote HomeKit control via WebSocket"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.14"
+authors = [
+    {name = "Robert Parker", email = "rob@parob.com"}
+]
+dependencies = [
+    "graphql-api",
+    "graphql-http>=2.1.2",
+    "starlette",
+    "uvicorn",
+    "sqlmodel",
+    "psycopg2-binary",
+    "python-dotenv",
+    "pyjwt[crypto]",
+    "websockets",
+]
+
+[project.urls]
+Repository = "https://github.com/parob/homekit-mcp"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["homekit_mcp*"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
