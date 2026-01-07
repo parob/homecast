@@ -15,8 +15,7 @@ from graphql_api import GraphQLAPI
 from graphql_http import GraphQLHTTP
 
 from homekit_mcp import config
-from homekit_mcp.api.public import PublicAPI
-from homekit_mcp.api.admin import AdminAPI
+from homekit_mcp.api.api import API
 from homekit_mcp.middleware import (
     CORSMiddleware,
     RequestContextMiddleware,
@@ -39,14 +38,9 @@ logger = logging.getLogger(__name__)
 def create_app() -> Starlette:
     """Create and configure the Starlette application."""
 
-    # Create GraphQL apps
-    public_app = GraphQLHTTP.from_api(
-        api=GraphQLAPI(root_type=PublicAPI),
-        auth_enabled=False
-    ).app
-
-    admin_app = GraphQLHTTP.from_api(
-        api=GraphQLAPI(root_type=AdminAPI),
+    # Create GraphQL app
+    graphql_app = GraphQLHTTP.from_api(
+        api=GraphQLAPI(root_type=API),
         auth_enabled=False  # We handle auth in middleware
     ).app
 
@@ -95,8 +89,7 @@ def create_app() -> Starlette:
         routes=[
             Route('/health', endpoint=health, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),
-            Mount('/public', app=public_app, name='public'),
-            Mount('/api', app=admin_app, name='api'),
+            Mount('/graphql', app=graphql_app, name='graphql'),
         ],
         lifespan=lifespan
     )

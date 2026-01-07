@@ -1,7 +1,7 @@
 """
-Admin GraphQL API - authentication required.
+GraphQL API for HomeKit MCP.
 
-Endpoints for managing devices and user account.
+Combined API with public endpoints (signup, login) and authenticated endpoints.
 """
 
 import logging
@@ -11,11 +11,23 @@ from dataclasses import dataclass
 from graphql_api import field
 
 from homekit_mcp.models.db.database import get_session
-from homekit_mcp.models.db.models import DeviceStatus
 from homekit_mcp.models.db.repositories import UserRepository, DeviceRepository
+from homekit_mcp.auth import generate_token
 from homekit_mcp.middleware import get_auth_context
 
 logger = logging.getLogger(__name__)
+
+
+# --- Response Types ---
+
+@dataclass
+class AuthResult:
+    """Result of authentication operations."""
+    success: bool
+    token: Optional[str] = None
+    error: Optional[str] = None
+    user_id: Optional[str] = None
+    email: Optional[str] = None
 
 
 @dataclass
@@ -48,12 +60,116 @@ class DeviceRegistration:
     error: Optional[str] = None
 
 
-class AdminAPI:
-    """Admin API endpoints - authentication required."""
+# --- API ---
+
+class API:
+    """HomeKit MCP GraphQL API."""
+
+    # --- Public Endpoints (no auth required) ---
+
+    @field(mutable=True)
+    async def signup(
+        self,
+        email: str,
+        password: str,
+        name: Optional[str] = None
+    ) -> AuthResult:
+        """
+        Create a new user account.
+
+        Args:
+            email: User's email address
+            password: Password (min 8 characters)
+            name: Optional display name
+
+        Returns:
+            AuthResult with token on success, error message on failure
+        """
+        if not email or "@" not in email:
+            return AuthResult(success=False, error="Invalid email address")
+
+        if not password or len(password) < 8:
+            return AuthResult(success=False, error="Password must be at least 8 characters")
+
+        try:
+            with get_session() as session:
+                user = UserRepository.create_user(
+                    session=session,
+                    email=email,
+                    password=password,
+                    name=name
+                )
+
+                token = generate_token(user.id, user.email)
+                logger.info(f"User signed up: {user.email}")
+
+                return AuthResult(
+                    success=True,
+                    token=token,
+                    user_id=str(user.id),
+                    email=user.email
+                )
+
+        except ValueError as e:
+            return AuthResult(success=False, error=str(e))
+        except Exception as e:
+            logger.error(f"Signup error: {e}", exc_info=True)
+            return AuthResult(success=False, error="An error occurred during signup")
+
+    @field(mutable=True)
+    async def login(
+        self,
+        email: str,
+        password: str
+    ) -> AuthResult:
+        """
+        Authenticate a user and return a token.
+
+        Args:
+            email: User's email address
+            password: User's password
+
+        Returns:
+            AuthResult with token on success, error message on failure
+        """
+        if not email or not password:
+            return AuthResult(success=False, error="Email and password are required")
+
+        try:
+            with get_session() as session:
+                user = UserRepository.verify_password(
+                    session=session,
+                    email=email,
+                    password=password
+                )
+
+                if not user:
+                    return AuthResult(success=False, error="Invalid email or password")
+
+                token = generate_token(user.id, user.email)
+                logger.info(f"User logged in: {user.email}")
+
+                return AuthResult(
+                    success=True,
+                    token=token,
+                    user_id=str(user.id),
+                    email=user.email
+                )
+
+        except Exception as e:
+            logger.error(f"Login error: {e}", exc_info=True)
+            return AuthResult(success=False, error="An error occurred during login")
+
+    @field
+    def health(self) -> str:
+        """Health check endpoint."""
+        return "ok"
+
+    # --- Authenticated Endpoints ---
 
     @field
     async def me(self) -> Optional[UserInfo]:
-        """Get current user's account information."""
+        """Get current user's account information. Requires authentication."""
         auth = get_auth_context()
         if not auth:
             return None
@@ -73,7 +189,7 @@ class AdminAPI:
 
     @field
     async def my_devices(self) -> List[DeviceInfo]:
-        """Get all devices belonging to the current user."""
+        """Get all devices belonging to the current user. Requires authentication."""
         auth = get_auth_context()
         if not auth:
             return []
@@ -96,7 +212,7 @@ class AdminAPI:
 
     @field
     async def device(self, device_id: str) -> Optional[DeviceInfo]:
-        """Get a specific device by device_id."""
+        """Get a specific device by device_id. Requires authentication."""
         auth = get_auth_context()
         if not auth:
             return None
@@ -124,7 +240,7 @@ class AdminAPI:
         name: str
     ) -> DeviceRegistration:
         """
-        Register a new device or update an existing one.
+        Register a new device or update an existing one. Requires authentication.
 
         Args:
             device_id: Unique device identifier from the Mac app
@@ -159,7 +275,7 @@ class AdminAPI:
 
     @field(mutable=True)
     async def remove_device(self, device_id: str) -> bool:
-        """Remove a device from the user's account."""
+        """Remove a device from the user's account. Requires authentication."""
         auth = get_auth_context()
         if not auth:
             return False
@@ -174,7 +290,7 @@ class AdminAPI:
 
     @field
     async def online_devices(self) -> List[DeviceInfo]:
-        """Get all online devices belonging to the current user."""
+        """Get all online devices belonging to the current user. Requires authentication."""
         auth = get_auth_context()
         if not auth:
             return []
