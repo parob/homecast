@@ -17,6 +17,7 @@ class WebSocketClient {
     // Callbacks
     var onConnect: (() -> Void)?
     var onDisconnect: ((Error?) -> Void)?
+    var onAuthError: (() -> Void)?
 
     init(url: URL, token: String, homeKitManager: HomeKitManager) {
         self.url = url
@@ -64,17 +65,18 @@ class WebSocketClient {
     // MARK: - Message Handling
 
     private func startListening() {
-        Task {
-            while isConnected {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+            while self.isConnected {
                 do {
-                    let message = try await receive()
-                    await handleMessage(message)
+                    let message = try await self.receive()
+                    await self.handleMessage(message)
                 } catch {
-                    if isConnected {
+                    if self.isConnected {
                         await MainActor.run {
-                            logManager.log("Receive error: \(error.localizedDescription)", category: .websocket)
+                            self.logManager.log("Receive error: \(error.localizedDescription)", category: .websocket)
                         }
-                        handleDisconnect(error: error)
+                        self.handleDisconnect(error: error)
                     }
                     break
                 }
@@ -282,9 +284,13 @@ class WebSocketClient {
     // MARK: - Low-level Send/Receive
 
     private func send(_ message: ProtocolMessage) async throws {
-        let encodeStart = CFAbsoluteTimeGetCurrent()
-        let data = try JSONEncoder().encode(message)
-        let encodeTime = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
+        // Encode on background thread to avoid blocking UI
+        let (data, encodeTime) = try await Task.detached(priority: .userInitiated) {
+            let encodeStart = CFAbsoluteTimeGetCurrent()
+            let data = try JSONEncoder().encode(message)
+            let encodeTime = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
+            return (data, encodeTime)
+        }.value
 
         let string = String(data: data, encoding: .utf8)!
         let sizeKB = data.count / 1024
@@ -318,19 +324,22 @@ class WebSocketClient {
 
         let result = try await task.receive()
 
-        switch result {
-        case .string(let text):
-            guard let data = text.data(using: .utf8) else {
+        // Decode on background thread to avoid blocking UI
+        return try await Task.detached(priority: .userInitiated) {
+            switch result {
+            case .string(let text):
+                guard let data = text.data(using: .utf8) else {
+                    throw WebSocketError.invalidMessage
+                }
+                return try JSONDecoder().decode(ProtocolMessage.self, from: data)
+
+            case .data(let data):
+                return try JSONDecoder().decode(ProtocolMessage.self, from: data)
+
+            @unknown default:
                 throw WebSocketError.invalidMessage
             }
-            return try JSONDecoder().decode(ProtocolMessage.self, from: data)
-
-        case .data(let data):
-            return try JSONDecoder().decode(ProtocolMessage.self, from: data)
-
-        @unknown default:
-            throw WebSocketError.invalidMessage
-        }
+        }.value
     }
 
     // MARK: - Keep-alive
@@ -365,22 +374,29 @@ class WebSocketClient {
             }
         }
 
-        // Attempt reconnection
-        if reconnectAttempts < maxReconnectAttempts {
-            reconnectAttempts += 1
-            let delay = Double(reconnectAttempts) * 2.0 // Exponential backoff
-
+        // Check for auth-related errors (connection closed immediately or max retries exceeded)
+        if reconnectAttempts >= maxReconnectAttempts {
             Task { @MainActor in
-                logManager.log("Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts)/\(maxReconnectAttempts))", category: .websocket)
+                logManager.log("Max reconnect attempts reached - signing out", category: .websocket)
             }
+            onAuthError?()
+            return
+        }
 
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                do {
-                    try await connect()
-                } catch {
-                    print("[WebSocket] Reconnect attempt \(reconnectAttempts) failed: \(error)")
-                }
+        // Attempt reconnection
+        reconnectAttempts += 1
+        let delay = Double(reconnectAttempts) * 2.0 // Exponential backoff
+
+        Task { @MainActor in
+            logManager.log("Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts)/\(maxReconnectAttempts))", category: .websocket)
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            do {
+                try await connect()
+            } catch {
+                print("[WebSocket] Reconnect attempt \(reconnectAttempts) failed: \(error)")
             }
         }
     }

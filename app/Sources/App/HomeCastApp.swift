@@ -16,6 +16,13 @@ struct HomeCastApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appSettings) {
+                Button("Sign Out") {
+                    appDelegate.connectionManager.signOut()
+                }
+                .keyboardShortcut("O", modifiers: [.command, .shift])
+                .disabled(!appDelegate.connectionManager.isAuthenticated)
+            }
         }
     }
 }
@@ -147,11 +154,11 @@ struct ContentView: View {
             headerView
 
             // WebView - fills remaining space
-            WebViewContainer(url: URL(string: "https://homecast.cloud")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
+            WebViewContainer(url: URL(string: "https://homecast.cloud/login")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
         }
         .edgesIgnoringSafeArea(.all)
         .sheet(isPresented: $showingLogs) {
-            LogsSheet(logManager: logManager)
+            LogsSheet(logManager: logManager, connectionManager: connectionManager)
         }
     }
 
@@ -224,6 +231,67 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Focusable WebView
+
+/// Custom WKWebView that properly handles keyboard input on Mac Catalyst
+class FocusableWebView: WKWebView {
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            DispatchQueue.main.async {
+                self.becomeFirstResponder()
+            }
+        }
+    }
+
+    // Handle Tab key to move between form fields
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+
+        for press in presses {
+            guard let key = press.key else { continue }
+
+            if key.keyCode == .keyboardTab {
+                // Tab key - move to next/previous focusable element
+                let shift = key.modifierFlags.contains(.shift)
+                let js = """
+                (function() {
+                    var focusable = Array.from(document.querySelectorAll('input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'));
+                    var current = document.activeElement;
+                    var idx = focusable.indexOf(current);
+                    var next = \(shift ? "idx - 1" : "idx + 1");
+                    if (next < 0) next = focusable.length - 1;
+                    if (next >= focusable.length) next = 0;
+                    if (focusable[next]) focusable[next].focus();
+                })();
+                """
+                evaluateJavaScript(js, completionHandler: nil)
+                handled = true
+            } else if key.keyCode == .keyboardReturnOrEnter {
+                // Enter key - submit form or click button
+                let js = """
+                (function() {
+                    var el = document.activeElement;
+                    if (el.tagName === 'BUTTON' || el.type === 'submit') {
+                        el.click();
+                    } else if (el.form) {
+                        el.form.requestSubmit();
+                    }
+                })();
+                """
+                evaluateJavaScript(js, completionHandler: nil)
+                handled = true
+            }
+        }
+
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+}
+
 // MARK: - WebView
 
 struct WebViewContainer: UIViewRepresentable {
@@ -253,20 +321,30 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         // Use a reasonable initial frame to avoid CoreGraphics NaN errors
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
+        let webView = FocusableWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.authToken = authToken
+        context.coordinator.webView = webView
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Update token if it changes
+        // If auth token was cleared (sign out), reload to login page
+        if context.coordinator.authToken != nil && authToken == nil {
+            // Clear localStorage and reload to login
+            let js = """
+            localStorage.removeItem('homekit-token');
+            window.location.href = '/login';
+            """
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
         context.coordinator.authToken = authToken
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var authToken: String?
+        weak var webView: WKWebView?
         private var hasInjectedToken = false
         private let connectionManager: ConnectionManager
 
@@ -295,6 +373,11 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Ensure WebView has keyboard focus
+            DispatchQueue.main.async {
+                webView.becomeFirstResponder()
+            }
+
             // Fallback: inject auth token after page loads and trigger re-check
             guard let token = authToken, !hasInjectedToken else { return }
 
@@ -337,14 +420,86 @@ struct WebViewContainer: UIViewRepresentable {
 
 struct LogsSheet: View {
     @ObservedObject var logManager: LogManager
+    @ObservedObject var connectionManager: ConnectionManager
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Activity Log")
+                Text("HomeCast")
                     .font(.headline)
+
+                Spacer()
+
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+
+            Divider()
+
+            // Status section
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Status")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Spacer()
+                }
+
+                HStack(spacing: 16) {
+                    // Connection status
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(connectionManager.isConnected ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text(connectionManager.isConnected ? "Connected" : "Disconnected")
+                            .font(.caption)
+                    }
+
+                    // Login status
+                    HStack(spacing: 6) {
+                        Image(systemName: connectionManager.isAuthenticated ? "person.fill.checkmark" : "person.slash")
+                            .font(.caption)
+                        Text(connectionManager.isAuthenticated ? connectionManager.savedEmail : "Not logged in")
+                            .font(.caption)
+                    }
+                }
+
+                // Device name
+                HStack(spacing: 6) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.caption)
+                    Text(ProcessInfo.processInfo.hostName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Sign out button
+                if connectionManager.isAuthenticated {
+                    Button(role: .destructive) {
+                        connectionManager.signOut()
+                        dismiss()
+                    } label: {
+                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding()
+            .background(Color(UIColor.secondarySystemBackground))
+
+            Divider()
+
+            // Log header
+            HStack {
+                Text("Activity Log")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
 
                 Spacer()
 
@@ -354,13 +509,9 @@ struct LogsSheet: View {
                     }
                     .font(.caption)
                 }
-
-                Button("Done") {
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 8)
 
             Divider()
 
@@ -383,7 +534,7 @@ struct LogsSheet: View {
                 }
             }
         }
-        .frame(width: 600, height: 400)
+        .frame(width: 600, height: 500)
     }
 }
 

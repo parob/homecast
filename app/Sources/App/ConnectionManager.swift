@@ -38,7 +38,11 @@ class ConnectionManager: ObservableObject {
 
     // Device name from macOS system
     private var deviceName: String {
-        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        #if targetEnvironment(macCatalyst)
+        return ProcessInfo.processInfo.hostName
+        #else
+        return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        #endif
     }
 
     // MARK: - Computed Properties
@@ -254,6 +258,13 @@ class ConnectionManager: ObservableObject {
                 if let error = error {
                     print("[ConnectionManager] Disconnected: \(error)")
                 }
+            }
+        }
+
+        webSocketClient?.onAuthError = { [weak self] in
+            Task { @MainActor in
+                print("[ConnectionManager] Auth error - signing out")
+                self?.signOut()
             }
         }
 
