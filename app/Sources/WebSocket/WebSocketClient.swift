@@ -211,7 +211,7 @@ class WebSocketClient {
 
             let fetchStart = CFAbsoluteTimeGetCurrent()
             let accessories = try await MainActor.run {
-                try homeKitManager.listAccessories(homeId: homeId, roomId: roomId)
+                try homeKitManager.listAccessories(homeId: homeId, roomId: roomId, includeValues: true)
             }
             let fetchTime = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
 

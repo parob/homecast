@@ -44,12 +44,16 @@ class HomeKitManager: NSObject, ObservableObject {
         guard !isObserving else { return }
         isObserving = true
 
+        let totalAccessories = homes.reduce(0) { $0 + $1.accessories.count }
+        print("[HomeKit] 🔔 Starting observation for \(totalAccessories) accessories across \(homes.count) homes...")
+
         for home in homes {
             for accessory in home.accessories {
                 observeAccessory(accessory)
             }
         }
-        print("[HomeKit] Started observing \(observedAccessories.count) accessories")
+
+        print("[HomeKit] ✅ Now observing \(observedAccessories.count) accessories for real-time changes")
     }
 
     /// Reset the observation timeout (call when server confirms listeners exist)
@@ -62,7 +66,7 @@ class HomeKitManager: NSObject, ObservableObject {
             do {
                 try await Task.sleep(nanoseconds: UInt64(observationTimeout * 1_000_000_000))
                 // Timeout expired - no confirmation received
-                print("[HomeKit] Observation timeout - stopping (no listener confirmation for \(Int(observationTimeout))s)")
+                print("[HomeKit] ⏱️ Observation timeout - no listener confirmation for \(Int(self.observationTimeout))s")
                 self.stopObservingChanges()
             } catch {
                 // Task cancelled - this is expected when timeout is reset
@@ -76,6 +80,8 @@ class HomeKitManager: NSObject, ObservableObject {
         observationTimeoutTask = nil
 
         guard isObserving else { return }
+
+        let count = observedAccessories.count
         isObserving = false
 
         // Clear delegates from all observed accessories
@@ -87,7 +93,7 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
         observedAccessories.removeAll()
-        print("[HomeKit] Stopped observing accessories")
+        print("[HomeKit] 🔕 Stopped observing \(count) accessories")
     }
 
     /// Observe a single accessory for changes
@@ -322,9 +328,13 @@ extension HomeKitManager: HMHomeManagerDelegate {
 
 extension HomeKitManager: HMAccessoryDelegate {
     nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
+        let accessoryName = accessory.name
         let accessoryId = accessory.uniqueIdentifier.uuidString
         let charType = CharacteristicMapper.fromHomeKitType(characteristic.characteristicType)
         let value = characteristic.value ?? NSNull()
+
+        // Log the change
+        print("[HomeKit] 📡 Change: \(accessoryName) → \(charType) = \(value)")
 
         Task { @MainActor in
             self.delegate?.characteristicDidUpdate(

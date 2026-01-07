@@ -22,8 +22,18 @@ enum CharacteristicMapper {
         "target_temperature": HMCharacteristicTypeTargetTemperature,
         "heating_cooling_current": HMCharacteristicTypeCurrentHeatingCooling,
         "heating_cooling_target": HMCharacteristicTypeTargetHeatingCooling,
+        "heating_threshold": HMCharacteristicTypeHeatingThreshold,
+        "cooling_threshold": HMCharacteristicTypeCoolingThreshold,
         "relative_humidity": HMCharacteristicTypeCurrentRelativeHumidity,
         "target_humidity": HMCharacteristicTypeTargetRelativeHumidity,
+        "temperature_units": HMCharacteristicTypeTemperatureUnits,
+
+        // Active/In Use
+        "active": HMCharacteristicTypeActive,
+        "in_use": HMCharacteristicTypeInUse,
+        "is_configured": HMCharacteristicTypeIsConfigured,
+        "program_mode": HMCharacteristicTypeProgramMode,
+        "status_active": HMCharacteristicTypeStatusActive,
 
         // Lock
         "lock_current_state": HMCharacteristicTypeCurrentLockMechanismState,

@@ -291,13 +291,13 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
                 guard let self = self else { return }
                 if listening {
                     if !self.homeKitManager.isObserving {
-                        print("[ConnectionManager] Web clients listening - starting observation")
+                        print("[ConnectionManager] 👀 Web clients are listening - starting HomeKit observation")
                     }
                     // startObservingChanges() also resets the timeout
                     self.homeKitManager.startObservingChanges()
                 } else {
                     if self.homeKitManager.isObserving {
-                        print("[ConnectionManager] No web clients - stopping observation")
+                        print("[ConnectionManager] 👋 No web clients listening - stopping HomeKit observation")
                         self.homeKitManager.stopObservingChanges()
                     }
                 }

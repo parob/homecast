@@ -595,7 +595,7 @@ class API:
                 success=result.get("success", True),
                 accessory_id=accessory_id,
                 characteristic_type=characteristic_type,
-                value=str(result.get("value", parsed_value))
+                value=json.dumps(result.get("value", parsed_value))
             )
         except Exception as e:
             logger.error(f"characteristic.set error: {e}")
