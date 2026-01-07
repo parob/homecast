@@ -244,6 +244,16 @@ class ConnectionManager: ObservableObject {
         clearCredentials()
     }
 
+    func reconnect() async {
+        guard isAuthenticated else { return }
+        disconnect()
+        do {
+            try await connect()
+        } catch {
+            print("[ConnectionManager] Reconnect failed: \(error)")
+        }
+    }
+
     // MARK: - Credential Storage
 
     private func saveCredentials() {

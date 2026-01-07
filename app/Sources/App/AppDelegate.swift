@@ -138,6 +138,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             exit(0)
         }
     }
+
+    @objc func reconnectRelay() {
+        Task {
+            await connectionManager?.reconnect()
+        }
+    }
     #endif
 }
 

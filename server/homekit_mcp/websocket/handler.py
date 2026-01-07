@@ -7,6 +7,7 @@ Implements the protocol defined in PROTOCOL.md.
 import asyncio
 import json
 import logging
+import queue
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,8 +56,8 @@ class PendingRequest:
     id: str
     device_id: str
     action: str
-    # Use Queue instead of Event - more reliable across async contexts
-    queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=1))
+    # Use thread-safe queue - asyncio primitives don't work across different async contexts
+    queue: "queue.Queue[Dict[str, Any]]" = field(default_factory=lambda: queue.Queue(maxsize=1))
     response_payload: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, str]] = None
 
@@ -203,13 +204,20 @@ class ConnectionManager:
             t4 = time.time()
             logger.info(f"[{request_id[:8]}] WebSocket send took {(t4-t3)*1000:.0f}ms")
 
-            # Wait for response via queue (more reliable than Event across async contexts)
+            # Wait for response via thread-safe queue (asyncio primitives don't work across contexts)
             try:
-                logger.info(f"[{request_id[:8]}] Waiting for response via queue...")
-                result = await asyncio.wait_for(pending.queue.get(), timeout=timeout)
+                logger.info(f"[{request_id[:8]}] Waiting for response via thread-safe queue...")
+
+                # Use thread pool to wait on blocking queue.get()
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: pending.queue.get(timeout=timeout)
+                )
+
                 t5 = time.time()
                 logger.info(f"[{request_id[:8]}] Response received in {(t5-t4)*1000:.0f}ms (total: {(t5-t0)*1000:.0f}ms)")
-            except asyncio.TimeoutError:
+            except queue.Empty:
                 raise TimeoutError(f"Device {device_id} did not respond in time")
 
             if result.get("error"):
@@ -253,7 +261,7 @@ class ConnectionManager:
                 try:
                     pending.queue.put_nowait(result)
                     logger.info(f"Result queued for {msg_id}")
-                except asyncio.QueueFull:
+                except queue.Full:
                     logger.error(f"Queue full for {msg_id} - duplicate response?")
             else:
                 logger.warning(f"No pending request found for id={msg_id}, pending_ids={list(self.pending_requests.keys())}")

@@ -14,6 +14,7 @@ public class MenuBarPlugin: NSObject {
     private let serverStatusTag = 101
     private let relayStatusTag = 102
     private let userEmailTag = 103
+    private let reconnectTag = 104
     private let homesHeaderTag = 200
     private let homeItemsStartTag = 300
 
@@ -100,6 +101,14 @@ public class MenuBarPlugin: NSObject {
             )
         }
         menu.addItem(userItem)
+
+        // Reconnect option
+        let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(reconnectRelay), keyEquivalent: "r")
+        reconnectItem.tag = reconnectTag
+        reconnectItem.target = self
+        reconnectItem.indentationLevel = 1
+        reconnectItem.isHidden = true
+        menu.addItem(reconnectItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -286,6 +295,12 @@ public class MenuBarPlugin: NSObject {
             }
         }
 
+        // Update reconnect option visibility
+        if let reconnectItem = menu.item(withTag: reconnectTag) {
+            // Show reconnect when authenticated but not connected
+            reconnectItem.isHidden = !(isAuthenticated && !relayConnected)
+        }
+
         // Update homes list
         updateHomesList(menu: menu, homeNames: homeNames, accessoryCounts: accessoryCounts)
 
@@ -369,6 +384,15 @@ public class MenuBarPlugin: NSObject {
 
         for window in NSApplication.shared.windows {
             window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @objc private func reconnectRelay() {
+        if let provider = statusProvider {
+            let selector = NSSelectorFromString("reconnectRelay")
+            if provider.responds(to: selector) {
+                _ = provider.perform(selector)
+            }
         }
     }
 
