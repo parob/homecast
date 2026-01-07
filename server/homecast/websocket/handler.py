@@ -324,21 +324,6 @@ class ConnectionManager:
         devices = self.get_user_devices(user_id)
         return devices[0] if devices else None
 
-    async def send_logout_to_user_devices(self, user_id: uuid.UUID):
-        """Send logout message to all connected devices for a user."""
-        devices = self.get_user_devices(user_id)
-        for device_id in devices:
-            try:
-                conn = self.connections.get(device_id)
-                if conn:
-                    await conn.websocket.send_json({
-                        "type": "logout",
-                        "reason": "User logged out from web"
-                    })
-                    logger.info(f"Sent logout to device {device_id}")
-            except Exception as e:
-                logger.error(f"Failed to send logout to device {device_id}: {e}")
-
 
 # Global connection manager instance
 connection_manager = ConnectionManager()

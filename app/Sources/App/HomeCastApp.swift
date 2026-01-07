@@ -147,7 +147,7 @@ struct ContentView: View {
             headerView
 
             // WebView - fills remaining space
-            WebViewContainer(url: URL(string: "https://homecast.cloud")!, authToken: connectionManager.authToken)
+            WebViewContainer(url: URL(string: "https://homecast.cloud")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
         }
         .edgesIgnoringSafeArea(.all)
         .sheet(isPresented: $showingLogs) {
@@ -229,14 +229,18 @@ struct ContentView: View {
 struct WebViewContainer: UIViewRepresentable {
     let url: URL
     let authToken: String?
+    let connectionManager: ConnectionManager
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(connectionManager: connectionManager)
     }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+
+        // Add message handler for native bridge
+        config.userContentController.add(context.coordinator, name: "homecast")
 
         // Inject auth token BEFORE page loads if available
         if let token = authToken {
@@ -261,9 +265,34 @@ struct WebViewContainer: UIViewRepresentable {
         context.coordinator.authToken = authToken
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var authToken: String?
         private var hasInjectedToken = false
+        private let connectionManager: ConnectionManager
+
+        init(connectionManager: ConnectionManager) {
+            self.connectionManager = connectionManager
+        }
+
+        // Handle messages from JavaScript
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "homecast",
+                  let body = message.body as? [String: Any],
+                  let action = body["action"] as? String else {
+                return
+            }
+
+            print("[WebView] Received message: \(action)")
+
+            switch action {
+            case "logout":
+                Task { @MainActor in
+                    connectionManager.signOut()
+                }
+            default:
+                print("[WebView] Unknown action: \(action)")
+            }
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Fallback: inject auth token after page loads and trigger re-check
