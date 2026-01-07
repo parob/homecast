@@ -152,6 +152,7 @@ class FocusableWebView: WKWebView {
 
             if key.keyCode == .keyboardTab {
                 // Tab key - move to next/previous focusable element
+                // Blur first to dismiss any autofill popups and avoid WebKit warnings
                 let shift = key.modifierFlags.contains(.shift)
                 let js = """
                 (function() {
@@ -161,7 +162,8 @@ class FocusableWebView: WKWebView {
                     var next = \(shift ? "idx - 1" : "idx + 1");
                     if (next < 0) next = focusable.length - 1;
                     if (next >= focusable.length) next = 0;
-                    if (focusable[next]) focusable[next].focus();
+                    if (current) current.blur();
+                    if (focusable[next]) setTimeout(function() { focusable[next].focus(); }, 0);
                 })();
                 """
                 evaluateJavaScript(js, completionHandler: nil)
@@ -203,6 +205,13 @@ struct WebViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+
+        // Suppress autofill/suggestions to avoid WebKit warnings during focus changes
+        if #available(iOS 16.0, macCatalyst 16.0, *) {
+            let prefs = WKWebpagePreferences()
+            prefs.allowsContentJavaScript = true
+            config.defaultWebpagePreferences = prefs
+        }
 
         // Add message handler for native bridge
         config.userContentController.add(context.coordinator, name: "homecast")

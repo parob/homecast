@@ -181,6 +181,9 @@ class HomeKitManager: NSObject, ObservableObject {
                         return (accessory, characteristic)
                     }
                 }
+                // Log available characteristics for debugging
+                let availableTypes = accessory.services.flatMap { $0.characteristics }.map { CharacteristicMapper.fromHomeKitType($0.characteristicType) }
+                print("[HomeKit] Characteristic '\(type)' not found on \(accessory.name). Available: \(availableTypes.joined(separator: ", "))")
                 throw HomeKitError.characteristicNotFound(type)
             }
         }

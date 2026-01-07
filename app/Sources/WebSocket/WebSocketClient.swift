@@ -305,8 +305,8 @@ class WebSocketClient {
             case .pong:
                 desc = "Pong"
             case .response:
-                if message.error != nil {
-                    desc = "Response: error"
+                if let error = message.error {
+                    desc = "Response: error - \(error.code): \(error.message)"
                 } else {
                     desc = "Response: \(message.action ?? "unknown") (\(sizeKB)KB, encode: \(Int(encodeTime))ms, send: \(Int(sendTime))ms)"
                 }
