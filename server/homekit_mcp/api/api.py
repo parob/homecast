@@ -4,11 +4,28 @@ GraphQL API for HomeKit MCP.
 Combined API with public endpoints (signup, login) and authenticated endpoints.
 """
 
+import json
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from dataclasses import dataclass
 
 from graphql_api import field
+
+
+def parse_json_strings(items: List[Any]) -> List[dict]:
+    """Parse any JSON strings in a list to dicts."""
+    result = []
+    for item in items:
+        if isinstance(item, str):
+            try:
+                result.append(json.loads(item))
+            except json.JSONDecodeError:
+                result.append({"raw": item})
+        elif isinstance(item, dict):
+            result.append(item)
+        else:
+            result.append(item)
+    return result
 
 from homekit_mcp.models.db.database import get_session
 from homekit_mcp.models.db.repositories import UserRepository, DeviceRepository
@@ -334,7 +351,7 @@ class API:
                 action="homes.list",
                 payload={}
             )
-            return result.get("homes", [])
+            return parse_json_strings(result.get("homes", []))
         except Exception as e:
             logger.error(f"homes.list error: {e}")
             raise
@@ -356,7 +373,7 @@ class API:
                 action="rooms.list",
                 payload={"homeId": home_id}
             )
-            return result.get("rooms", [])
+            return parse_json_strings(result.get("rooms", []))
         except Exception as e:
             logger.error(f"rooms.list error: {e}")
             raise
@@ -388,7 +405,7 @@ class API:
                 action="accessories.list",
                 payload=payload
             )
-            return result.get("accessories", [])
+            return parse_json_strings(result.get("accessories", []))
         except Exception as e:
             logger.error(f"accessories.list error: {e}")
             raise
@@ -410,7 +427,10 @@ class API:
                 action="accessory.get",
                 payload={"accessoryId": accessory_id}
             )
-            return result.get("accessory")
+            accessory = result.get("accessory")
+            if isinstance(accessory, str):
+                return json.loads(accessory)
+            return accessory
         except Exception as e:
             logger.error(f"accessory.get error: {e}")
             raise
@@ -432,7 +452,7 @@ class API:
                 action="scenes.list",
                 payload={"homeId": home_id}
             )
-            return result.get("scenes", [])
+            return parse_json_strings(result.get("scenes", []))
         except Exception as e:
             logger.error(f"scenes.list error: {e}")
             raise

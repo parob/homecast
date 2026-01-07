@@ -15,6 +15,7 @@
 		A1000006A /* CharacteristicMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000006F /* CharacteristicMapper.swift */; };
 		A1000007A /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000007F /* WebSocketClient.swift */; };
 		A1000008A /* SimpleHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000022F /* SimpleHTTPServer.swift */; };
+		A1000009A /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000023F /* LogManager.swift */; };
 		A1000010A /* HomeKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000010F /* HomeKit.framework */; };
 		A1000011A /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000011F /* UIKit.framework */; };
 		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
@@ -56,6 +57,7 @@
 		A1000007F /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		A1000008F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000022F /* SimpleHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleHTTPServer.swift; sourceTree = "<group>"; };
+		A1000023F /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
 		A1000009F /* HomeKitMCP.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeKitMCP.entitlements; sourceTree = "<group>"; };
 		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
 		A1000011F /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
@@ -143,6 +145,7 @@
 				A1000002F /* AppDelegate.swift */,
 				A1000003F /* ConnectionManager.swift */,
 				A1000022F /* SimpleHTTPServer.swift */,
+				A1000023F /* LogManager.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -260,6 +263,7 @@
 				A1000006A /* CharacteristicMapper.swift in Sources */,
 				A1000007A /* WebSocketClient.swift in Sources */,
 				A1000008A /* SimpleHTTPServer.swift in Sources */,
+				A1000009A /* LogManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

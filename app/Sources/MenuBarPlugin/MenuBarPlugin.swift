@@ -5,6 +5,7 @@ import AppKit
 @objc(MenuBarPlugin)
 public class MenuBarPlugin: NSObject {
     private var statusItem: NSStatusItem?
+    private var menu: NSMenu?  // Keep menu separate from statusItem
     private weak var statusProvider: AnyObject?
     private var updateTimer: Timer?
 
@@ -36,13 +37,24 @@ public class MenuBarPlugin: NSObject {
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeKit MCP")
             button.image?.isTemplate = true
+            button.target = self
+            button.action = #selector(statusItemClicked)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
         rebuildMenu()
     }
 
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let menu = self.menu, let button = statusItem?.button else { return }
+
+        // Position menu below the status item button
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+    }
+
     private func rebuildMenu() {
         let menu = NSMenu()
+        self.menu = menu  // Store reference but don't assign to statusItem
 
         // App title
         let titleItem = NSMenuItem(title: "HomeKit MCP", action: nil, keyEquivalent: "")
@@ -124,7 +136,8 @@ public class MenuBarPlugin: NSObject {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        statusItem?.menu = menu
+        // Note: We don't assign menu to statusItem?.menu
+        // Instead we show it manually in statusItemClicked to avoid click-blocking issues
     }
 
     private func startUpdateTimer() {
@@ -219,7 +232,7 @@ public class MenuBarPlugin: NSObject {
         isAuthenticated: Bool,
         userEmail: String
     ) {
-        guard let menu = statusItem?.menu else { return }
+        guard let menu = self.menu else { return }
 
         // Update HomeKit status
         if let homeKitItem = menu.item(withTag: homeKitStatusTag) {

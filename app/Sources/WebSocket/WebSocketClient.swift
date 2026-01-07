@@ -6,6 +6,7 @@ class WebSocketClient {
     private let url: URL
     private let token: String
     private let homeKitManager: HomeKitManager
+    private let logManager = LogManager.shared
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var isConnected = false
@@ -26,6 +27,10 @@ class WebSocketClient {
     // MARK: - Connection
 
     func connect() async throws {
+        await MainActor.run {
+            logManager.log("Connecting to \(url.host ?? "server")...", category: .websocket)
+        }
+
         // Token and device_id are passed via query params in the URL
         let session = URLSession(configuration: .default)
         webSocketTask = session.webSocketTask(with: url)
@@ -34,6 +39,10 @@ class WebSocketClient {
         isConnected = true
         reconnectAttempts = 0
         onConnect?()
+
+        await MainActor.run {
+            logManager.log("Connected successfully", category: .websocket)
+        }
 
         // Start listening for messages
         startListening()
@@ -47,6 +56,9 @@ class WebSocketClient {
         pingTask?.cancel()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        Task { @MainActor in
+            logManager.log("Disconnected", category: .websocket)
+        }
     }
 
     // MARK: - Message Handling
@@ -59,7 +71,9 @@ class WebSocketClient {
                     await handleMessage(message)
                 } catch {
                     if isConnected {
-                        print("[WebSocket] Receive error: \(error)")
+                        await MainActor.run {
+                            logManager.log("Receive error: \(error.localizedDescription)", category: .websocket)
+                        }
                         handleDisconnect(error: error)
                     }
                     break
@@ -71,8 +85,14 @@ class WebSocketClient {
     private func handleMessage(_ message: ProtocolMessage) async {
         switch message.type {
         case .request:
+            await MainActor.run {
+                logManager.log("← Request: \(message.action ?? "unknown")", category: .websocket, direction: .incoming)
+            }
             await handleRequest(message)
         case .ping:
+            await MainActor.run {
+                logManager.log("← Ping", category: .websocket, direction: .incoming)
+            }
             // Respond to heartbeat
             try? await send(ProtocolMessage.pong())
         case .response, .pong:
@@ -250,6 +270,23 @@ class WebSocketClient {
         let data = try JSONEncoder().encode(message)
         let string = String(data: data, encoding: .utf8)!
         try await webSocketTask?.send(.string(string))
+
+        await MainActor.run {
+            let desc: String
+            switch message.type {
+            case .pong:
+                desc = "Pong"
+            case .response:
+                if message.error != nil {
+                    desc = "Response: error"
+                } else {
+                    desc = "Response: \(message.action ?? "unknown")"
+                }
+            default:
+                desc = message.type.rawValue
+            }
+            logManager.log("→ \(desc)", category: .websocket, direction: .outgoing)
+        }
     }
 
     private func receive() async throws -> ProtocolMessage {
@@ -298,10 +335,22 @@ class WebSocketClient {
         pingTask?.cancel()
         onDisconnect?(error)
 
+        Task { @MainActor in
+            if let error = error {
+                logManager.log("Connection lost: \(error.localizedDescription)", category: .websocket)
+            } else {
+                logManager.log("Connection lost", category: .websocket)
+            }
+        }
+
         // Attempt reconnection
         if reconnectAttempts < maxReconnectAttempts {
             reconnectAttempts += 1
             let delay = Double(reconnectAttempts) * 2.0 // Exponential backoff
+
+            Task { @MainActor in
+                logManager.log("Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts)/\(maxReconnectAttempts))", category: .websocket)
+            }
 
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

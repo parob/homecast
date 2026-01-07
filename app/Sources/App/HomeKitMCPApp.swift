@@ -257,6 +257,7 @@ struct ContentView: View {
     @EnvironmentObject var homeKitManager: HomeKitManager
     @EnvironmentObject var httpServer: SimpleHTTPServer
     @EnvironmentObject var connectionManager: ConnectionManager
+    @StateObject private var logManager = LogManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -393,6 +394,10 @@ struct ContentView: View {
 
                 // Account Info
                 accountCard
+                    .padding(.horizontal)
+
+                // Activity Log
+                logCard
                     .padding(.horizontal)
                     .padding(.bottom, 16)
             }
@@ -647,6 +652,55 @@ struct ContentView: View {
         .compatibleGlassRounded(cornerRadius: 16)
     }
 
+    private var logCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.title2)
+                    .foregroundStyle(.mint)
+
+                Text("Activity Log")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+
+                Spacer()
+
+                if !logManager.logs.isEmpty {
+                    Button(action: {
+                        logManager.clear()
+                    }) {
+                        Text("Clear")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Divider()
+                .background(.white.opacity(0.2))
+
+            if logManager.logs.isEmpty {
+                Text("No activity yet")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(logManager.logs.suffix(50).reversed()) { entry in
+                            LogEntryRow(entry: entry)
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+        .padding()
+        .compatibleGlassRounded(cornerRadius: 16)
+    }
+
     // MARK: - Helpers
 
     private func accessoryIcon(for accessory: HMAccessory) -> String {
@@ -743,6 +797,60 @@ struct EndpointRow: View {
                 .foregroundStyle(.white.opacity(0.5))
 
             Spacer()
+        }
+    }
+}
+
+struct LogEntryRow: View {
+    let entry: LogEntry
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Timestamp
+            Text(entry.timeString)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.4))
+
+            // Direction indicator
+            if let direction = entry.direction {
+                Text(direction == .incoming ? "←" : "→")
+                    .font(.caption2)
+                    .foregroundStyle(direction == .incoming ? .cyan : .orange)
+            } else {
+                Text("•")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.3))
+            }
+
+            // Category badge
+            Text(entry.category.rawValue)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(categoryColor(entry.category))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(categoryColor(entry.category).opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+
+            // Message
+            Text(entry.message)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(1)
+
+            Spacer()
+        }
+    }
+
+    private func categoryColor(_ category: LogCategory) -> Color {
+        switch category {
+        case .general:
+            return .white
+        case .websocket:
+            return .cyan
+        case .homekit:
+            return .orange
+        case .auth:
+            return .purple
         }
     }
 }

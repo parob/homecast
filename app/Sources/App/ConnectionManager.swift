@@ -156,11 +156,15 @@ class ConnectionManager: ObservableObject {
     func restoreSession() async {
         loadCredentials()
 
+        print("[ConnectionManager] Restore session - serverURL: \(serverURL.isEmpty ? "empty" : "set"), email: \(savedEmail.isEmpty ? "empty" : savedEmail), token: \(authToken == nil ? "nil" : "present")")
+
         guard !serverURL.isEmpty, authToken != nil else {
+            print("[ConnectionManager] No saved session to restore")
             return
         }
 
         isAuthenticated = true
+        print("[ConnectionManager] Session restored, connecting...")
 
         // Try to connect
         do {
@@ -276,11 +280,18 @@ class ConnectionManager: ObservableObject {
             kSecAttrAccount as String: key,
         ]
 
+        // Delete any existing item first
         SecItemDelete(query as CFDictionary)
 
         var newItem = query
         newItem[kSecValueData as String] = data
-        SecItemAdd(newItem as CFDictionary, nil)
+
+        let status = SecItemAdd(newItem as CFDictionary, nil)
+        if status == errSecSuccess {
+            print("[Keychain] Saved \(key) successfully")
+        } else {
+            print("[Keychain] Failed to save \(key): \(status)")
+        }
     }
 
     private func loadFromKeychain(key: String) -> String? {
@@ -289,16 +300,19 @@ class ConnectionManager: ObservableObject {
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
-        guard status == errSecSuccess, let data = result as? Data else {
+        if status == errSecSuccess, let data = result as? Data {
+            print("[Keychain] Loaded \(key) successfully")
+            return String(data: data, encoding: .utf8)
+        } else {
+            print("[Keychain] Failed to load \(key): \(status)")
             return nil
         }
-
-        return String(data: data, encoding: .utf8)
     }
 
     private func deleteFromKeychain(key: String) {
@@ -307,7 +321,8 @@ class ConnectionManager: ObservableObject {
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: key,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        print("[Keychain] Deleted \(key): \(status)")
     }
 }
 
