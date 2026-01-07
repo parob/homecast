@@ -42,7 +42,7 @@ struct RootView: View {
 struct LoginView: View {
     @EnvironmentObject var connectionManager: ConnectionManager
 
-    @State private var serverURL: String = "https://api.homecast.cloud"
+    private let serverURL = "https://api.homecast.cloud"
     @State private var email: String = ""
     @State private var password: String = ""
     @State private var isLoading: Bool = false
@@ -71,9 +71,6 @@ struct LoginView: View {
 
                 // Login Form
                 VStack(spacing: 16) {
-                    TextField("Server URL", text: $serverURL)
-                        .textFieldStyle(.roundedBorder)
-
                     TextField("Email", text: $email)
                         .textFieldStyle(.roundedBorder)
 
@@ -105,9 +102,6 @@ struct LoginView: View {
             .padding()
         }
         .onAppear {
-            if !connectionManager.serverURL.isEmpty {
-                serverURL = connectionManager.serverURL
-            }
             if !connectionManager.savedEmail.isEmpty {
                 email = connectionManager.savedEmail
             }
@@ -115,7 +109,7 @@ struct LoginView: View {
     }
 
     private var canLogin: Bool {
-        !serverURL.isEmpty && !email.isEmpty && !password.isEmpty
+        !email.isEmpty && !password.isEmpty
     }
 
     private func login() {

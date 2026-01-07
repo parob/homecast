@@ -6,12 +6,12 @@ import HomeKit
 @MainActor
 class SimpleHTTPServer: ObservableObject {
     @Published private(set) var isRunning: Bool = false
-    @Published private(set) var port: UInt16 = 8080
+    @Published private(set) var port: UInt16 = 5656
 
     private var listener: NWListener?
     private weak var homeKitManager: HomeKitManager?
 
-    init(homeKitManager: HomeKitManager, port: UInt16 = 8080) {
+    init(homeKitManager: HomeKitManager, port: UInt16 = 5656) {
         self.homeKitManager = homeKitManager
         self.port = port
     }

@@ -3,20 +3,20 @@ import AppKit
 /// AppKit plugin that creates and manages the menu bar status item.
 /// This runs in the same process as the Mac Catalyst app but has access to AppKit APIs.
 @objc(MenuBarPlugin)
-public class MenuBarPlugin: NSObject {
+public class MenuBarPlugin: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
-    private var menu: NSMenu?  // Keep menu separate from statusItem
     private weak var statusProvider: AnyObject?
     private var updateTimer: Timer?
 
-    // Menu item tags for dynamic updates
-    private let homeKitStatusTag = 100
-    private let serverStatusTag = 101
-    private let relayStatusTag = 102
-    private let userEmailTag = 103
-    private let reconnectTag = 104
-    private let homesHeaderTag = 200
-    private let homeItemsStartTag = 300
+    // Cached status values for menu building
+    private var cachedHomeKitReady = false
+    private var cachedServerRunning = false
+    private var cachedServerPort = 0
+    private var cachedHomeNames: [String] = []
+    private var cachedAccessoryCounts: [Int] = []
+    private var cachedRelayConnected = false
+    private var cachedIsAuthenticated = false
+    private var cachedUserEmail = ""
 
     public override init() {
         super.init()
@@ -38,103 +38,63 @@ public class MenuBarPlugin: NSObject {
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast")
             button.image?.isTemplate = true
-            button.target = self
-            button.action = #selector(statusItemClicked)
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
-        rebuildMenu()
+        // Build initial menu
+        rebuildAndAssignMenu()
     }
 
-    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        guard let menu = self.menu, let button = statusItem?.button else { return }
-
-        // Position menu below the status item button
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+    private func rebuildAndAssignMenu() {
+        let menu = buildMenu()
+        menu.delegate = self
+        statusItem?.menu = menu
     }
 
-    private func rebuildMenu() {
+    // MARK: - NSMenuDelegate
+
+    public func menuDidClose(_ menu: NSMenu) {
+        // Rebuild menu after close to ensure fresh state and avoid click-blocking
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildAndAssignMenu()
+        }
+    }
+
+    private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        self.menu = menu  // Store reference but don't assign to statusItem
 
-        // App title
-        let titleItem = NSMenuItem(title: "HomeCast", action: nil, keyEquivalent: "")
-        titleItem.isEnabled = false
-        if let font = NSFont.boldSystemFont(ofSize: 13) as NSFont? {
-            titleItem.attributedTitle = NSAttributedString(
-                string: "HomeCast",
-                attributes: [.font: font]
-            )
+        // Status section
+        if cachedHomeKitReady {
+            let totalAccessories = cachedAccessoryCounts.reduce(0, +)
+            menu.addItem(NSMenuItem(title: "HomeKit: \(cachedHomeNames.count) homes, \(totalAccessories) accessories", action: nil, keyEquivalent: ""))
+        } else {
+            menu.addItem(NSMenuItem(title: "HomeKit: Loading...", action: nil, keyEquivalent: ""))
         }
-        menu.addItem(titleItem)
+
+        if cachedServerRunning {
+            menu.addItem(NSMenuItem(title: "Server: Port \(cachedServerPort)", action: nil, keyEquivalent: ""))
+        } else {
+            menu.addItem(NSMenuItem(title: "Server: Stopped", action: nil, keyEquivalent: ""))
+        }
+
+        if cachedIsAuthenticated {
+            menu.addItem(NSMenuItem(title: cachedRelayConnected ? "Relay: Connected" : "Relay: Connecting...", action: nil, keyEquivalent: ""))
+            if !cachedUserEmail.isEmpty {
+                menu.addItem(NSMenuItem(title: cachedUserEmail, action: nil, keyEquivalent: ""))
+            }
+        } else {
+            menu.addItem(NSMenuItem(title: "Relay: Not signed in", action: nil, keyEquivalent: ""))
+        }
 
         menu.addItem(NSMenuItem.separator())
 
-        // HomeKit Status
-        let homeKitItem = NSMenuItem(title: "HomeKit: Loading...", action: nil, keyEquivalent: "")
-        homeKitItem.tag = homeKitStatusTag
-        homeKitItem.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: nil)
-        menu.addItem(homeKitItem)
-
-        // Server Status
-        let serverItem = NSMenuItem(title: "Server: Stopped", action: nil, keyEquivalent: "")
-        serverItem.tag = serverStatusTag
-        serverItem.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: nil)
-        menu.addItem(serverItem)
-
-        // Relay Status
-        let relayItem = NSMenuItem(title: "Relay: Not signed in", action: nil, keyEquivalent: "")
-        relayItem.tag = relayStatusTag
-        relayItem.image = NSImage(systemSymbolName: "network", accessibilityDescription: nil)
-        menu.addItem(relayItem)
-
-        // User Email
-        let userItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        userItem.tag = userEmailTag
-        userItem.indentationLevel = 1
-        userItem.isEnabled = false
-        userItem.isHidden = true
-        if let font = NSFont.systemFont(ofSize: 11) as NSFont? {
-            userItem.attributedTitle = NSAttributedString(
-                string: "",
-                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-            )
-        }
-        menu.addItem(userItem)
-
-        // Reconnect option
+        // Reconnect
         let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(reconnectRelay), keyEquivalent: "r")
-        reconnectItem.tag = reconnectTag
         reconnectItem.target = self
-        reconnectItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
         menu.addItem(reconnectItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Homes section header
-        let homesHeader = NSMenuItem(title: "Homes", action: nil, keyEquivalent: "")
-        homesHeader.tag = homesHeaderTag
-        homesHeader.isEnabled = false
-        if let font = NSFont.systemFont(ofSize: 11) as NSFont? {
-            homesHeader.attributedTitle = NSAttributedString(
-                string: "HOMES",
-                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-            )
-        }
-        menu.addItem(homesHeader)
-
-        // Placeholder for homes (will be populated dynamically)
-        let noHomesItem = NSMenuItem(title: "No homes available", action: nil, keyEquivalent: "")
-        noHomesItem.tag = homeItemsStartTag
-        noHomesItem.isEnabled = false
-        menu.addItem(noHomesItem)
-
-        menu.addItem(NSMenuItem.separator())
 
         // Open window
         let openItem = NSMenuItem(title: "Open HomeCast...", action: #selector(openWindow), keyEquivalent: "o")
         openItem.target = self
-        openItem.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
         menu.addItem(openItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -144,8 +104,7 @@ public class MenuBarPlugin: NSObject {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        // Note: We don't assign menu to statusItem?.menu
-        // Instead we show it manually in statusItemClicked to avoid click-blocking issues
+        return menu
     }
 
     private func startUpdateTimer() {
@@ -217,157 +176,30 @@ public class MenuBarPlugin: NSObject {
         }
 
         DispatchQueue.main.async {
-            self.updateMenuWithStatus(
-                homeKitReady: homeKitReady,
-                serverRunning: serverRunning,
-                serverPort: serverPort,
-                homeNames: homeNames,
-                accessoryCounts: accessoryCounts,
-                relayConnected: relayConnected,
-                isAuthenticated: isAuthenticated,
-                userEmail: userEmail
-            )
+            // Cache values for menu building
+            self.cachedHomeKitReady = homeKitReady
+            self.cachedServerRunning = serverRunning
+            self.cachedServerPort = serverPort
+            self.cachedHomeNames = homeNames
+            self.cachedAccessoryCounts = accessoryCounts
+            self.cachedRelayConnected = relayConnected
+            self.cachedIsAuthenticated = isAuthenticated
+            self.cachedUserEmail = userEmail
+
+            // Update menu bar icon
+            self.updateMenuBarIcon()
         }
     }
 
-    private func updateMenuWithStatus(
-        homeKitReady: Bool,
-        serverRunning: Bool,
-        serverPort: Int,
-        homeNames: [String],
-        accessoryCounts: [Int],
-        relayConnected: Bool,
-        isAuthenticated: Bool,
-        userEmail: String
-    ) {
-        guard let menu = self.menu else { return }
-
-        // Update HomeKit status
-        if let homeKitItem = menu.item(withTag: homeKitStatusTag) {
-            if homeKitReady {
-                let totalAccessories = accessoryCounts.reduce(0, +)
-                homeKitItem.title = "HomeKit: \(homeNames.count) homes, \(totalAccessories) accessories"
-                homeKitItem.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
-                homeKitItem.image?.isTemplate = false
-            } else {
-                homeKitItem.title = "HomeKit: Loading..."
-                homeKitItem.image = NSImage(systemSymbolName: "circle.dashed", accessibilityDescription: nil)
-            }
-        }
-
-        // Update Server status
-        if let serverItem = menu.item(withTag: serverStatusTag) {
-            if serverRunning {
-                serverItem.title = "Server: Running on port \(serverPort)"
-                serverItem.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
-                serverItem.image?.isTemplate = false
-            } else {
-                serverItem.title = "Server: Stopped"
-                serverItem.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
-            }
-        }
-
-        // Update Relay status
-        if let relayItem = menu.item(withTag: relayStatusTag) {
-            if isAuthenticated {
-                if relayConnected {
-                    relayItem.title = "Relay: Connected"
-                    relayItem.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
-                    relayItem.image?.isTemplate = false
-                } else {
-                    relayItem.title = "Relay: Connecting..."
-                    relayItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
-                }
-            } else {
-                relayItem.title = "Relay: Not signed in"
-                relayItem.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
-            }
-        }
-
-        // Update user email
-        if let userItem = menu.item(withTag: userEmailTag) {
-            if !userEmail.isEmpty {
-                userItem.title = userEmail
-                userItem.isHidden = false
-            } else {
-                userItem.isHidden = true
-            }
-        }
-
-        // Update homes list
-        updateHomesList(menu: menu, homeNames: homeNames, accessoryCounts: accessoryCounts)
-
-        // Update menu bar icon
-        updateMenuBarIcon(homeKitReady: homeKitReady, serverRunning: serverRunning, relayConnected: relayConnected, isAuthenticated: isAuthenticated)
-    }
-
-    private func updateHomesList(menu: NSMenu, homeNames: [String], accessoryCounts: [Int]) {
-        // Remove existing home items
-        var itemsToRemove: [NSMenuItem] = []
-        for item in menu.items {
-            if item.tag >= homeItemsStartTag {
-                itemsToRemove.append(item)
-            }
-        }
-        for item in itemsToRemove {
-            menu.removeItem(item)
-        }
-
-        // Find insert index (after homes header)
-        guard let homesHeaderIndex = menu.items.firstIndex(where: { $0.tag == homesHeaderTag }) else { return }
-        var insertIndex = homesHeaderIndex + 1
-
-        if homeNames.isEmpty {
-            let noHomesItem = NSMenuItem(title: "No homes available", action: nil, keyEquivalent: "")
-            noHomesItem.tag = homeItemsStartTag
-            noHomesItem.isEnabled = false
-            menu.insertItem(noHomesItem, at: insertIndex)
-        } else {
-            for (index, name) in homeNames.enumerated() {
-                let accessoryCount = index < accessoryCounts.count ? accessoryCounts[index] : 0
-                let homeItem = NSMenuItem(
-                    title: "\(name) (\(accessoryCount) accessories)",
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                homeItem.tag = homeItemsStartTag + index
-                homeItem.image = NSImage(systemSymbolName: index == 0 ? "house.fill" : "house", accessibilityDescription: nil)
-                homeItem.indentationLevel = 1
-                menu.insertItem(homeItem, at: insertIndex)
-                insertIndex += 1
-            }
-        }
-    }
-
-    private func updateMenuBarIcon(homeKitReady: Bool, serverRunning: Bool, relayConnected: Bool, isAuthenticated: Bool) {
-        guard let button = statusItem?.button else { return }
-
-        if homeKitReady && serverRunning && relayConnected {
-            // All good - green filled house
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Connected")
-            button.contentTintColor = .systemGreen
-            button.image?.isTemplate = false
-        } else if homeKitReady && isAuthenticated {
-            // HomeKit ready, authenticated but not fully connected - orange
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Connecting")
-            button.contentTintColor = .systemOrange
-            button.image?.isTemplate = false
-        } else if homeKitReady {
-            // HomeKit ready but not authenticated - yellow
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast - Not signed in")
-            button.contentTintColor = .systemYellow
-            button.image?.isTemplate = false
-        } else {
-            // Loading/not ready - gray outline
-            button.image = NSImage(systemSymbolName: "house", accessibilityDescription: "HomeCast - Loading")
-            button.contentTintColor = nil
-            button.image?.isTemplate = true
-        }
+    private func updateMenuBarIcon() {
+        // Keep icon simple - always white/template style
     }
 
     @objc private func openWindow() {
+        // Activate app and bring all windows to front
         NSApplication.shared.activate(ignoringOtherApps: true)
 
+        // Tell the main app to show its window
         if let provider = statusProvider {
             let selector = NSSelectorFromString("showWindow")
             if provider.responds(to: selector) {
@@ -375,8 +207,14 @@ public class MenuBarPlugin: NSObject {
             }
         }
 
-        for window in NSApplication.shared.windows {
-            window.makeKeyAndOrderFront(nil)
+        // Ensure all windows come to front
+        DispatchQueue.main.async {
+            for window in NSApplication.shared.windows {
+                if window.canBecomeKey {
+                    window.makeKeyAndOrderFront(nil)
+                    window.orderFrontRegardless()
+                }
+            }
         }
     }
 
