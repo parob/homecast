@@ -62,14 +62,14 @@ struct AccessoryModel: Codable {
     let isReachable: Bool
     let services: [ServiceModel]
 
-    init(from accessory: HMAccessory) {
+    init(from accessory: HMAccessory, includeValues: Bool = true) {
         self.id = accessory.uniqueIdentifier.uuidString
         self.name = accessory.name
         self.roomId = accessory.room?.uniqueIdentifier.uuidString
         self.roomName = accessory.room?.name
         self.category = accessory.category.localizedDescription
         self.isReachable = accessory.isReachable
-        self.services = accessory.services.map { ServiceModel(from: $0) }
+        self.services = accessory.services.map { ServiceModel(from: $0, includeValues: includeValues) }
     }
 
     func toJSON() -> JSONValue {
@@ -98,11 +98,11 @@ struct ServiceModel: Codable {
     let serviceType: String
     let characteristics: [CharacteristicModel]
 
-    init(from service: HMService) {
+    init(from service: HMService, includeValues: Bool = true) {
         self.id = service.uniqueIdentifier.uuidString
         self.name = service.name
         self.serviceType = CharacteristicMapper.fromHomeKitServiceType(service.serviceType)
-        self.characteristics = service.characteristics.map { CharacteristicModel(from: $0) }
+        self.characteristics = service.characteristics.map { CharacteristicModel(from: $0, includeValue: includeValues) }
     }
 
     func toJSON() -> JSONValue {
@@ -124,10 +124,12 @@ struct CharacteristicModel: Codable {
     let isReadable: Bool
     let isWritable: Bool
 
-    init(from characteristic: HMCharacteristic) {
+    init(from characteristic: HMCharacteristic, includeValue: Bool = true) {
         self.id = characteristic.uniqueIdentifier.uuidString
         self.characteristicType = CharacteristicMapper.fromHomeKitType(characteristic.characteristicType)
-        self.value = characteristic.value.map { String(describing: $0) }
+        // Note: Accessing .value can trigger network reads on some devices
+        // For large accessory lists, skip values for performance
+        self.value = includeValue ? characteristic.value.map { String(describing: $0) } : nil
         self.isReadable = characteristic.properties.contains(HMCharacteristicPropertyReadable)
         self.isWritable = characteristic.properties.contains(HMCharacteristicPropertyWritable)
     }

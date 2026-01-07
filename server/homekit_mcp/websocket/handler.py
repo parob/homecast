@@ -55,7 +55,8 @@ class PendingRequest:
     id: str
     device_id: str
     action: str
-    event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Use Queue instead of Event - more reliable across async contexts
+    queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=1))
     response_payload: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, str]] = None
 
@@ -174,35 +175,48 @@ class ConnectionManager:
             ValueError: If device not connected or error response
             TimeoutError: If response not received in time
         """
+        import time
+        t0 = time.time()
+
         if device_id not in self.connections:
             raise ValueError(f"Device {device_id} not connected")
 
         request_id = str(uuid.uuid4())
         pending = PendingRequest(id=request_id, device_id=device_id, action=action)
 
+        t1 = time.time()
         async with self._lock:
             self.pending_requests[request_id] = pending
+        t2 = time.time()
+        logger.info(f"[{request_id[:8]}] Lock acquired in {(t2-t1)*1000:.0f}ms")
 
         try:
             # Send request to device (PROTOCOL.md format)
             conn = self.connections[device_id]
+            t3 = time.time()
             await conn.websocket.send_json({
                 "id": request_id,
                 "type": "request",
                 "action": action,
                 "payload": payload
             })
+            t4 = time.time()
+            logger.info(f"[{request_id[:8]}] WebSocket send took {(t4-t3)*1000:.0f}ms")
 
-            # Wait for response
+            # Wait for response via queue (more reliable than Event across async contexts)
             try:
-                await asyncio.wait_for(pending.event.wait(), timeout=timeout)
+                logger.info(f"[{request_id[:8]}] Waiting for response via queue...")
+                result = await asyncio.wait_for(pending.queue.get(), timeout=timeout)
+                t5 = time.time()
+                logger.info(f"[{request_id[:8]}] Response received in {(t5-t4)*1000:.0f}ms (total: {(t5-t0)*1000:.0f}ms)")
             except asyncio.TimeoutError:
                 raise TimeoutError(f"Device {device_id} did not respond in time")
 
-            if pending.error:
-                raise ValueError(f"{pending.error.get('code', 'ERROR')}: {pending.error.get('message', 'Unknown error')}")
+            if result.get("error"):
+                err = result["error"]
+                raise ValueError(f"{err.get('code', 'ERROR')}: {err.get('message', 'Unknown error')}")
 
-            return pending.response_payload or {}
+            return result.get("payload", {})
 
         finally:
             async with self._lock:
@@ -214,21 +228,35 @@ class ConnectionManager:
 
         Expects PROTOCOL.md format with id, type, action, payload, error.
         """
+        import time
+        recv_time = time.time()
+
         msg_id = message.get("id")
         msg_type = message.get("type")
         action = message.get("action")
+
+        logger.info(f"handle_message: type={msg_type}, action={action}, id={msg_id}")
 
         if msg_type == "response":
             # Response to a request we sent
             if msg_id and msg_id in self.pending_requests:
                 pending = self.pending_requests[msg_id]
+                logger.info(f"Found pending request {msg_id}, putting result in queue")
 
+                # Put result in queue (includes error or payload)
+                result = {}
                 if "error" in message:
-                    pending.error = message["error"]
+                    result["error"] = message["error"]
                 else:
-                    pending.response_payload = message.get("payload", {})
+                    result["payload"] = message.get("payload", {})
 
-                pending.event.set()
+                try:
+                    pending.queue.put_nowait(result)
+                    logger.info(f"Result queued for {msg_id}")
+                except asyncio.QueueFull:
+                    logger.error(f"Queue full for {msg_id} - duplicate response?")
+            else:
+                logger.warning(f"No pending request found for id={msg_id}, pending_ids={list(self.pending_requests.keys())}")
 
         elif msg_type == "status":
             # Device status update (extension to protocol)
@@ -284,6 +312,8 @@ async def websocket_endpoint(websocket: WebSocket):
     Device ID via:
     - Query param: ?device_id=<id>
     """
+    import time
+
     # Log incoming connection for debugging
     logger.info(f"WebSocket connection attempt - path: {websocket.url.path}, query: {websocket.query_params}")
 
@@ -313,11 +343,25 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         # Message loop
         while True:
+            t_recv_start = time.time()
             data = await websocket.receive_text()
+            t_recv_end = time.time()
+
+            data_size = len(data)
+            logger.info(f"WS received {data_size} bytes in {(t_recv_end-t_recv_start)*1000:.0f}ms")
 
             try:
-                message = json.loads(data)
+                t_parse_start = time.time()
+                # Offload large JSON parsing to thread pool to avoid blocking event loop
+                message = await asyncio.get_event_loop().run_in_executor(None, json.loads, data)
+                t_parse_end = time.time()
+                logger.info(f"JSON parse took {(t_parse_end-t_parse_start)*1000:.0f}ms")
+
+                t_handle_start = time.time()
                 await connection_manager.handle_message(device_id, message)
+                t_handle_end = time.time()
+                logger.info(f"handle_message took {(t_handle_end-t_handle_start)*1000:.0f}ms")
+
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON from {device_id}: {data[:100]}")
 

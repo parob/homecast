@@ -51,7 +51,7 @@ class HomeKitManager: NSObject, ObservableObject {
 
     // MARK: - Accessory Operations
 
-    func listAccessories(homeId: String? = nil, roomId: String? = nil) throws -> [AccessoryModel] {
+    func listAccessories(homeId: String? = nil, roomId: String? = nil, includeValues: Bool = false) throws -> [AccessoryModel] {
         var accessories: [HMAccessory] = []
 
         if let homeId = homeId, let uuid = UUID(uuidString: homeId) {
@@ -67,7 +67,8 @@ class HomeKitManager: NSObject, ObservableObject {
             accessories = accessories.filter { $0.room?.uniqueIdentifier == uuid }
         }
 
-        return accessories.map { AccessoryModel(from: $0) }
+        // Skip characteristic values by default for performance (600+ accessories)
+        return accessories.map { AccessoryModel(from: $0, includeValues: includeValues) }
     }
 
     func getAccessory(id: String) throws -> AccessoryModel {

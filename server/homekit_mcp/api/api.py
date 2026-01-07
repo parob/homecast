@@ -343,7 +343,10 @@ class API:
         device_id = await connection_manager.get_user_device(auth.user_id)
 
         if not device_id:
-            raise ValueError("No connected device")
+            # Debug: log connected devices
+            connected = list(connection_manager.connections.keys())
+            logger.warning(f"No device for user {auth.user_id}, connected devices: {connected}")
+            raise ValueError(f"No connected device for user {auth.user_id}")
 
         payload = {}
         if home_id:
