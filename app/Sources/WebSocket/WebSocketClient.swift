@@ -1,6 +1,7 @@
 import Foundation
 
 /// WebSocket client for communicating with the relay server
+/// Implements the HomeKit MCP Protocol (see PROTOCOL.md)
 class WebSocketClient {
     private let url: URL
     private let token: String
@@ -32,19 +33,6 @@ class WebSocketClient {
         webSocketTask = session.webSocketTask(with: request)
         webSocketTask?.resume()
 
-        // Send auth message
-        let authMessage = WebSocketMessage(
-            type: .auth,
-            payload: ["token": .string(token)]
-        )
-        try await send(authMessage)
-
-        // Wait for connected confirmation
-        let response = try await receive()
-        guard response.type == .connected else {
-            throw WebSocketError.authenticationFailed
-        }
-
         isConnected = true
         reconnectAttempts = 0
         onConnect?()
@@ -54,6 +42,9 @@ class WebSocketClient {
 
         // Start ping task
         startPingTask()
+
+        // Send initial sync
+        await sendConfigurationUpdate()
     }
 
     func disconnect() {
@@ -82,121 +73,245 @@ class WebSocketClient {
         }
     }
 
-    private func handleMessage(_ message: WebSocketMessage) async {
+    private func handleMessage(_ message: ProtocolMessage) async {
         switch message.type {
-        case .ping:
-            // Respond with pong
-            try? await send(WebSocketMessage(type: .pong))
-
         case .request:
-            // Handle HomeKit request from server
             await handleRequest(message)
-
-        case .connected, .pong, .response, .error, .auth:
-            // These are outgoing or handled elsewhere
+        case .response, .event:
+            // Responses and events from server (not expected in this direction)
             break
         }
     }
 
-    private func handleRequest(_ message: WebSocketMessage) async {
-        guard let requestId = message.payload?["requestId"]?.stringValue,
-              let action = message.payload?["action"]?.stringValue else {
+    private func handleRequest(_ message: ProtocolMessage) async {
+        guard let action = message.action else {
+            await sendError(id: message.id, code: "INVALID_REQUEST", message: "Missing action")
             return
         }
 
         do {
-            let result = try await executeHomeKitAction(action: action, params: message.payload)
-            let response = WebSocketMessage(
+            let result = try await executeAction(action: action, payload: message.payload)
+            let response = ProtocolMessage(
+                id: message.id,
                 type: .response,
-                payload: [
-                    "requestId": .string(requestId),
-                    "success": .bool(true),
-                    "data": result
-                ]
+                action: action,
+                payload: result
             )
             try await send(response)
+        } catch let error as HomeKitError {
+            await sendError(id: message.id, code: error.code, message: error.localizedDescription)
         } catch {
-            let errorResponse = WebSocketMessage(
-                type: .response,
-                payload: [
-                    "requestId": .string(requestId),
-                    "success": .bool(false),
-                    "error": .string(error.localizedDescription)
-                ]
-            )
-            try? await send(errorResponse)
+            await sendError(id: message.id, code: "INTERNAL_ERROR", message: error.localizedDescription)
         }
     }
 
-    private func executeHomeKitAction(action: String, params: [String: JSONValue]?) async throws -> JSONValue {
-        switch action {
-        case "listHomes":
-            let homes = await MainActor.run { homeKitManager.listHomes() }
-            return .array(homes.map { $0.toJSON() })
+    private func sendError(id: String, code: String, message: String) async {
+        let response = ProtocolMessage(
+            id: id,
+            type: .response,
+            action: nil,
+            payload: nil,
+            error: ProtocolError(code: code, message: message)
+        )
+        try? await send(response)
+    }
 
-        case "listRooms":
-            guard let homeId = params?["homeId"]?.stringValue else {
+    // MARK: - Action Execution
+
+    private func executeAction(action: String, payload: [String: JSONValue]?) async throws -> [String: JSONValue] {
+        switch action {
+
+        // MARK: Homes
+        case "homes.list":
+            let homes = await MainActor.run { homeKitManager.listHomes() }
+            return ["homes": .array(homes.map { homeToJSON($0) })]
+
+        // MARK: Rooms
+        case "rooms.list":
+            guard let homeId = payload?["homeId"]?.stringValue else {
                 throw HomeKitError.invalidRequest("Missing homeId")
             }
             let rooms = try await MainActor.run { try homeKitManager.listRooms(homeId: homeId) }
-            return .array(rooms.map { $0.toJSON() })
+            return [
+                "homeId": .string(homeId),
+                "rooms": .array(rooms.map { $0.toJSON() })
+            ]
 
-        case "listAccessories":
-            let homeId = params?["homeId"]?.stringValue
-            let roomId = params?["roomId"]?.stringValue
+        // MARK: Accessories
+        case "accessories.list":
+            let homeId = payload?["homeId"]?.stringValue
+            let roomId = payload?["roomId"]?.stringValue
             let accessories = try await MainActor.run {
                 try homeKitManager.listAccessories(homeId: homeId, roomId: roomId)
             }
-            return .array(accessories.map { $0.toJSON() })
+            return ["accessories": .array(accessories.map { $0.toJSON() })]
 
-        case "getAccessory":
-            guard let accessoryId = params?["accessoryId"]?.stringValue else {
+        case "accessory.get":
+            guard let accessoryId = payload?["accessoryId"]?.stringValue else {
                 throw HomeKitError.invalidRequest("Missing accessoryId")
             }
             let accessory = try await MainActor.run { try homeKitManager.getAccessory(id: accessoryId) }
-            return accessory.toJSON()
+            return ["accessory": accessory.toJSON()]
 
-        case "controlAccessory":
-            guard let accessoryId = params?["accessoryId"]?.stringValue,
-                  let characteristic = params?["characteristic"]?.stringValue,
-                  let value = params?["value"] else {
-                throw HomeKitError.invalidRequest("Missing required parameters")
+        // MARK: Characteristics
+        case "characteristic.get":
+            guard let accessoryId = payload?["accessoryId"]?.stringValue,
+                  let characteristicType = payload?["characteristicType"]?.stringValue else {
+                throw HomeKitError.invalidRequest("Missing accessoryId or characteristicType")
+            }
+            let value = try await homeKitManager.readCharacteristic(
+                accessoryId: accessoryId,
+                characteristicType: characteristicType
+            )
+            return [
+                "accessoryId": .string(accessoryId),
+                "characteristicType": .string(characteristicType),
+                "value": jsonValue(from: value)
+            ]
+
+        case "characteristic.set":
+            guard let accessoryId = payload?["accessoryId"]?.stringValue,
+                  let characteristicType = payload?["characteristicType"]?.stringValue,
+                  let value = payload?["value"] else {
+                throw HomeKitError.invalidRequest("Missing accessoryId, characteristicType, or value")
             }
             let result = try await homeKitManager.setCharacteristic(
                 accessoryId: accessoryId,
-                characteristicType: characteristic,
+                characteristicType: characteristicType,
                 value: value.toAny()
             )
-            return result.toJSON()
+            return [
+                "success": .bool(result.success),
+                "accessoryId": .string(accessoryId),
+                "characteristicType": .string(characteristicType),
+                "value": value
+            ]
 
-        case "listScenes":
-            guard let homeId = params?["homeId"]?.stringValue else {
+        // MARK: Scenes
+        case "scenes.list":
+            guard let homeId = payload?["homeId"]?.stringValue else {
                 throw HomeKitError.invalidRequest("Missing homeId")
             }
             let scenes = try await MainActor.run { try homeKitManager.listScenes(homeId: homeId) }
-            return .array(scenes.map { $0.toJSON() })
+            return [
+                "homeId": .string(homeId),
+                "scenes": .array(scenes.map { $0.toJSON() })
+            ]
 
-        case "executeScene":
-            guard let sceneId = params?["sceneId"]?.stringValue else {
+        case "scene.execute":
+            guard let sceneId = payload?["sceneId"]?.stringValue else {
                 throw HomeKitError.invalidRequest("Missing sceneId")
             }
             let result = try await homeKitManager.executeScene(sceneId: sceneId)
-            return result.toJSON()
+            return [
+                "success": .bool(result.success),
+                "sceneId": .string(sceneId)
+            ]
 
         default:
             throw HomeKitError.invalidRequest("Unknown action: \(action)")
         }
     }
 
+    // MARK: - Events (App → Server)
+
+    func sendConfigurationUpdate() async {
+        let homes = await MainActor.run { homeKitManager.listHomes() }
+
+        let event = ProtocolMessage(
+            id: UUID().uuidString,
+            type: .event,
+            action: "home.configurationChanged",
+            payload: [
+                "changeType": .string("sync"),
+                "homes": .array(homes.map { homeToJSON($0) }),
+                "timestamp": .string(ISO8601DateFormatter().string(from: Date()))
+            ]
+        )
+        try? await send(event)
+    }
+
+    func sendStateChange(accessoryId: String, accessoryName: String, changes: [(type: String, oldValue: Any?, newValue: Any)]) async {
+        let changesArray: [JSONValue] = changes.map { change in
+            var obj: [String: JSONValue] = [
+                "characteristicType": .string(change.type),
+                "newValue": jsonValue(from: change.newValue)
+            ]
+            if let old = change.oldValue {
+                obj["oldValue"] = jsonValue(from: old)
+            }
+            return .object(obj)
+        }
+
+        let event = ProtocolMessage(
+            id: UUID().uuidString,
+            type: .event,
+            action: "accessory.stateChanged",
+            payload: [
+                "accessoryId": .string(accessoryId),
+                "accessoryName": .string(accessoryName),
+                "changes": .array(changesArray),
+                "timestamp": .string(ISO8601DateFormatter().string(from: Date()))
+            ]
+        )
+        try? await send(event)
+    }
+
+    func sendReachabilityChange(accessoryId: String, accessoryName: String, isReachable: Bool) async {
+        let event = ProtocolMessage(
+            id: UUID().uuidString,
+            type: .event,
+            action: "accessory.reachabilityChanged",
+            payload: [
+                "accessoryId": .string(accessoryId),
+                "accessoryName": .string(accessoryName),
+                "isReachable": .bool(isReachable),
+                "timestamp": .string(ISO8601DateFormatter().string(from: Date()))
+            ]
+        )
+        try? await send(event)
+    }
+
+    // MARK: - Helpers
+
+    private func homeToJSON(_ home: HomeModel) -> JSONValue {
+        return .object([
+            "id": .string(home.id),
+            "name": .string(home.name),
+            "isPrimary": .bool(home.isPrimary),
+            "roomCount": .int(home.roomCount),
+            "accessoryCount": .int(home.accessoryCount)
+        ])
+    }
+
+    private func jsonValue(from any: Any) -> JSONValue {
+        switch any {
+        case let s as String: return .string(s)
+        case let i as Int: return .int(i)
+        case let d as Double: return .double(d)
+        case let b as Bool: return .bool(b)
+        case let n as NSNumber:
+            if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                return .bool(n.boolValue)
+            } else if n.doubleValue.truncatingRemainder(dividingBy: 1) == 0 {
+                return .int(n.intValue)
+            } else {
+                return .double(n.doubleValue)
+            }
+        case is NSNull: return .null
+        default: return .string(String(describing: any))
+        }
+    }
+
     // MARK: - Low-level Send/Receive
 
-    private func send(_ message: WebSocketMessage) async throws {
+    private func send(_ message: ProtocolMessage) async throws {
         let data = try JSONEncoder().encode(message)
         let string = String(data: data, encoding: .utf8)!
         try await webSocketTask?.send(.string(string))
     }
 
-    private func receive() async throws -> WebSocketMessage {
+    private func receive() async throws -> ProtocolMessage {
         guard let task = webSocketTask else {
             throw WebSocketError.notConnected
         }
@@ -208,10 +323,10 @@ class WebSocketClient {
             guard let data = text.data(using: .utf8) else {
                 throw WebSocketError.invalidMessage
             }
-            return try JSONDecoder().decode(WebSocketMessage.self, from: data)
+            return try JSONDecoder().decode(ProtocolMessage.self, from: data)
 
         case .data(let data):
-            return try JSONDecoder().decode(WebSocketMessage.self, from: data)
+            return try JSONDecoder().decode(ProtocolMessage.self, from: data)
 
         @unknown default:
             throw WebSocketError.invalidMessage
@@ -259,26 +374,30 @@ class WebSocketClient {
     }
 }
 
-// MARK: - Message Types
+// MARK: - Protocol Message
 
-struct WebSocketMessage: Codable {
+struct ProtocolMessage: Codable {
+    let id: String
     let type: MessageType
+    let action: String?
     var payload: [String: JSONValue]?
+    var error: ProtocolError?
 
     enum MessageType: String, Codable {
-        case auth
-        case connected
-        case ping
-        case pong
         case request
         case response
-        case error
+        case event
     }
+}
+
+struct ProtocolError: Codable {
+    let code: String
+    let message: String
 }
 
 // MARK: - JSON Value
 
-enum JSONValue: Codable {
+enum JSONValue: Codable, Equatable {
     case string(String)
     case int(Int)
     case double(Double)
@@ -289,6 +408,16 @@ enum JSONValue: Codable {
 
     var stringValue: String? {
         if case .string(let s) = self { return s }
+        return nil
+    }
+
+    var intValue: Int? {
+        if case .int(let i) = self { return i }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let b) = self { return b }
         return nil
     }
 
@@ -307,14 +436,14 @@ enum JSONValue: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
 
-        if let s = try? container.decode(String.self) {
-            self = .string(s)
+        if let b = try? container.decode(Bool.self) {
+            self = .bool(b)
         } else if let i = try? container.decode(Int.self) {
             self = .int(i)
         } else if let d = try? container.decode(Double.self) {
             self = .double(d)
-        } else if let b = try? container.decode(Bool.self) {
-            self = .bool(b)
+        } else if let s = try? container.decode(String.self) {
+            self = .string(s)
         } else if let a = try? container.decode([JSONValue].self) {
             self = .array(a)
         } else if let o = try? container.decode([String: JSONValue].self) {
@@ -355,6 +484,23 @@ enum WebSocketError: LocalizedError {
         case .authenticationFailed: return "WebSocket authentication failed"
         case .invalidMessage: return "Invalid message received"
         case .connectionFailed(let reason): return "Connection failed: \(reason)"
+        }
+    }
+}
+
+// MARK: - HomeKitError Extension
+
+extension HomeKitError {
+    var code: String {
+        switch self {
+        case .homeNotFound: return "HOME_NOT_FOUND"
+        case .roomNotFound: return "ROOM_NOT_FOUND"
+        case .accessoryNotFound: return "ACCESSORY_NOT_FOUND"
+        case .sceneNotFound: return "SCENE_NOT_FOUND"
+        case .characteristicNotFound: return "CHARACTERISTIC_NOT_FOUND"
+        case .characteristicNotWritable: return "CHARACTERISTIC_NOT_WRITABLE"
+        case .invalidId, .invalidRequest: return "INVALID_REQUEST"
+        case .readFailed, .writeFailed, .sceneExecutionFailed: return "HOMEKIT_ERROR"
         }
     }
 }
