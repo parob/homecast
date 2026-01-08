@@ -21,6 +21,7 @@
 		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
 		A1000021A /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000012F /* AppKit.framework */; };
 		A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = A2000000P /* MenuBarPlugin.bundle */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A1000024A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000024F /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 		A1000022F /* SimpleHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleHTTPServer.swift; sourceTree = "<group>"; };
 		A1000023F /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
 		A1000009F /* HomeCast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeCast.entitlements; sourceTree = "<group>"; };
+		A1000024F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
 		A1000011F /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		A1000012F /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
@@ -88,6 +90,17 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXResourcesBuildPhase section */
+		A1000062P /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000024A /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXGroup section */
 		A0000001G = {
 			isa = PBXGroup;
@@ -113,6 +126,7 @@
 		A0000003G /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A1000024F /* Assets.xcassets */,
 				A1000008F /* Info.plist */,
 				A1000009F /* HomeCast.entitlements */,
 			);
@@ -185,6 +199,7 @@
 			buildConfigurationList = A1000080L /* Build configuration list for PBXNativeTarget "HomeCast" */;
 			buildPhases = (
 				A1000070P /* Sources */,
+				A1000062P /* Resources */,
 				A1000060P /* Frameworks */,
 				A1000050P /* Embed PlugIns */,
 			);

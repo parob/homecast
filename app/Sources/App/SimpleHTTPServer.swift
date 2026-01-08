@@ -213,7 +213,7 @@ class SimpleHTTPServer: ObservableObject {
 
     private func handleRoot(connection: NWConnection) {
         let response: [String: Any] = [
-            "name": "HomeCast",
+            "name": "Homecast",
             "version": "1.0.0",
             "endpoints": [
                 "/health": "Health check",

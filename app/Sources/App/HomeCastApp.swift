@@ -3,6 +3,14 @@ import WebKit
 import HomeKit
 import UIKit
 
+// MARK: - Config
+
+enum AppConfig {
+    /// Whether to show the main window when the app launches.
+    /// Set to `true` for testing, `false` for production (menu bar only on launch).
+    static let showWindowOnLaunch = true
+}
+
 @main
 struct HomeCastApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -219,7 +227,7 @@ struct WebViewContainer: UIViewRepresentable {
         // Inject auth token BEFORE page loads if available
         if let token = authToken {
             let script = WKUserScript(
-                source: "localStorage.setItem('homekit-token', '\(token)'); console.log('[HomeCast] Token pre-injected');",
+                source: "localStorage.setItem('homekit-token', '\(token)'); console.log('[Homecast] Token pre-injected');",
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
@@ -304,7 +312,7 @@ struct WebViewContainer: UIViewRepresentable {
 
             let js = """
             localStorage.setItem('homekit-token', '\(token)');
-            console.log('[HomeCast] Auth token injected');
+            console.log('[Homecast] Auth token injected');
             window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: '\(token)' }));
             """
 
@@ -343,119 +351,119 @@ struct LogsSheet: View {
     @ObservedObject var logManager: LogManager
     @ObservedObject var connectionManager: ConnectionManager
     @Environment(\.dismiss) var dismiss
+    @State private var showingSignOutConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("HomeCast")
-                    .font(.headline)
+            // Compact header with inline status
+            HStack(spacing: 8) {
+                // Connection indicator
+                Circle()
+                    .fill(connectionManager.isConnected ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(connectionManager.isConnected ? "Connected" : "Offline")
+                    .font(.caption)
+                    .foregroundStyle(.primary)
 
-                Spacer()
+                Text("·")
+                    .foregroundStyle(.tertiary)
 
-                Button("Done") {
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .padding()
-
-            Divider()
-
-            // Status section
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Status")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Spacer()
-                }
-
-                HStack(spacing: 16) {
-                    // Connection status
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(connectionManager.isConnected ? Color.green : Color.orange)
-                            .frame(width: 8, height: 8)
-                        Text(connectionManager.isConnected ? "Connected" : "Disconnected")
-                            .font(.caption)
-                    }
-
-                    // Login status
-                    HStack(spacing: 6) {
-                        Image(systemName: connectionManager.isAuthenticated ? "person.fill.checkmark" : "person.slash")
-                            .font(.caption)
-                        Text(connectionManager.isAuthenticated ? connectionManager.savedEmail : "Not logged in")
-                            .font(.caption)
-                    }
-                }
-
-                // Device name
-                HStack(spacing: 6) {
-                    Image(systemName: "desktopcomputer")
+                // User info
+                if connectionManager.isAuthenticated {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text(connectionManager.savedEmail)
                         .font(.caption)
-                    Text(ProcessInfo.processInfo.hostName)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                } else {
+                    Text("Not logged in")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                // Sign out button
-                if connectionManager.isAuthenticated {
-                    Button(role: .destructive) {
-                        connectionManager.signOut()
-                        dismiss()
-                    } label: {
-                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-            .padding()
-            .background(Color(UIColor.secondarySystemBackground))
+                Text("·")
+                    .foregroundStyle(.tertiary)
 
-            Divider()
-
-            // Log header
-            HStack {
-                Text("Activity Log")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+                // Device name
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text(ProcessInfo.processInfo.hostName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
                 Spacer()
+
+                // Actions
+                if connectionManager.isAuthenticated {
+                    Button {
+                        showingSignOutConfirm = true
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Sign Out")
+                }
 
                 if !logManager.logs.isEmpty {
                     Button("Clear") {
                         logManager.clear()
                     }
                     .font(.caption)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
 
-            Divider()
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
+
+            Divider().opacity(0.5)
 
             // Log entries
             if logManager.logs.isEmpty {
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
+                    Image(systemName: "text.alignleft")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.tertiary)
                     Text("No activity yet")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(logManager.logs.reversed()) { entry in
                             LogEntryRow(entry: entry)
                         }
                     }
-                    .padding()
+                    .padding(.vertical, 4)
                 }
             }
         }
-        .frame(width: 600, height: 500)
+        .frame(width: 600, height: 400)
+        .confirmationDialog("Sign Out", isPresented: $showingSignOutConfirm) {
+            Button("Sign Out", role: .destructive) {
+                connectionManager.signOut()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to sign out?")
+        }
     }
 }
 
@@ -465,40 +473,45 @@ struct LogEntryRow: View {
     let entry: LogEntry
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(entry.timeString)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 6) {
+            // Direction + Category (combined, left-aligned)
+            HStack(spacing: 3) {
+                if let direction = entry.direction {
+                    Text(direction == .incoming ? "←" : "→")
+                        .foregroundStyle(direction == .incoming ? .blue : .orange)
+                } else {
+                    Text("·")
+                        .foregroundStyle(.quaternary)
+                }
 
-            if let direction = entry.direction {
-                Text(direction == .incoming ? "←" : "→")
-                    .font(.caption)
-                    .foregroundStyle(direction == .incoming ? .blue : .orange)
-            } else {
-                Text("•")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(entry.category.rawValue)
+                    .foregroundStyle(categoryColor(entry.category))
             }
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .frame(width: 44, alignment: .leading)
 
-            Text(entry.category.rawValue)
-                .font(.system(.caption, design: .monospaced))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(categoryColor(entry.category).opacity(0.2))
-                .cornerRadius(3)
-
+            // Message (fills space)
             Text(entry.message)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
 
-            Spacer()
+            Spacer(minLength: 8)
+
+            // Timestamp (right-aligned, subtle)
+            Text(entry.timeString)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .background(Color.clear)
+        .contentShape(Rectangle())
     }
 
     private func categoryColor(_ category: LogCategory) -> Color {
         switch category {
-        case .general: return .gray
+        case .general: return .secondary
         case .websocket: return .blue
         case .homekit: return .orange
         case .auth: return .purple

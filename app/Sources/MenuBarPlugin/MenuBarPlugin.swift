@@ -23,12 +23,20 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
     }
 
     /// Called by the main app to set up the menu bar
-    @objc public func setup(withStatusProvider provider: AnyObject) {
+    /// - Parameters:
+    ///   - provider: Object that provides status information
+    ///   - showWindowOnLaunch: Whether to show the window (and dock icon) on launch
+    @objc public func setup(withStatusProvider provider: AnyObject, showWindowOnLaunch: Bool) {
         self.statusProvider = provider
 
         DispatchQueue.main.async {
             self.createStatusItem()
             self.startUpdateTimer()
+
+            // Show in dock on launch only if window should be shown
+            if showWindowOnLaunch {
+                NSApp.setActivationPolicy(.regular)
+            }
         }
     }
 
@@ -36,7 +44,7 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "HomeCast")
+            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "Homecast")
             button.image?.isTemplate = true
         }
 
@@ -93,14 +101,14 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
         menu.addItem(reconnectItem)
 
         // Open window
-        let openItem = NSMenuItem(title: "Open HomeCast...", action: #selector(openWindow), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open Homecast...", action: #selector(openWindow), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
 
         menu.addItem(NSMenuItem.separator())
 
         // Quit
-        let quitItem = NSMenuItem(title: "Quit HomeCast", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit Homecast", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -196,6 +204,9 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
     }
 
     @objc private func openWindow() {
+        // Show in dock first
+        showInDock()
+
         // Activate app and bring all windows to front
         NSApplication.shared.activate(ignoringOtherApps: true)
 
@@ -237,6 +248,22 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
         }
 
         NSApplication.shared.terminate(nil)
+    }
+
+    // MARK: - Dock Visibility
+
+    /// Show app in dock (when window is open)
+    @objc public func showInDock() {
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
+    /// Hide app from dock (when window is closed, menu bar only)
+    @objc public func hideFromDock() {
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     deinit {

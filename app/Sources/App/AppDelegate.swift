@@ -53,32 +53,35 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         // Load the AppKit bundle for menu bar functionality
         guard let pluginURL = Bundle.main.builtInPlugInsURL?
             .appendingPathComponent("MenuBarPlugin.bundle") else {
-            print("[HomeCast] MenuBarPlugin.bundle not found in PlugIns")
+            print("[Homecast] MenuBarPlugin.bundle not found in PlugIns")
             return
         }
 
         guard let bundle = Bundle(url: pluginURL), bundle.load() else {
-            print("[HomeCast] Failed to load MenuBarPlugin bundle")
+            print("[Homecast] Failed to load MenuBarPlugin bundle")
             return
         }
 
         guard let pluginClass = bundle.principalClass as? NSObject.Type else {
-            print("[HomeCast] Failed to get principal class from MenuBarPlugin")
+            print("[Homecast] Failed to get principal class from MenuBarPlugin")
             return
         }
 
         // Create the plugin instance
         menuBarPlugin = pluginClass.init()
 
-        // Set up the plugin with our connection manager
+        // Set up the plugin with our status provider and config
         if let plugin = menuBarPlugin {
-            let setupSelector = NSSelectorFromString("setupWithStatusProvider:")
+            let setupSelector = NSSelectorFromString("setupWithStatusProvider:showWindowOnLaunch:")
             if plugin.responds(to: setupSelector) {
-                _ = plugin.perform(setupSelector, with: self)
+                let method = plugin.method(for: setupSelector)
+                typealias SetupMethod = @convention(c) (AnyObject, Selector, AnyObject, Bool) -> Void
+                let impl = unsafeBitCast(method, to: SetupMethod.self)
+                impl(plugin, setupSelector, self, AppConfig.showWindowOnLaunch)
             }
         }
 
-        print("[HomeCast] Menu bar plugin loaded successfully")
+        print("[Homecast] Menu bar plugin loaded successfully")
     }
 
     // MARK: - Menu Bar Plugin Data Providers
@@ -144,6 +147,24 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             await connectionManager?.reconnect()
         }
     }
+
+    func showInDock() {
+        if let plugin = menuBarPlugin {
+            let selector = NSSelectorFromString("showInDock")
+            if plugin.responds(to: selector) {
+                _ = plugin.perform(selector)
+            }
+        }
+    }
+
+    func hideFromDock() {
+        if let plugin = menuBarPlugin {
+            let selector = NSSelectorFromString("hideFromDock")
+            if plugin.responds(to: selector) {
+                _ = plugin.perform(selector)
+            }
+        }
+    }
     #endif
 }
 
@@ -151,6 +172,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+    private static var isFirstLaunch = true
 
     func scene(
         _ scene: UIScene,
@@ -169,20 +191,49 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Set window size - allow flexible sizing
         windowScene.sizeRestrictions?.minimumSize = CGSize(width: 780, height: 500)
         windowScene.sizeRestrictions?.maximumSize = CGSize(width: 1400, height: 1000)
+
+        // Check if we should show window on first launch
+        if SceneDelegate.isFirstLaunch {
+            SceneDelegate.isFirstLaunch = false
+
+            if !AppConfig.showWindowOnLaunch {
+                // Close the window - app will run in menu bar only
+                DispatchQueue.main.async {
+                    UIApplication.shared.requestSceneSessionDestruction(
+                        session,
+                        options: nil,
+                        errorHandler: nil
+                    )
+                }
+                return
+            }
+        }
+
+        // Show in dock when window opens
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+            appDelegate.showInDock()
+        }
         #endif
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
         // Window closed - app continues running in menu bar
-        print("[HomeCast] Window closed - continuing in background")
+        print("[Homecast] Window closed - continuing in background")
+
+        #if targetEnvironment(macCatalyst)
+        // Hide from dock when window closes
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+            appDelegate.hideFromDock()
+        }
+        #endif
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        print("[HomeCast] Window became active")
+        print("[Homecast] Window became active")
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
-        print("[HomeCast] Window will resign active")
+        print("[Homecast] Window will resign active")
     }
 }
 
