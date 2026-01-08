@@ -76,14 +76,17 @@ class ConnectionManager:
         self.connections: Dict[str, ConnectedDevice] = {}
         # request_id -> PendingRequest
         self.pending_requests: Dict[str, PendingRequest] = {}
-        # Lock for thread-safe operations (created lazily to avoid event loop issues)
+        # Lock for thread-safe operations (created per event loop)
         self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
 
     @property
     def lock(self) -> asyncio.Lock:
-        """Get the lock, creating it lazily in the current event loop."""
-        if self._lock is None:
+        """Get the lock, creating it in the current event loop if needed."""
+        current_loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not current_loop:
             self._lock = asyncio.Lock()
+            self._lock_loop = current_loop
         return self._lock
 
     async def connect(

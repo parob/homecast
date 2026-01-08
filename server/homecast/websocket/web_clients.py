@@ -40,7 +40,17 @@ class WebClientManager:
         # Local in-memory tracking for WebSocket connections on THIS instance
         # session_id -> WebClient
         self.local_clients: Dict[uuid.UUID, WebClient] = {}
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Get the lock, creating it in the current event loop if needed."""
+        current_loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not current_loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = current_loop
+        return self._lock
 
     def _get_instance_id(self) -> str:
         """Get the current server instance ID."""
@@ -77,7 +87,7 @@ class WebClientManager:
         )
 
         # Track locally for broadcasting
-        async with self._lock:
+        async with self.lock:
             self.local_clients[session_id] = client
 
         logger.info(f"Web client connected: user={auth.user_id}, session={session_id}")
@@ -91,7 +101,7 @@ class WebClientManager:
     async def disconnect(self, client: WebClient):
         """Handle client disconnection."""
         # Remove from local tracking
-        async with self._lock:
+        async with self.lock:
             self.local_clients.pop(client.session_id, None)
 
         # Remove from database
@@ -138,7 +148,7 @@ class WebClientManager:
     async def broadcast_to_user(self, user_id: uuid.UUID, message: Dict[str, Any]):
         """Broadcast a message to all LOCAL web clients for a user."""
         # Only broadcast to clients on THIS instance
-        async with self._lock:
+        async with self.lock:
             clients = [c for c in self.local_clients.values() if c.user_id == user_id]
 
         if not clients:
