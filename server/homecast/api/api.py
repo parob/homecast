@@ -74,7 +74,7 @@ class HomeKitCharacteristic:
     characteristic_type: str
     is_readable: bool
     is_writable: bool
-    value: Any = None  # Can be bool, int, float, or str depending on characteristic type
+    value: Optional[str] = None  # JSON-encoded value (parse with JSON.parse on frontend)
 
 
 @dataclass
@@ -130,7 +130,7 @@ class SetCharacteristicResult:
     success: bool
     accessory_id: str
     characteristic_type: str
-    value: Any = None  # Can be bool, int, float, or str depending on characteristic type
+    value: Optional[str] = None  # JSON-encoded value
 
 
 @dataclass
@@ -144,12 +144,16 @@ class ExecuteSceneResult:
 
 def parse_characteristic(data: dict) -> HomeKitCharacteristic:
     """Parse a characteristic dict into a typed object."""
+    # JSON-encode the value so frontend can parse it with proper types
+    raw_value = data.get("value")
+    json_value = json.dumps(raw_value) if raw_value is not None else None
+
     return HomeKitCharacteristic(
         id=data.get("id", ""),
         characteristic_type=data.get("characteristicType", ""),
         is_readable=data.get("isReadable", False),
         is_writable=data.get("isWritable", False),
-        value=data.get("value")
+        value=json_value
     )
 
 
@@ -595,7 +599,7 @@ class API:
                 success=result.get("success", True),
                 accessory_id=accessory_id,
                 characteristic_type=characteristic_type,
-                value=result.get("value", parsed_value)
+                value=json.dumps(result.get("value", parsed_value))
             )
         except Exception as e:
             logger.error(f"characteristic.set error: {e}")
