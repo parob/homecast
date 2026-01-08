@@ -1,0 +1,295 @@
+{
+  "Living": {
+    "Living_Room_Underfloor_Heating": {
+      "type": "climate",
+      "target_heater_state": true,
+      "current_temp": 14.8,
+      "active": false,
+      "current_heater_state": false,
+      "heat_target": 26.5,
+      "_settable": [
+        "target_heater_state",
+        "active",
+        "heat_target"
+      ]
+    },
+    "Living_Room_Thermostat": {
+      "type": "climate",
+      "active": false,
+      "current_temp": 17.8,
+      "current_heater_state": false,
+      "heat_target": 20.0,
+      "target_heater_state": true,
+      "_settable": [
+        "active",
+        "heat_target",
+        "target_heater_state"
+      ]
+    },
+    "Living_Room": {
+      "type": "motion",
+      "motion": false
+    },
+    "Hue_Adore_Spot": {
+      "type": "light",
+      "on": false,
+      "color_temp": 369.0,
+      "brightness": 73,
+      "_settable": [
+        "on",
+        "color_temp",
+        "brightness"
+      ]
+    },
+    "Hue_color_lamp": {
+      "type": "light",
+      "hue": 45,
+      "on": true,
+      "brightness": 100,
+      "saturation": 23,
+      "color_temp": 232.0,
+      "_settable": [
+        "hue",
+        "on",
+        "brightness",
+        "saturation",
+        "color_temp"
+      ]
+    },
+    "Hue_ambiance_lamp": {
+      "type": "light",
+      "brightness": 100,
+      "on": true,
+      "color_temp": 200.0,
+      "_settable": [
+        "brightness",
+        "on",
+        "color_temp"
+      ]
+    },
+    "Hue_ambiance_spot": {
+      "type": "light",
+      "brightness": 50,
+      "on": false,
+      "color_temp": 369.0,
+      "_settable": [
+        "brightness",
+        "on",
+        "color_temp"
+      ]
+    },
+    "Living_Room_Camera": {
+      "type": "motion",
+      "active": false,
+      "motion": false,
+      "_settable": [
+        "active"
+      ]
+    },
+    "Hue_Bridge_v2": {
+      "type": "other"
+    },
+    "Hue_outdoor_motion_sensor": {
+      "type": "motion",
+      "motion": false,
+      "current_temp": 6.4
+    },
+    "eufy_S380_HomeBase": {
+      "type": "other"
+    },
+    "Front_Door": {
+      "type": "motion",
+      "motion": false
+    },
+    "Homebridge_EufySecurity": {
+      "type": "other"
+    }
+  },
+  "Bedroom_3": {
+    "Hue_Smart_button": {
+      "type": "button"
+    },
+    "Bedroom_3_Underfloor_Heating": {
+      "type": "climate",
+      "target_heater_state": true,
+      "current_temp": 15.8,
+      "active": true,
+      "heat_target": 18.0,
+      "current_heater_state": 2,
+      "_settable": [
+        "target_heater_state",
+        "active",
+        "heat_target"
+      ]
+    },
+    "Bedroom_3_Ensuite_Radiator": {
+      "type": "climate"
+    }
+  },
+  "Garden": {
+    "Solar_Wall_Light_Cam": {
+      "type": "light",
+      "on": false,
+      "motion": false,
+      "_settable": [
+        "on"
+      ]
+    },
+    "Hue_Bridge_2": {
+      "type": "other"
+    },
+    "Hue_ambiance_spot": {
+      "type": "light",
+      "brightness": 0,
+      "on": false,
+      "color_temp": 369.0,
+      "_settable": [
+        "brightness",
+        "on",
+        "color_temp"
+      ]
+    },
+    "Hue_outdoor_motion_sensor": {
+      "type": "motion",
+      "motion": false,
+      "current_temp": 7.9
+    }
+  },
+  "Kitchen": {
+    "Kitchen_Underfloor_Heating": {
+      "type": "climate",
+      "current_temp": 14.8,
+      "active": true,
+      "heat_target": 18.0,
+      "current_heater_state": 2,
+      "target_heater_state": true,
+      "_settable": [
+        "active",
+        "heat_target",
+        "target_heater_state"
+      ]
+    },
+    "Kitchen_Door": {
+      "type": "contact",
+      "contact": false
+    },
+    "Kitchen_Camera": {
+      "type": "motion",
+      "active": false,
+      "motion": false,
+      "_settable": [
+        "active"
+      ]
+    }
+  },
+  "Annex": {
+    "Hue_ambiance_spot": {
+      "type": "light",
+      "color_temp": 367.0,
+      "brightness": 0,
+      "on": false,
+      "_settable": [
+        "color_temp",
+        "brightness",
+        "on"
+      ]
+    },
+    "Annex_Ensuite_Underfloor_Heating": {
+      "type": "outlet",
+      "on": false,
+      "_settable": [
+        "on"
+      ]
+    },
+    "Annex_Socket": {
+      "type": "outlet",
+      "on": true,
+      "_settable": [
+        "on"
+      ]
+    },
+    "Annex_Underfloor_Heating": {
+      "type": "outlet",
+      "on": false,
+      "_settable": [
+        "on"
+      ]
+    }
+  },
+  "Bedroom_1": {
+    "Socket": {
+      "type": "outlet",
+      "on": false,
+      "_settable": [
+        "on"
+      ]
+    },
+    "Bedroom_1_Underfloor_Heating": {
+      "type": "climate",
+      "active": true,
+      "heat_target": 18.0,
+      "current_temp": 20.8,
+      "current_heater_state": false,
+      "target_heater_state": true,
+      "_settable": [
+        "active",
+        "heat_target",
+        "target_heater_state"
+      ]
+    },
+    "Hue_ambiance_spot": {
+      "type": "light"
+    },
+    "Bedroom_1_Ensuite_Radiator": {
+      "type": "climate"
+    }
+  },
+  "Front_Door": {
+    "Front_Door": {
+      "type": "contact",
+      "contact": false
+    },
+    "Alarm": {
+      "type": "switch",
+      "on": false,
+      "alarm_state": "away",
+      "alarm_target": "off",
+      "_settable": [
+        "on",
+        "alarm_target"
+      ]
+    },
+    "Aqara_Smart_Lock_U200": {
+      "type": "lock",
+      "locked": true,
+      "lock_target": true,
+      "_settable": [
+        "lock_target"
+      ]
+    }
+  },
+  "Bedroom_2": {
+    "Bedroom_2_Underfloor_Heating": {
+      "type": "climate",
+      "current_temp": 22.2,
+      "heat_target": 25.0,
+      "current_heater_state": 2,
+      "active": true,
+      "target_heater_state": true,
+      "_settable": [
+        "heat_target",
+        "active",
+        "target_heater_state"
+      ]
+    },
+    "Bedroom_2_Ensuite_Radiator": {
+      "type": "climate"
+    }
+  },
+  "Default_Room": {
+    "Hue_dimmer_switch": {
+      "type": "button"
+    }
+  },
+  "scenes": []
+}

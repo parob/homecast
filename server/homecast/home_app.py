@@ -1,8 +1,8 @@
 """
-MCP endpoint handler for HomeCast.
+HomeAPI endpoint handler for HomeCast.
 
 Provides a custom ASGI app that handles /home/{home_id}/ routing
-and delegates to the graphql-mcp app.
+and delegates to the HomeAPI via graphql-mcp.
 """
 
 import json
@@ -17,8 +17,7 @@ from graphql_api import GraphQLAPI
 
 from homecast.auth import verify_token, extract_token_from_header
 from homecast.middleware import _auth_context_var
-from homecast.mcp.api import MCPAPI
-from homecast.mcp.context import set_mcp_home_id
+from homecast.api.home import HomeAPI, set_home_id
 from homecast.models.db.database import get_session
 from homecast.models.db.repositories import HomeRepository, UserRepository
 
@@ -70,14 +69,14 @@ def get_home_auth_enabled(user_id, home_id_prefix: str, session) -> bool:
 
 
 # Create the MCP GraphQL API (reused for all requests)
-_mcp_api = GraphQLAPI(root_type=MCPAPI)
+_home_api = GraphQLAPI(root_type=HomeAPI)
 
 # Create the MCP app once (reused for all requests)
-_mcp_graphql_app = GraphQLMCP.from_api(api=_mcp_api, auth=None)
-_mcp_http_app = _mcp_graphql_app.http_app(stateless_http=True)
+_home_graphql_app = GraphQLMCP.from_api(api=_home_api, auth=None)
+_home_http_app = _home_graphql_app.http_app(stateless_http=True)
 
 
-class HomeScopedMCPApp:
+class HomeScopedApp:
     """
     ASGI app that handles /home/{home_id}/ routing.
 
@@ -119,7 +118,7 @@ class HomeScopedMCPApp:
             await self._send_error(send, 400, f"Invalid home_id: must be 8 hex characters, got '{home_id_raw}'")
             return
 
-        logger.info(f"HomeScopedMCPApp: path={path}, home_id={home_id}, remaining_path={remaining_path}")
+        logger.info(f"HomeScopedApp: path={path}, home_id={home_id}, remaining_path={remaining_path}")
 
         # Look up home to find owner and check auth settings
         with get_session() as session:
@@ -149,7 +148,7 @@ class HomeScopedMCPApp:
                 return
 
         # Set context vars for the request
-        set_mcp_home_id(home_id)
+        set_home_id(home_id)
         _auth_context_var.set(auth_context)
 
         try:
@@ -166,7 +165,7 @@ class HomeScopedMCPApp:
 
         finally:
             # Clean up context
-            set_mcp_home_id(None)
+            set_home_id(None)
             _auth_context_var.set(None)
 
     async def _send_error(self, send: Send, status: int, message: str) -> None:
@@ -186,8 +185,8 @@ class HomeScopedMCPApp:
         })
 
 
-# Create the home-scoped MCP app wrapper
-home_scoped_mcp_app = HomeScopedMCPApp(_mcp_http_app)
+# Create the home-scoped app wrapper
+home_scoped_app = HomeScopedApp(_home_http_app)
 
 # Export for lifespan integration
-mcp_http_app = _mcp_http_app
+home_http_app = _home_http_app

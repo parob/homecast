@@ -15,7 +15,7 @@ from graphql_api import GraphQLAPI
 from graphql_http import GraphQLHTTP
 
 from homecast import config
-from homecast.api.api import API
+from homecast.api.api import HomecastAPI
 from homecast.middleware import (
     CORSMiddleware,
     RequestContextMiddleware,
@@ -37,7 +37,7 @@ from homecast.websocket.web_clients import (
     cleanup_stale_sessions,
     cleanup_instance_sessions,
 )
-from homecast.mcp.handler import home_scoped_mcp_app, mcp_http_app
+from homecast.home_app import home_scoped_app, home_http_app
 
 
 logging.basicConfig(
@@ -52,7 +52,7 @@ def create_app() -> Starlette:
 
     # Create GraphQL app
     graphql_app = GraphQLHTTP.from_api(
-        api=GraphQLAPI(root_type=API),
+        api=GraphQLAPI(root_type=HomecastAPI),
         auth_enabled=False  # We handle auth in middleware
     ).app
 
@@ -63,8 +63,8 @@ def create_app() -> Starlette:
     # Lifespan handler for startup/shutdown
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        # Initialize MCP app lifespan (required for FastMCP task group)
-        async with mcp_http_app.lifespan(app):
+        # Initialize HomeAPI app lifespan (required for FastMCP task group)
+        async with home_http_app.lifespan(app):
             logger.info("HomeCast server starting up...")
 
             # Database setup
@@ -133,7 +133,7 @@ def create_app() -> Starlette:
             Route('/health', endpoint=health, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),  # Mac app WebSocket
             WebSocketRoute('/ws/web', endpoint=web_client_endpoint),  # Web UI WebSocket
-            Mount('/home/', app=home_scoped_mcp_app, name='home'),  # Home-scoped MCP/GraphQL endpoints
+            Mount('/home/', app=home_scoped_app, name='home'),  # Home-scoped API endpoints
             Mount('/', app=graphql_app, name='graphql'),
         ],
         lifespan=lifespan

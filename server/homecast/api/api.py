@@ -305,7 +305,7 @@ def parse_service_group(data: Any) -> HomeKitServiceGroup:
 
 # --- API ---
 
-class API:
+class HomecastAPI:
     """HomeCast GraphQL API."""
 
     # --- Public Endpoints (no auth required) ---

@@ -1,7 +1,7 @@
 """
-Unit tests for MCP handler.
+Unit tests for HomeAPI handler.
 
-Tests the HomeScopedMCPApp routing and validation.
+Tests the HomeScopedApp routing and validation.
 """
 
 import pytest
@@ -10,8 +10,8 @@ from starlette.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from homecast.mcp.handler import (
-    HomeScopedMCPApp,
+from homecast.home_app import (
+    HomeScopedApp,
     validate_home_id,
     get_home_auth_enabled,
     HOME_ID_PATTERN,
@@ -19,9 +19,9 @@ from homecast.mcp.handler import (
 )
 
 
-def create_test_app(mcp_app):
-    """Create a Starlette app with the MCP app mounted at /home/."""
-    return Starlette(routes=[Mount("/home/", app=mcp_app)])
+def create_test_app(home_app):
+    """Create a Starlette app with the HomeAPI mounted at /home/."""
+    return Starlette(routes=[Mount("/home/", app=home_app)])
 
 
 class TestValidateHomeId:
@@ -97,7 +97,7 @@ class TestGetHomeAuthEnabled:
     def test_returns_true_when_no_settings(self):
         """Should default to auth required when no settings exist."""
         mock_session = MagicMock()
-        with patch("homecast.mcp.handler.UserRepository") as mock_repo:
+        with patch("homecast.home_app.UserRepository") as mock_repo:
             mock_repo.get_settings.return_value = None
             result = get_home_auth_enabled("user-123", "abcd1234", mock_session)
             assert result is True
@@ -106,7 +106,7 @@ class TestGetHomeAuthEnabled:
         """Should return True when auth_enabled is explicitly true."""
         mock_session = MagicMock()
         settings = '{"homes": {"abcd1234": {"auth_enabled": true}}}'
-        with patch("homecast.mcp.handler.UserRepository") as mock_repo:
+        with patch("homecast.home_app.UserRepository") as mock_repo:
             mock_repo.get_settings.return_value = settings
             result = get_home_auth_enabled("user-123", "abcd1234", mock_session)
             assert result is True
@@ -115,7 +115,7 @@ class TestGetHomeAuthEnabled:
         """Should return False when auth_enabled is false."""
         mock_session = MagicMock()
         settings = '{"homes": {"abcd1234": {"auth_enabled": false}}}'
-        with patch("homecast.mcp.handler.UserRepository") as mock_repo:
+        with patch("homecast.home_app.UserRepository") as mock_repo:
             mock_repo.get_settings.return_value = settings
             result = get_home_auth_enabled("user-123", "abcd1234", mock_session)
             assert result is False
@@ -124,7 +124,7 @@ class TestGetHomeAuthEnabled:
         """Should default to True when home not in settings."""
         mock_session = MagicMock()
         settings = '{"homes": {"other123": {"auth_enabled": false}}}'
-        with patch("homecast.mcp.handler.UserRepository") as mock_repo:
+        with patch("homecast.home_app.UserRepository") as mock_repo:
             mock_repo.get_settings.return_value = settings
             result = get_home_auth_enabled("user-123", "abcd1234", mock_session)
             assert result is True
@@ -132,14 +132,14 @@ class TestGetHomeAuthEnabled:
     def test_returns_true_on_invalid_json(self):
         """Should default to True when JSON is invalid."""
         mock_session = MagicMock()
-        with patch("homecast.mcp.handler.UserRepository") as mock_repo:
+        with patch("homecast.home_app.UserRepository") as mock_repo:
             mock_repo.get_settings.return_value = "invalid json"
             result = get_home_auth_enabled("user-123", "abcd1234", mock_session)
             assert result is True
 
 
-class TestHomeScopedMCPApp:
-    """Integration tests for HomeScopedMCPApp."""
+class TestHomeScopedApp:
+    """Integration tests for HomeScopedApp."""
 
     @pytest.fixture
     def mock_inner_app(self):
@@ -167,7 +167,7 @@ class TestHomeScopedMCPApp:
 
     def test_rejects_invalid_home_id(self, mock_inner_app):
         """Should return 400 for invalid home_id format."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
@@ -177,15 +177,15 @@ class TestHomeScopedMCPApp:
 
     def test_rejects_unknown_home(self, mock_inner_app):
         """Should return 404 for unknown home."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
-        with patch("homecast.mcp.handler.get_session") as mock_get_session:
+        with patch("homecast.home_app.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
             mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-            with patch("homecast.mcp.handler.HomeRepository") as mock_repo:
+            with patch("homecast.home_app.HomeRepository") as mock_repo:
                 mock_repo.get_by_prefix.return_value = None
 
                 response = client.get("/home/abcd1234/mcp")
@@ -194,54 +194,54 @@ class TestHomeScopedMCPApp:
 
     def test_requires_auth_when_enabled(self, mock_inner_app, mock_home):
         """Should return 401 when auth required but no token provided."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
-        with patch("homecast.mcp.handler.get_session") as mock_get_session:
+        with patch("homecast.home_app.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
             mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-            with patch("homecast.mcp.handler.HomeRepository") as mock_repo:
+            with patch("homecast.home_app.HomeRepository") as mock_repo:
                 mock_repo.get_by_prefix.return_value = mock_home
-                with patch("homecast.mcp.handler.get_home_auth_enabled", return_value=True):
+                with patch("homecast.home_app.get_home_auth_enabled", return_value=True):
                     response = client.get("/home/abcd1234/mcp")
                     assert response.status_code == 401
                     assert "Authentication required" in response.json()["error"]
 
     def test_allows_unauthenticated_when_auth_disabled(self, mock_inner_app, mock_home):
         """Should allow request when auth is disabled for home."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
-        with patch("homecast.mcp.handler.get_session") as mock_get_session:
+        with patch("homecast.home_app.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
             mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-            with patch("homecast.mcp.handler.HomeRepository") as mock_repo:
+            with patch("homecast.home_app.HomeRepository") as mock_repo:
                 mock_repo.get_by_prefix.return_value = mock_home
-                with patch("homecast.mcp.handler.get_home_auth_enabled", return_value=False):
-                    with patch("homecast.mcp.handler.set_mcp_home_id"):
-                        with patch("homecast.mcp.handler._auth_context_var"):
+                with patch("homecast.home_app.get_home_auth_enabled", return_value=False):
+                    with patch("homecast.home_app.set_home_id"):
+                        with patch("homecast.home_app._auth_context_var"):
                             response = client.get("/home/abcd1234/mcp")
                             assert response.status_code == 200
 
     def test_validates_token_when_provided(self, mock_inner_app, mock_home):
         """Should validate token and return 401 if invalid."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
-        with patch("homecast.mcp.handler.get_session") as mock_get_session:
+        with patch("homecast.home_app.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
             mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-            with patch("homecast.mcp.handler.HomeRepository") as mock_repo:
+            with patch("homecast.home_app.HomeRepository") as mock_repo:
                 mock_repo.get_by_prefix.return_value = mock_home
-                with patch("homecast.mcp.handler.get_home_auth_enabled", return_value=True):
-                    with patch("homecast.mcp.handler.extract_token_from_header", return_value="bad-token"):
-                        with patch("homecast.mcp.handler.verify_token", return_value=None):
+                with patch("homecast.home_app.get_home_auth_enabled", return_value=True):
+                    with patch("homecast.home_app.extract_token_from_header", return_value="bad-token"):
+                        with patch("homecast.home_app.verify_token", return_value=None):
                             response = client.get(
                                 "/home/abcd1234/mcp",
                                 headers={"Authorization": "Bearer bad-token"}
@@ -251,23 +251,23 @@ class TestHomeScopedMCPApp:
 
     def test_successful_request_with_valid_token(self, mock_inner_app, mock_home):
         """Should pass through to inner app with valid token."""
-        mcp_app = HomeScopedMCPApp(mock_inner_app)
+        mcp_app = HomeScopedApp(mock_inner_app)
         app = create_test_app(mcp_app)
         client = TestClient(app, raise_server_exceptions=False)
 
         mock_auth_context = {"user_id": "user-123"}
 
-        with patch("homecast.mcp.handler.get_session") as mock_get_session:
+        with patch("homecast.home_app.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
             mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-            with patch("homecast.mcp.handler.HomeRepository") as mock_repo:
+            with patch("homecast.home_app.HomeRepository") as mock_repo:
                 mock_repo.get_by_prefix.return_value = mock_home
-                with patch("homecast.mcp.handler.get_home_auth_enabled", return_value=True):
-                    with patch("homecast.mcp.handler.extract_token_from_header", return_value="good-token"):
-                        with patch("homecast.mcp.handler.verify_token", return_value=mock_auth_context):
-                            with patch("homecast.mcp.handler.set_mcp_home_id") as mock_set_home:
-                                with patch("homecast.mcp.handler._auth_context_var") as mock_auth_var:
+                with patch("homecast.home_app.get_home_auth_enabled", return_value=True):
+                    with patch("homecast.home_app.extract_token_from_header", return_value="good-token"):
+                        with patch("homecast.home_app.verify_token", return_value=mock_auth_context):
+                            with patch("homecast.home_app.set_home_id") as mock_set_home:
+                                with patch("homecast.home_app._auth_context_var") as mock_auth_var:
                                     response = client.get(
                                         "/home/abcd1234/mcp",
                                         headers={"Authorization": "Bearer good-token"}
