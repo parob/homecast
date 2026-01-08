@@ -133,7 +133,7 @@ def create_app() -> Starlette:
             Route('/health', endpoint=health, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),  # Mac app WebSocket
             WebSocketRoute('/ws/web', endpoint=web_client_endpoint),  # Web UI WebSocket
-            Mount('/home', app=home_scoped_mcp_app, name='home'),  # Home-scoped MCP/GraphQL endpoints
+            Mount('/home/', app=home_scoped_mcp_app, name='home'),  # Home-scoped MCP/GraphQL endpoints
             Mount('/', app=graphql_app, name='graphql'),
         ],
         lifespan=lifespan

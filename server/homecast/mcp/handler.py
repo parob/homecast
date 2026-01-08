@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Regex to validate home_id format (8 hex characters)
 HOME_ID_PATTERN = re.compile(r'^[0-9a-f]{8}$', re.IGNORECASE)
-# Regex to extract home_id from path: /{home_id}/... (Mount strips /home prefix)
-HOME_PATH_PATTERN = re.compile(r'^/([^/]+)(/.*)?$')
+# Regex to extract home_id from path: {home_id}/... or /{home_id}/... (Mount strips /home/ prefix)
+HOME_PATH_PATTERN = re.compile(r'^/?([^/]+)(/.*)?$')
 
 
 def validate_home_id(home_id: str) -> Optional[str]:
@@ -107,6 +107,9 @@ class HomeScopedMCPApp:
 
         home_id_raw = match.group(1)
         remaining_path = match.group(2) or "/"
+        # Ensure remaining_path starts with /
+        if not remaining_path.startswith("/"):
+            remaining_path = "/" + remaining_path
 
         # Validate home_id format
         home_id = validate_home_id(home_id_raw)
