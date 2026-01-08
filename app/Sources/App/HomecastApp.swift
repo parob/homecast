@@ -231,21 +231,17 @@ struct WebViewContainer: UIViewRepresentable {
         // Add message handler for native bridge
         config.userContentController.add(context.coordinator, name: "homecast")
 
-        // Sync localStorage with Mac app's auth state at document start
-        // - If we have a token: inject it
-        // - If no token: clear any stale token (restoreSession will inject later if needed)
-        let tokenScript: String
+        // Only inject token at document start if we have one
+        // Don't clear localStorage - let it persist naturally across reloads
         if let token = authToken {
-            tokenScript = "localStorage.setItem('homekit-token', '\(token)'); console.log('[Homecast] Token pre-injected');"
-        } else {
-            tokenScript = "localStorage.removeItem('homekit-token'); console.log('[Homecast] Cleared localStorage (no token)');"
+            let tokenScript = "localStorage.setItem('homekit-token', '\(token)'); console.log('[Homecast] Token pre-injected');"
+            let script = WKUserScript(
+                source: tokenScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(script)
         }
-        let script = WKUserScript(
-            source: tokenScript,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
-        )
-        config.userContentController.addUserScript(script)
 
         // Use a reasonable initial frame to avoid CoreGraphics NaN errors
         let webView = FocusableWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
