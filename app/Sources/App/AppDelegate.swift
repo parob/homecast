@@ -189,7 +189,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         // Set window size - minimum matches default opening size
-        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 880, height: 600)
+        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 960, height: 600)
         windowScene.sizeRestrictions?.maximumSize = CGSize(width: 1400, height: 1000)
 
         // Check if we should show window on first launch

@@ -53,7 +53,7 @@ struct HomecastApp: App {
 struct RootView: View {
     var body: some View {
         ContentView()
-            .frame(minWidth: 880, minHeight: 600)
+            .frame(minWidth: 960, minHeight: 600)
     }
 }
 

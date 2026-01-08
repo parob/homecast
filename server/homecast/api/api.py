@@ -169,8 +169,8 @@ class ExecuteSceneResult:
 
 @dataclass
 class UserSettings:
-    """User settings."""
-    compact_mode: bool = False
+    """User settings - stored as opaque JSON blob."""
+    data: str = "{}"  # JSON string, frontend controls the schema
 
 
 @dataclass
@@ -427,51 +427,29 @@ class API:
 
         with get_session() as session:
             settings_json = UserRepository.get_settings(session, auth.user_id)
-
-            if settings_json:
-                try:
-                    data = json.loads(settings_json)
-                    return UserSettings(
-                        compact_mode=data.get("compactMode", False)
-                    )
-                except json.JSONDecodeError:
-                    pass
-
-            return UserSettings()
+            return UserSettings(data=settings_json or "{}")
 
     @field(mutable=True)
     async def update_settings(
         self,
-        compact_mode: Optional[bool] = None
+        data: str,  # JSON blob - frontend controls the schema
     ) -> UpdateSettingsResult:
         """Update current user's settings. Requires authentication."""
         auth = require_auth()
 
+        # Validate it's valid JSON
+        try:
+            json.loads(data)
+        except json.JSONDecodeError:
+            return UpdateSettingsResult(success=False)
+
         with get_session() as session:
-            # Get current settings
-            settings_json = UserRepository.get_settings(session, auth.user_id)
-            settings_data = {}
-
-            if settings_json:
-                try:
-                    settings_data = json.loads(settings_json)
-                except json.JSONDecodeError:
-                    pass
-
-            # Update only provided fields
-            if compact_mode is not None:
-                settings_data["compactMode"] = compact_mode
-
-            # Save
-            new_settings_json = json.dumps(settings_data)
-            success = UserRepository.update_settings(session, auth.user_id, new_settings_json)
+            success = UserRepository.update_settings(session, auth.user_id, data)
 
             if success:
                 return UpdateSettingsResult(
                     success=True,
-                    settings=UserSettings(
-                        compact_mode=settings_data.get("compactMode", False)
-                    )
+                    settings=UserSettings(data=data)
                 )
             else:
                 return UpdateSettingsResult(success=False)
