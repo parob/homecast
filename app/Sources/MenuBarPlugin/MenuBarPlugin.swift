@@ -6,17 +6,6 @@ import AppKit
 public class MenuBarPlugin: NSObject {
     private var statusItem: NSStatusItem?
     private weak var statusProvider: AnyObject?
-    private var updateTimer: Timer?
-
-    // Cached status values for menu building
-    private var cachedHomeKitReady = false
-    private var cachedServerRunning = false
-    private var cachedServerPort = 0
-    private var cachedHomeNames: [String] = []
-    private var cachedAccessoryCounts: [Int] = []
-    private var cachedRelayConnected = false
-    private var cachedIsAuthenticated = false
-    private var cachedUserEmail = ""
 
     public override init() {
         super.init()
@@ -31,7 +20,6 @@ public class MenuBarPlugin: NSObject {
 
         DispatchQueue.main.async {
             self.createStatusItem()
-            self.startUpdateTimer()
             self.observeWindowClose()
 
             // Show in dock on launch only if window should be shown
@@ -78,38 +66,8 @@ public class MenuBarPlugin: NSObject {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
-        // Status section
-        if cachedHomeKitReady {
-            let totalAccessories = cachedAccessoryCounts.reduce(0, +)
-            menu.addItem(NSMenuItem(title: "HomeKit: \(cachedHomeNames.count) homes, \(totalAccessories) accessories", action: nil, keyEquivalent: ""))
-        } else {
-            menu.addItem(NSMenuItem(title: "HomeKit: Loading...", action: nil, keyEquivalent: ""))
-        }
-
-        if cachedServerRunning {
-            menu.addItem(NSMenuItem(title: "Server: Port \(cachedServerPort)", action: nil, keyEquivalent: ""))
-        } else {
-            menu.addItem(NSMenuItem(title: "Server: Stopped", action: nil, keyEquivalent: ""))
-        }
-
-        if cachedIsAuthenticated {
-            menu.addItem(NSMenuItem(title: cachedRelayConnected ? "Relay: Connected" : "Relay: Connecting...", action: nil, keyEquivalent: ""))
-            if !cachedUserEmail.isEmpty {
-                menu.addItem(NSMenuItem(title: cachedUserEmail, action: nil, keyEquivalent: ""))
-            }
-        } else {
-            menu.addItem(NSMenuItem(title: "Relay: Not signed in", action: nil, keyEquivalent: ""))
-        }
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Reconnect
-        let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(reconnectRelay), keyEquivalent: "r")
-        reconnectItem.target = self
-        menu.addItem(reconnectItem)
-
         // Open window
-        let openItem = NSMenuItem(title: "Open Homecast...", action: #selector(openWindow), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open Homecast", action: #selector(openWindow), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
 
@@ -121,90 +79,6 @@ public class MenuBarPlugin: NSObject {
         menu.addItem(quitItem)
 
         return menu
-    }
-
-    private func startUpdateTimer() {
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.updateStatus()
-        }
-        updateTimer?.fire()
-    }
-
-    private func updateStatus() {
-        guard let provider = statusProvider else { return }
-
-        // Get status info
-        var homeKitReady = false
-        var serverRunning = false
-        var serverPort: Int = 0
-        var homeNames: [String] = []
-        var accessoryCounts: [Int] = []
-        var relayConnected = false
-        var isAuthenticated = false
-        var userEmail = ""
-
-        // HomeKit ready
-        let readySelector = NSSelectorFromString("isHomeKitReady")
-        if provider.responds(to: readySelector) {
-            homeKitReady = (provider.perform(readySelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
-        }
-
-        // Server running
-        let serverSelector = NSSelectorFromString("isServerRunning")
-        if provider.responds(to: serverSelector) {
-            serverRunning = (provider.perform(serverSelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
-        }
-
-        // Server port
-        let portSelector = NSSelectorFromString("serverPort")
-        if provider.responds(to: portSelector) {
-            serverPort = (provider.perform(portSelector)?.takeUnretainedValue() as? NSNumber)?.intValue ?? 0
-        }
-
-        // Home names
-        let homesSelector = NSSelectorFromString("homeNames")
-        if provider.responds(to: homesSelector) {
-            homeNames = (provider.perform(homesSelector)?.takeUnretainedValue() as? [String]) ?? []
-        }
-
-        // Accessory counts
-        let countsSelector = NSSelectorFromString("accessoryCounts")
-        if provider.responds(to: countsSelector) {
-            accessoryCounts = (provider.perform(countsSelector)?.takeUnretainedValue() as? [NSNumber])?.map { $0.intValue } ?? []
-        }
-
-        // Relay connection status
-        let relaySelector = NSSelectorFromString("isConnectedToRelay")
-        if provider.responds(to: relaySelector) {
-            relayConnected = (provider.perform(relaySelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
-        }
-
-        // Authentication status
-        let authSelector = NSSelectorFromString("isAuthenticated")
-        if provider.responds(to: authSelector) {
-            isAuthenticated = (provider.perform(authSelector)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
-        }
-
-        // User email
-        let emailSelector = NSSelectorFromString("connectedEmail")
-        if provider.responds(to: emailSelector) {
-            userEmail = (provider.perform(emailSelector)?.takeUnretainedValue() as? String) ?? ""
-        }
-
-        DispatchQueue.main.async {
-            // Cache values for menu building
-            self.cachedHomeKitReady = homeKitReady
-            self.cachedServerRunning = serverRunning
-            self.cachedServerPort = serverPort
-            self.cachedHomeNames = homeNames
-            self.cachedAccessoryCounts = accessoryCounts
-            self.cachedRelayConnected = relayConnected
-            self.cachedIsAuthenticated = isAuthenticated
-            self.cachedUserEmail = userEmail
-
-            // Rebuild menu with updated values
-            self.rebuildMenu()
-        }
     }
 
     @objc private func openWindow() {
@@ -229,15 +103,6 @@ public class MenuBarPlugin: NSObject {
                     window.makeKeyAndOrderFront(nil)
                     window.orderFrontRegardless()
                 }
-            }
-        }
-    }
-
-    @objc private func reconnectRelay() {
-        if let provider = statusProvider {
-            let selector = NSSelectorFromString("reconnectRelay")
-            if provider.responds(to: selector) {
-                _ = provider.perform(selector)
             }
         }
     }
@@ -271,7 +136,6 @@ public class MenuBarPlugin: NSObject {
     }
 
     deinit {
-        updateTimer?.invalidate()
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
         }

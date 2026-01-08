@@ -5,6 +5,7 @@ Handles CORS, request context, and authentication.
 """
 
 import logging
+import re
 from contextvars import ContextVar
 from typing import Optional
 
@@ -58,9 +59,24 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 class CORSMiddleware(BaseHTTPMiddleware):
     """Handle CORS for all requests."""
 
-    def __init__(self, app, allowed_origins: list[str]):
+    def __init__(self, app, allowed_origins: list[str], allowed_origin_patterns: list[str] = None):
         super().__init__(app)
         self.allowed_origins = allowed_origins
+        self.allowed_origin_patterns = [re.compile(p) for p in (allowed_origin_patterns or [])]
+
+    def _is_origin_allowed(self, origin: str) -> bool:
+        """Check if origin is allowed (exact match or pattern match)."""
+        if not origin:
+            return False
+        if "*" in self.allowed_origins:
+            return True
+        if origin in self.allowed_origins:
+            return True
+        # Check patterns
+        for pattern in self.allowed_origin_patterns:
+            if pattern.fullmatch(origin):
+                return True
+        return False
 
     async def dispatch(self, request: Request, call_next) -> Response:
         origin = request.headers.get("origin", "")
@@ -72,7 +88,7 @@ class CORSMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
 
         # Set CORS headers
-        if origin in self.allowed_origins or "*" in self.allowed_origins:
+        if self._is_origin_allowed(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
         elif self.allowed_origins:
             response.headers["Access-Control-Allow-Origin"] = self.allowed_origins[0]

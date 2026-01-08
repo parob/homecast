@@ -473,15 +473,12 @@ struct LogsSheet: View {
 
                 // Actions
                 if connectionManager.isAuthenticated {
-                    Button {
+                    Button("Sign Out") {
                         showingSignOutConfirm = true
-                    } label: {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
-                            .font(.system(size: 11))
                     }
+                    .font(.caption)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-                    .help("Sign Out")
                 }
 
                 if !logManager.logs.isEmpty {

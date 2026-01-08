@@ -136,7 +136,11 @@ def create_app() -> Starlette:
     )
 
     # Add middleware (order matters - first added is outermost)
-    app.add_middleware(CORSMiddleware, allowed_origins=config.ALLOWED_CORS_ORIGINS)
+    app.add_middleware(
+        CORSMiddleware,
+        allowed_origins=config.ALLOWED_CORS_ORIGINS,
+        allowed_origin_patterns=getattr(config, 'ALLOWED_CORS_ORIGIN_PATTERNS', [])
+    )
     app.add_middleware(RequestContextMiddleware)
 
     logger.info("App configured and ready")

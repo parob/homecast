@@ -22,9 +22,15 @@ ALLOWED_CORS_ORIGINS: list[str] = [
     "https://homecast.cloud",
     "https://www.homecast.cloud",
     "https://fc18532a-51b0-461b-8f4d-d9ab847d3c95.lovableproject.com",
-    "https://id-preview--fc18532a-51b0-461b-8f4d-d9ab847d3c95.lovable.app/",
+    "https://id-preview--fc18532a-51b0-461b-8f4d-d9ab847d3c95.lovable.app",
     "https://homecast.lovable.app",
     "https://preview--homecast.lovable.app",
+]
+
+# Allowed CORS origin patterns (for wildcard matching)
+ALLOWED_CORS_ORIGIN_PATTERNS: list[str] = [
+    r"https://.*\.lovable\.app",
+    r"https://.*\.lovableproject\.com",
 ]
 
 # Database Configuration
