@@ -82,15 +82,11 @@ struct ContentView: View {
         HStack {
             Spacer()
 
-            Circle()
-                .fill(connectionManager.isConnected ? Color.green : Color.orange)
-                .frame(width: 8, height: 8)
-
             Button(action: { showingLogs = true }) {
-                Image(systemName: "info.circle")
+                Image(systemName: "info.circle.fill")
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(connectionManager.isConnected ? .green : .orange)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
