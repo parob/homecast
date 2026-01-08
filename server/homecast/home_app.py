@@ -234,7 +234,9 @@ class HomeScopedApp:
                         # Only fetch state if placeholder is present in response
                         if STATE_PLACEHOLDER in body_str:
                             home_state = await _fetch_home_state_summary(home_id)
-                            body_str = body_str.replace(STATE_PLACEHOLDER, home_state)
+                            # Escape for embedding in JSON string (escape quotes and backslashes)
+                            escaped_state = home_state.replace('\\', '\\\\').replace('"', '\\"')
+                            body_str = body_str.replace(STATE_PLACEHOLDER, escaped_state)
                             response_body = bytearray(body_str.encode("utf-8"))
 
                         # Update content-length header
