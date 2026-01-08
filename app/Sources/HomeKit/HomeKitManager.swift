@@ -137,6 +137,67 @@ class HomeKitManager: NSObject, ObservableObject {
         return home.rooms.map { RoomModel(from: $0) }
     }
 
+    // MARK: - Zone Operations
+
+    func listZones(homeId: String) throws -> [ZoneModel] {
+        guard let uuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        return home.zones.map { ZoneModel(from: $0) }
+    }
+
+    // MARK: - Service Group Operations
+
+    func listServiceGroups(homeId: String) throws -> [ServiceGroupModel] {
+        guard let uuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        return home.serviceGroups.map { ServiceGroupModel(from: $0) }
+    }
+
+    /// Set a characteristic on all services in a group
+    func setServiceGroupCharacteristic(homeId: String, groupId: String, characteristicType: String, value: Any) async throws -> Int {
+        guard let homeUUID = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == homeUUID }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+
+        guard let groupUUID = UUID(uuidString: groupId),
+              let group = home.serviceGroups.first(where: { $0.uniqueIdentifier == groupUUID }) else {
+            throw HomeKitError.invalidRequest("Service group not found: \(groupId)")
+        }
+
+        var successCount = 0
+
+        // Find the characteristic on each service and set it
+        for service in group.services {
+            let charType = CharacteristicMapper.toHomeKitType(characteristicType)
+            if let characteristic = service.characteristics.first(where: { $0.characteristicType == charType }) {
+                if characteristic.properties.contains(HMCharacteristicPropertyWritable) {
+                    do {
+                        let convertedValue = try CharacteristicMapper.convertValue(value, for: characteristic)
+                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            characteristic.writeValue(convertedValue) { error in
+                                if let error = error {
+                                    continuation.resume(throwing: error)
+                                } else {
+                                    continuation.resume()
+                                }
+                            }
+                        }
+                        successCount += 1
+                    } catch {
+                        print("[HomeKit] Failed to set \(characteristicType) on service \(service.name): \(error)")
+                    }
+                }
+            }
+        }
+
+        return successCount
+    }
+
     // MARK: - Accessory Operations
 
     func listAccessories(homeId: String? = nil, roomId: String? = nil, includeValues: Bool = false) throws -> [AccessoryModel] {

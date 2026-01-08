@@ -125,6 +125,33 @@ class HomeKitScene:
 
 
 @dataclass
+class HomeKitZone:
+    """A zone (group of rooms) in a HomeKit home."""
+    id: str
+    name: str
+    room_ids: List[str]
+
+
+@dataclass
+class HomeKitServiceGroup:
+    """A service group (grouped accessories) in a HomeKit home."""
+    id: str
+    name: str
+    service_ids: List[str]
+    accessory_ids: List[str]
+
+
+@dataclass
+class SetServiceGroupResult:
+    """Result of setting a characteristic on a service group."""
+    success: bool
+    group_id: str
+    characteristic_type: str
+    affected_count: int
+    value: Optional[str] = None  # JSON-encoded value
+
+
+@dataclass
 class SetCharacteristicResult:
     """Result of setting a characteristic."""
     success: bool
@@ -227,6 +254,31 @@ def parse_scene(data: Any) -> HomeKitScene:
         id=data.get("id", ""),
         name=data.get("name", ""),
         action_count=data.get("actionCount", 0)
+    )
+
+
+def parse_zone(data: Any) -> HomeKitZone:
+    """Parse a zone dict (or JSON string) into a typed object."""
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    return HomeKitZone(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        room_ids=data.get("roomIds", [])
+    )
+
+
+def parse_service_group(data: Any) -> HomeKitServiceGroup:
+    """Parse a service group dict (or JSON string) into a typed object."""
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    return HomeKitServiceGroup(
+        id=data.get("id", ""),
+        name=data.get("name", ""),
+        service_ids=data.get("serviceIds", []),
+        accessory_ids=data.get("accessoryIds", [])
     )
 
 
@@ -551,6 +603,106 @@ class API:
             return [parse_scene(s) for s in result.get("scenes", [])]
         except Exception as e:
             logger.error(f"scenes.list error: {e}")
+            raise
+
+    @field
+    async def zones(self, home_id: str) -> List[HomeKitZone]:
+        """List zones (room groups) in a home."""
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        auth = require_auth()
+        device_id = await get_user_device_id(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await route_request(
+                device_id=device_id,
+                action="zones.list",
+                payload={"homeId": home_id}
+            )
+            return [parse_zone(z) for z in result.get("zones", [])]
+        except Exception as e:
+            logger.error(f"zones.list error: {e}")
+            raise
+
+    @field
+    async def service_groups(self, home_id: str) -> List[HomeKitServiceGroup]:
+        """List service groups (accessory groups) in a home."""
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        auth = require_auth()
+        device_id = await get_user_device_id(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        try:
+            result = await route_request(
+                device_id=device_id,
+                action="serviceGroups.list",
+                payload={"homeId": home_id}
+            )
+            return [parse_service_group(g) for g in result.get("serviceGroups", [])]
+        except Exception as e:
+            logger.error(f"serviceGroups.list error: {e}")
+            raise
+
+    @field(mutable=True)
+    async def set_service_group(
+        self,
+        home_id: str,
+        group_id: str,
+        characteristic_type: str,
+        value: str  # JSON-encoded value
+    ) -> SetServiceGroupResult:
+        """
+        Set a characteristic on all accessories in a service group.
+
+        Args:
+            home_id: The home UUID
+            group_id: The service group UUID
+            characteristic_type: Type like "power_state", "brightness"
+            value: JSON-encoded value (e.g., "true", "75")
+
+        Returns:
+            Result with success status and count of affected accessories
+        """
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        auth = require_auth()
+        device_id = await get_user_device_id(auth.user_id)
+
+        if not device_id:
+            raise ValueError("No connected device")
+
+        # Parse the JSON value
+        try:
+            parsed_value = json.loads(value)
+        except json.JSONDecodeError:
+            raise ValueError(f"Invalid JSON value: {value}")
+
+        try:
+            result = await route_request(
+                device_id=device_id,
+                action="serviceGroup.set",
+                payload={
+                    "homeId": home_id,
+                    "groupId": group_id,
+                    "characteristicType": characteristic_type,
+                    "value": parsed_value
+                }
+            )
+            return SetServiceGroupResult(
+                success=result.get("success", True),
+                group_id=group_id,
+                characteristic_type=characteristic_type,
+                affected_count=result.get("affectedCount", 0),
+                value=json.dumps(result.get("value", parsed_value))
+            )
+        except Exception as e:
+            logger.error(f"serviceGroup.set error: {e}")
             raise
 
     @field(mutable=True)

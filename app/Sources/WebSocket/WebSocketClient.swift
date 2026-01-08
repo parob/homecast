@@ -233,6 +233,53 @@ class WebSocketClient {
                 "rooms": .array(rooms.map { $0.toJSON() })
             ]
 
+        // MARK: Zones
+        case "zones.list":
+            guard let homeId = payload?["homeId"]?.stringValue else {
+                throw HomeKitError.invalidRequest("Missing homeId")
+            }
+            let zones = try await MainActor.run { try homeKitManager.listZones(homeId: homeId) }
+            return [
+                "homeId": .string(homeId),
+                "zones": .array(zones.map { $0.toJSON() })
+            ]
+
+        // MARK: Service Groups
+        case "serviceGroups.list":
+            guard let homeId = payload?["homeId"]?.stringValue else {
+                throw HomeKitError.invalidRequest("Missing homeId")
+            }
+            let groups = try await MainActor.run { try homeKitManager.listServiceGroups(homeId: homeId) }
+            return [
+                "homeId": .string(homeId),
+                "serviceGroups": .array(groups.map { $0.toJSON() })
+            ]
+
+        case "serviceGroup.set":
+            guard let homeId = payload?["homeId"]?.stringValue,
+                  let groupId = payload?["groupId"]?.stringValue,
+                  let characteristicType = payload?["characteristicType"]?.stringValue,
+                  let value = payload?["value"] else {
+                throw HomeKitError.invalidRequest("Missing homeId, groupId, characteristicType, or value")
+            }
+            let successCount = try await homeKitManager.setServiceGroupCharacteristic(
+                homeId: homeId,
+                groupId: groupId,
+                characteristicType: characteristicType,
+                value: value.toAny()
+            )
+
+            // Send update event for each affected accessory
+            // (The individual accessory delegates should fire, but we send a group notification too)
+
+            return [
+                "success": .bool(successCount > 0),
+                "groupId": .string(groupId),
+                "characteristicType": .string(characteristicType),
+                "value": value,
+                "affectedCount": .int(successCount)
+            ]
+
         // MARK: Accessories
         case "accessories.list":
             let startTime = CFAbsoluteTimeGetCurrent()

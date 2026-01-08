@@ -11,6 +11,11 @@ enum AppConfig {
     static let showWindowOnLaunch = true
 }
 
+// Notification for reloading the WebView
+extension Notification.Name {
+    static let reloadWebView = Notification.Name("reloadWebView")
+}
+
 @main
 struct HomeCastApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -30,6 +35,12 @@ struct HomeCastApp: App {
                 }
                 .keyboardShortcut("O", modifiers: [.command, .shift])
                 .disabled(!appDelegate.connectionManager.isAuthenticated)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Reload Page") {
+                    NotificationCenter.default.post(name: .reloadWebView, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
             }
         }
     }
@@ -239,6 +250,7 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
+
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -264,6 +276,20 @@ struct WebViewContainer: UIViewRepresentable {
 
         init(connectionManager: ConnectionManager) {
             self.connectionManager = connectionManager
+            super.init()
+
+            // Listen for reload notification
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleReload),
+                name: .reloadWebView,
+                object: nil
+            )
+        }
+
+        @objc private func handleReload() {
+            print("[WebView] Reloading page (Cmd+R)")
+            webView?.reloadFromOrigin()
         }
 
         // Handle messages from JavaScript

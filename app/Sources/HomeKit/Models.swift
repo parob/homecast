@@ -52,6 +52,54 @@ struct RoomModel: Codable {
     }
 }
 
+// MARK: - Zone Model
+
+struct ZoneModel: Codable {
+    let id: String
+    let name: String
+    let roomIds: [String]
+
+    init(from zone: HMZone) {
+        self.id = zone.uniqueIdentifier.uuidString
+        self.name = zone.name
+        self.roomIds = zone.rooms.map { $0.uniqueIdentifier.uuidString }
+    }
+
+    func toJSON() -> JSONValue {
+        .object([
+            "id": .string(id),
+            "name": .string(name),
+            "roomIds": .array(roomIds.map { .string($0) })
+        ])
+    }
+}
+
+// MARK: - Service Group Model
+
+struct ServiceGroupModel: Codable {
+    let id: String
+    let name: String
+    let serviceIds: [String]
+    let accessoryIds: [String]
+
+    init(from group: HMServiceGroup) {
+        self.id = group.uniqueIdentifier.uuidString
+        self.name = group.name
+        self.serviceIds = group.services.map { $0.uniqueIdentifier.uuidString }
+        // Also include accessory IDs for convenience
+        self.accessoryIds = Array(Set(group.services.compactMap { $0.accessory?.uniqueIdentifier.uuidString }))
+    }
+
+    func toJSON() -> JSONValue {
+        .object([
+            "id": .string(id),
+            "name": .string(name),
+            "serviceIds": .array(serviceIds.map { .string($0) }),
+            "accessoryIds": .array(accessoryIds.map { .string($0) })
+        ])
+    }
+}
+
 // MARK: - Accessory Model
 
 struct AccessoryModel {
