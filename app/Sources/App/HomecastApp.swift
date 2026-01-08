@@ -11,9 +11,11 @@ enum AppConfig {
     static let showWindowOnLaunch = true
 }
 
-// Notification for reloading the WebView
+// Notifications
 extension Notification.Name {
     static let reloadWebView = Notification.Name("reloadWebView")
+    static let showInfoButton = Notification.Name("showInfoButton")
+    static let hideInfoButton = Notification.Name("hideInfoButton")
 }
 
 @main
@@ -63,6 +65,8 @@ struct ContentView: View {
     @EnvironmentObject var connectionManager: ConnectionManager
     @StateObject private var logManager = LogManager.shared
     @State private var showingLogs = false
+    @State private var showInfoButton = false
+    @State private var dKeyHeld = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,8 +77,42 @@ struct ContentView: View {
             WebViewContainer(url: URL(string: "https://homecast.cloud/login")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
         }
         .edgesIgnoringSafeArea(.all)
-        .sheet(isPresented: $showingLogs) {
-            LogsSheet(logManager: logManager, connectionManager: connectionManager)
+        .overlay {
+            if showingLogs {
+                ZStack {
+                    // Dimmed background
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            showingLogs = false
+                        }
+
+                    // Logs panel
+                    LogsSheet(logManager: logManager, connectionManager: connectionManager, dismiss: {
+                        showingLogs = false
+                    })
+                    .shadow(radius: 20)
+                }
+                .transition(.opacity)
+            }
+        }
+        .onChange(of: showingLogs) { isShowing in
+            // Hide info button when logs panel opens
+            if isShowing {
+                showInfoButton = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showInfoButton)) { _ in
+            dKeyHeld = true
+            withAnimation(.easeInOut(duration: 0.15)) {
+                showInfoButton = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .hideInfoButton)) { _ in
+            dKeyHeld = false
+            withAnimation(.easeInOut(duration: 0.15)) {
+                showInfoButton = false
+            }
         }
     }
 
@@ -82,11 +120,14 @@ struct ContentView: View {
         HStack {
             Spacer()
 
-            Button(action: { showingLogs = true }) {
-                Image(systemName: "info.circle.fill")
+            if showInfoButton {
+                Button(action: { showingLogs = true }) {
+                    Image(systemName: "info.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(connectionManager.isConnected ? .green : .orange)
+                .transition(.opacity)
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(connectionManager.isConnected ? .green : .orange)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -197,12 +238,33 @@ class FocusableWebView: WKWebView {
                 """
                 evaluateJavaScript(js, completionHandler: nil)
                 handled = true
+            } else if key.keyCode == .keyboardD {
+                // D key - show info button while held
+                NotificationCenter.default.post(name: .showInfoButton, object: nil)
+                // Inject keydown event to WebView via JavaScript
+                let js = "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', bubbles: true }));"
+                evaluateJavaScript(js, completionHandler: nil)
+                handled = true
             }
         }
 
         if !handled {
             super.pressesBegan(presses, with: event)
         }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses {
+            guard let key = press.key else { continue }
+            if key.keyCode == .keyboardD {
+                // D key released - hide info button
+                NotificationCenter.default.post(name: .hideInfoButton, object: nil)
+                // Inject keyup event to WebView via JavaScript
+                let js = "window.dispatchEvent(new KeyboardEvent('keyup', { key: 'd', code: 'KeyD', bubbles: true }));"
+                evaluateJavaScript(js, completionHandler: nil)
+            }
+        }
+        super.pressesEnded(presses, with: event)
     }
 }
 
@@ -416,7 +478,7 @@ struct WebViewContainer: UIViewRepresentable {
 struct LogsSheet: View {
     @ObservedObject var logManager: LogManager
     @ObservedObject var connectionManager: ConnectionManager
-    @Environment(\.dismiss) var dismiss
+    var dismiss: () -> Void
     @State private var showingSignOutConfirm = false
 
     var body: some View {
@@ -485,6 +547,7 @@ struct LogsSheet: View {
                 Button("Done") {
                     dismiss()
                 }
+                .keyboardShortcut(.escape, modifiers: [])
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
@@ -518,6 +581,8 @@ struct LogsSheet: View {
             }
         }
         .frame(width: 600, height: 400)
+        .background(Color(uiColor: .systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .confirmationDialog("Sign Out", isPresented: $showingSignOutConfirm) {
             Button("Sign Out", role: .destructive) {
                 connectionManager.signOut()

@@ -51,8 +51,14 @@ public class MenuBarPlugin: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "Homecast")
-            button.image?.isTemplate = true
+            if let image = NSImage(named: "MenuBarIcon") {
+                image.isTemplate = true
+                button.image = image
+            } else {
+                // Fallback to system symbol
+                button.image = NSImage(systemSymbolName: "house.fill", accessibilityDescription: "Homecast")
+                button.image?.isTemplate = true
+            }
         }
 
         // Attach menu directly so it inherits proper system appearance
