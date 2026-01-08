@@ -188,8 +188,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             titlebar.toolbarStyle = .unified
         }
 
-        // Set window size - allow flexible sizing
-        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 780, height: 500)
+        // Set window size - minimum matches default opening size
+        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 880, height: 600)
         windowScene.sizeRestrictions?.maximumSize = CGSize(width: 1400, height: 1000)
 
         // Check if we should show window on first launch

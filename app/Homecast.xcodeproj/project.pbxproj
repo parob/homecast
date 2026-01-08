@@ -20,8 +20,8 @@
 		A1000011A /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000011F /* UIKit.framework */; };
 		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
 		A1000021A /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000012F /* AppKit.framework */; };
-		A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = A2000000P /* MenuBarPlugin.bundle */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A1000024A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000024F /* Assets.xcassets */; };
+		A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = A2000000P /* MenuBarPlugin.bundle */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,17 +57,17 @@
 		A1000006F /* CharacteristicMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacteristicMapper.swift; sourceTree = "<group>"; };
 		A1000007F /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		A1000008F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A1000022F /* SimpleHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleHTTPServer.swift; sourceTree = "<group>"; };
-		A1000023F /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
 		A1000009F /* HomeCast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeCast.entitlements; sourceTree = "<group>"; };
-		A1000024F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
 		A1000011F /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		A1000012F /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
 		A1000020F /* MenuBarPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPlugin.swift; sourceTree = "<group>"; };
 		A1000021F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000022F /* SimpleHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleHTTPServer.swift; sourceTree = "<group>"; };
+		A1000023F /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
+		A1000024F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000P /* MenuBarPlugin.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MenuBarPlugin.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
-		A3000000P /* HomeCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HomeCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000P /* Homecast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Homecast.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,17 +89,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
-
-/* Begin PBXResourcesBuildPhase section */
-		A1000062P /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A1000024A /* Assets.xcassets in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXGroup section */
 		A0000001G = {
@@ -146,7 +135,7 @@
 		A0000005G /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A3000000P /* HomeCast.app */,
+				A3000000P /* Homecast.app */,
 				A2000000P /* MenuBarPlugin.bundle */,
 			);
 			name = Products;
@@ -194,9 +183,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A1000000T /* HomeCast */ = {
+		A1000000T /* Homecast */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A1000080L /* Build configuration list for PBXNativeTarget "HomeCast" */;
+			buildConfigurationList = A1000080L /* Build configuration list for PBXNativeTarget "Homecast" */;
 			buildPhases = (
 				A1000070P /* Sources */,
 				A1000062P /* Resources */,
@@ -208,9 +197,9 @@
 			dependencies = (
 				A1000041D /* PBXTargetDependency */,
 			);
-			name = HomeCast;
+			name = Homecast;
 			productName = HomeCast;
-			productReference = A3000000P /* HomeCast.app */;
+			productReference = A3000000P /* Homecast.app */;
 			productType = "com.apple.product-type.application";
 		};
 		A2000000T /* MenuBarPlugin */ = {
@@ -246,7 +235,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A0000080L /* Build configuration list for PBXProject "HomeCast" */;
+			buildConfigurationList = A0000080L /* Build configuration list for PBXProject "Homecast" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -259,11 +248,22 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A1000000T /* HomeCast */,
+				A1000000T /* Homecast */,
 				A2000000T /* MenuBarPlugin */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000062P /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000024A /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A1000070P /* Sources */ = {
@@ -525,7 +525,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A0000080L /* Build configuration list for PBXProject "HomeCast" */ = {
+		A0000080L /* Build configuration list for PBXProject "Homecast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A0000081C /* Debug */,
@@ -534,7 +534,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A1000080L /* Build configuration list for PBXNativeTarget "HomeCast" */ = {
+		A1000080L /* Build configuration list for PBXNativeTarget "Homecast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A1000081C /* Debug */,

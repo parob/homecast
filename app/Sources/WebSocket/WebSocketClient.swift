@@ -67,6 +67,8 @@ class WebSocketClient {
     func sendCharacteristicUpdate(accessoryId: String, characteristicType: String, value: Any) {
         guard isConnected else { return }
 
+        print("[WebSocket] 📤 Event: characteristic.updated (accessory=\(accessoryId.prefix(8))..., type=\(characteristicType), value=\(value))")
+
         let event = ProtocolMessage(
             id: UUID().uuidString,
             type: .event,
@@ -82,7 +84,7 @@ class WebSocketClient {
             do {
                 try await send(event)
             } catch {
-                print("[WebSocket] Failed to send characteristic update: \(error)")
+                print("[WebSocket] ❌ Failed to send characteristic update: \(error)")
             }
         }
     }
@@ -140,6 +142,7 @@ class WebSocketClient {
 
         if action == "listeners_changed" {
             let listening = message.payload?["webClientsListening"]?.boolValue ?? false
+            print("[WebSocket] 📥 Config: listeners_changed → webClientsListening=\(listening)")
             await MainActor.run {
                 logManager.log("← Config: webClientsListening=\(listening)", category: .websocket, direction: .incoming)
             }
@@ -155,6 +158,10 @@ class WebSocketClient {
             return
         }
 
+        // Log request details
+        let payloadSummary = formatPayloadSummary(message.payload)
+        print("[WebSocket] 📥 Request: \(action)\(payloadSummary)")
+
         do {
             let result = try await executeAction(action: action, payload: message.payload)
             let response = ProtocolMessage(
@@ -164,11 +171,34 @@ class WebSocketClient {
                 payload: result
             )
             try await send(response)
+            print("[WebSocket] 📤 Response: \(action) ✅")
         } catch let error as HomeKitError {
+            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription)")
             await sendError(id: requestId, code: error.code, message: error.localizedDescription)
         } catch {
+            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription)")
             await sendError(id: requestId, code: "INTERNAL_ERROR", message: error.localizedDescription)
         }
+    }
+
+    private func formatPayloadSummary(_ payload: [String: JSONValue]?) -> String {
+        guard let payload = payload else { return "" }
+
+        var parts: [String] = []
+        if let accessoryId = payload["accessoryId"]?.stringValue {
+            parts.append("accessory=\(accessoryId.prefix(8))...")
+        }
+        if let charType = payload["characteristicType"]?.stringValue {
+            parts.append("type=\(charType)")
+        }
+        if let value = payload["value"] {
+            parts.append("value=\(value)")
+        }
+        if let homeId = payload["homeId"]?.stringValue {
+            parts.append("home=\(homeId.prefix(8))...")
+        }
+
+        return parts.isEmpty ? "" : " (\(parts.joined(separator: ", ")))"
     }
 
     private func sendError(id: String?, code: String, message: String) async {
@@ -261,6 +291,17 @@ class WebSocketClient {
                 characteristicType: characteristicType,
                 value: value.toAny()
             )
+
+            // Send update event to server so other web clients get notified
+            // (HMAccessoryDelegate doesn't fire for changes made by our own app)
+            if result.success {
+                sendCharacteristicUpdate(
+                    accessoryId: accessoryId,
+                    characteristicType: characteristicType,
+                    value: value.toAny()
+                )
+            }
+
             return [
                 "success": .bool(result.success),
                 "accessoryId": .string(accessoryId),

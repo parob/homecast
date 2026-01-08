@@ -32,10 +32,29 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate {
         DispatchQueue.main.async {
             self.createStatusItem()
             self.startUpdateTimer()
+            self.observeWindowClose()
 
             // Show in dock on launch only if window should be shown
             if showWindowOnLaunch {
                 NSApp.setActivationPolicy(.regular)
+            }
+        }
+    }
+
+    private func observeWindowClose() {
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Check if all windows are closed (except status bar)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let visibleWindows = NSApp.windows.filter {
+                    $0.isVisible && $0.className != "NSStatusBarWindow"
+                }
+                if visibleWindows.isEmpty {
+                    self?.hideFromDock()
+                }
             }
         }
     }
