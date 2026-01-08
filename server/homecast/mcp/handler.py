@@ -1,16 +1,16 @@
 """
 MCP endpoint handler for HomeCast.
 
-Handles the /mcp/{home_id} route and sets up the MCP app for each request.
+Provides a custom ASGI app that handles /home/{home_id}/ routing
+and delegates to the graphql-mcp app.
 """
 
 import json
 import logging
 import re
-from typing import Optional, List, Tuple
+from typing import Optional
 
-from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 from graphql_mcp.server import GraphQLMCP
 from graphql_api import GraphQLAPI
 
@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Regex to validate home_id format (8 hex characters)
 HOME_ID_PATTERN = re.compile(r'^[0-9a-f]{8}$', re.IGNORECASE)
+# Regex to extract home_id from path: /{home_id}/... (Mount strips /home prefix)
+HOME_PATH_PATTERN = re.compile(r'^/([^/]+)(/.*)?$')
 
 
 def validate_home_id(home_id: str) -> Optional[str]:
@@ -73,121 +75,114 @@ _mcp_api = GraphQLAPI(root_type=MCPAPI)
 _mcp_graphql_app = GraphQLMCP.from_api(api=_mcp_api, auth=None)
 _mcp_http_app = _mcp_graphql_app.http_app(stateless_http=True)
 
+
+class HomeScopedMCPApp:
+    """
+    ASGI app that handles /home/{home_id}/ routing.
+
+    This app:
+    1. Extracts home_id from the path
+    2. Validates the home exists and checks auth settings
+    3. Sets up context vars for the home_id
+    4. Strips the /home/{home_id} prefix and delegates to the MCP app
+
+    Similar to how Starlette's Mount works, but with dynamic home_id extraction.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+
+        # Extract home_id from path
+        match = HOME_PATH_PATTERN.match(path)
+        if not match:
+            await self._send_error(send, 404, "Not found")
+            return
+
+        home_id_raw = match.group(1)
+        remaining_path = match.group(2) or "/"
+
+        # Validate home_id format
+        home_id = validate_home_id(home_id_raw)
+        if not home_id:
+            await self._send_error(send, 400, f"Invalid home_id: must be 8 hex characters, got '{home_id_raw}'")
+            return
+
+        logger.info(f"HomeScopedMCPApp: path={path}, home_id={home_id}, remaining_path={remaining_path}")
+
+        # Look up home to find owner and check auth settings
+        with get_session() as session:
+            home = HomeRepository.get_by_prefix(session, home_id)
+            if not home:
+                await self._send_error(send, 404, f"Unknown home: {home_id}")
+                return
+
+            user_id = home.user_id
+            auth_required = get_home_auth_enabled(user_id, home_id, session)
+
+        # Check authentication if required
+        auth_context = None
+        if auth_required:
+            # Extract auth header from scope
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+            token = extract_token_from_header(auth_header)
+
+            if not token:
+                await self._send_error(send, 401, "Authentication required")
+                return
+
+            auth_context = verify_token(token)
+            if not auth_context:
+                await self._send_error(send, 401, "Invalid or expired token")
+                return
+
+        # Set context vars for the request
+        set_mcp_home_id(home_id)
+        _auth_context_var.set(auth_context)
+
+        try:
+            # Create modified scope with path stripped of /home/{home_id} prefix
+            # The remaining path goes to the MCP app (e.g., /mcp or /)
+            child_scope = dict(scope)
+            child_scope["path"] = remaining_path
+            child_scope["raw_path"] = remaining_path.encode()
+            # Store home_id in scope for potential use by middleware
+            child_scope["home_id"] = home_id
+
+            logger.info(f"Delegating to MCP app with path: {remaining_path}")
+            await self.app(child_scope, receive, send)
+
+        finally:
+            # Clean up context
+            set_mcp_home_id(None)
+            _auth_context_var.set(None)
+
+    async def _send_error(self, send: Send, status: int, message: str) -> None:
+        """Send a JSON error response."""
+        body = json.dumps({"error": message}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": body,
+        })
+
+
+# Create the home-scoped MCP app wrapper
+home_scoped_mcp_app = HomeScopedMCPApp(_mcp_http_app)
+
 # Export for lifespan integration
 mcp_http_app = _mcp_http_app
-
-
-async def mcp_endpoint(request: Request) -> Response:
-    """
-    MCP endpoint handler.
-
-    Extracts home_id from path, validates it, checks auth requirements,
-    and delegates to the graphql-mcp app.
-    """
-    # Extract home_id from path params
-    home_id_raw = request.path_params.get("home_id", "")
-    home_id = validate_home_id(home_id_raw)
-
-    logger.info(f"MCP endpoint called: path={request.url.path}, home_id_raw='{home_id_raw}', validated='{home_id}'")
-
-    if not home_id:
-        return JSONResponse(
-            {"error": f"Invalid home_id: must be 8 hex characters, got '{home_id_raw}'"},
-            status_code=400
-        )
-
-    # Look up home to find owner and check auth settings
-    with get_session() as session:
-        logger.info(f"Looking up home with prefix: {home_id}")
-        home = HomeRepository.get_by_prefix(session, home_id)
-        logger.info(f"HomeRepository.get_by_prefix result: {home}")
-        if not home:
-            return JSONResponse(
-                {"error": f"Unknown home: {home_id}"},
-                status_code=404
-            )
-
-        user_id = home.user_id
-        auth_required = get_home_auth_enabled(user_id, home_id, session)
-
-    # Check authentication if required
-    auth_context = None
-    if auth_required:
-        auth_header = request.headers.get("Authorization")
-        token = extract_token_from_header(auth_header)
-
-        if not token:
-            return JSONResponse(
-                {"error": "Authentication required"},
-                status_code=401
-            )
-
-        auth_context = verify_token(token)
-        if not auth_context:
-            return JSONResponse(
-                {"error": "Invalid or expired token"},
-                status_code=401
-            )
-
-    # Set context vars for the request
-    set_mcp_home_id(home_id)
-    _auth_context_var.set(auth_context)
-
-    try:
-        # Call the MCP app using ASGI interface
-        # We need to capture the response since it's an ASGI app
-        response_started = False
-        response_status = 200
-        response_headers: List[Tuple[bytes, bytes]] = []
-        response_body: List[bytes] = []
-
-        async def receive():
-            body = await request.body()
-            logger.info(f"MCP receive called, body length: {len(body)}")
-            return {"type": "http.request", "body": body, "more_body": False}
-
-        async def send(message):
-            nonlocal response_started, response_status, response_headers, response_body
-            logger.info(f"MCP send called: type={message.get('type')}")
-            if message["type"] == "http.response.start":
-                response_started = True
-                response_status = message["status"]
-                response_headers = message.get("headers", [])
-                logger.info(f"MCP response started: status={response_status}")
-            elif message["type"] == "http.response.body":
-                body = message.get("body", b"")
-                if body:
-                    response_body.append(body)
-                    logger.info(f"MCP response body: {body[:500]}")  # First 500 bytes
-
-        # Modify scope to set path to /mcp - GraphQLRootMiddleware routes /mcp to MCP handler
-        mcp_scope = dict(request.scope)
-        mcp_scope["path"] = "/mcp"
-        mcp_scope["raw_path"] = b"/mcp"
-        logger.info(f"Calling MCP app with modified scope path: {mcp_scope.get('path')} (original: {request.scope.get('path')})")
-        await _mcp_http_app(mcp_scope, receive, send)
-        logger.info(f"MCP app returned, status={response_status}")
-
-        # Build and return the response
-        headers = {
-            key.decode() if isinstance(key, bytes) else key:
-            value.decode() if isinstance(value, bytes) else value
-            for key, value in response_headers
-        }
-        return Response(
-            content=b"".join(response_body),
-            status_code=response_status,
-            headers=headers,
-            media_type=headers.get("content-type", "application/json")
-        )
-
-    except Exception as e:
-        logger.error(f"MCP endpoint error: {e}", exc_info=True)
-        return JSONResponse(
-            {"error": "Internal server error"},
-            status_code=500
-        )
-    finally:
-        # Clean up context
-        set_mcp_home_id(None)
-        _auth_context_var.set(None)
