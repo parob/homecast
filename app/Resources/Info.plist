@@ -17,6 +17,9 @@
     <key>CFBundleName</key>
     <string>Homecast</string>
 
+    <key>CFBundleDisplayName</key>
+    <string>Homecast</string>
+
     <key>CFBundlePackageType</key>
     <string>APPL</string>
 
@@ -35,7 +38,7 @@
 
     <!-- HomeKit Usage Description -->
     <key>NSHomeKitUsageDescription</key>
-    <string>HomeCast needs access to your HomeKit accessories to allow remote control from the web portal.</string>
+    <string>Homecast needs access to your HomeKit accessories to allow remote control from the web portal.</string>
 
     <key>NSHumanReadableCopyright</key>
     <string>Copyright 2025. All rights reserved.</string>
