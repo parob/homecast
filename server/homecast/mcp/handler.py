@@ -7,7 +7,7 @@ Handles the /mcp/{home_id} route and sets up the MCP app for each request.
 import json
 import logging
 import re
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
@@ -69,6 +69,10 @@ def get_home_auth_enabled(user_id, home_id_prefix: str, session) -> bool:
 # Create the MCP GraphQL API (reused for all requests)
 _mcp_api = GraphQLAPI(root_type=MCPAPI)
 
+# Create the MCP app once (reused for all requests)
+_mcp_graphql_app = GraphQLMCP.from_api(api=_mcp_api, auth=None)
+_mcp_http_app = _mcp_graphql_app.http_app(stateless_http=True)
+
 
 async def mcp_endpoint(request: Request) -> Response:
     """
@@ -123,12 +127,42 @@ async def mcp_endpoint(request: Request) -> Response:
     _auth_context_var.set(auth_context)
 
     try:
-        # Create MCP app (without auth - we handle auth ourselves)
-        mcp_graphql_app = GraphQLMCP.from_api(api=_mcp_api, auth=None)
-        mcp_http_app = mcp_graphql_app.http_app(stateless_http=True)
+        # Call the MCP app using ASGI interface
+        # We need to capture the response since it's an ASGI app
+        response_started = False
+        response_status = 200
+        response_headers: List[Tuple[bytes, bytes]] = []
+        response_body: List[bytes] = []
 
-        # Delegate to MCP app
-        return await mcp_http_app(request)
+        async def receive():
+            body = await request.body()
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message):
+            nonlocal response_started, response_status, response_headers, response_body
+            if message["type"] == "http.response.start":
+                response_started = True
+                response_status = message["status"]
+                response_headers = message.get("headers", [])
+            elif message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if body:
+                    response_body.append(body)
+
+        await _mcp_http_app(request.scope, receive, send)
+
+        # Build and return the response
+        headers = {
+            key.decode() if isinstance(key, bytes) else key:
+            value.decode() if isinstance(value, bytes) else value
+            for key, value in response_headers
+        }
+        return Response(
+            content=b"".join(response_body),
+            status_code=response_status,
+            headers=headers,
+            media_type=headers.get("content-type", "application/json")
+        )
 
     except Exception as e:
         logger.error(f"MCP endpoint error: {e}", exc_info=True)
