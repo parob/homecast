@@ -412,9 +412,11 @@ extension HomeKitManager: HMHomeManagerDelegate {
             }
             readyContinuations.removeAll()
 
-            // Refresh key characteristic values in background (not info services)
+            // Refresh key characteristic values in background first (fast)
+            // Then refresh info characteristics at a slower rate
             Task.detached(priority: .background) {
                 await self.refreshKeyCharacteristics()
+                await self.refreshInfoCharacteristics()
             }
         }
     }
@@ -435,8 +437,6 @@ extension HomeKitManager: HMHomeManagerDelegate {
         HMCharacteristicTypePositionState,
         HMCharacteristicTypeCurrentDoorState,
         HMCharacteristicTypeTargetDoorState,
-        HMCharacteristicTypeLockCurrentState,
-        HMCharacteristicTypeLockTargetState,
         HMCharacteristicTypeActive,
         HMCharacteristicTypeInUse,
         HMCharacteristicTypeRotationSpeed,
@@ -494,6 +494,57 @@ extension HomeKitManager: HMHomeManagerDelegate {
                 }
             }
         }
+    }
+
+    /// Refresh info characteristics (manufacturer, serial, model, firmware) at a slower rate
+    func refreshInfoCharacteristics() async {
+        let allAccessories = homes.flatMap { $0.accessories }.filter { $0.isReachable }
+
+        // Collect info characteristics to read
+        var characteristicsToRead: [HMCharacteristic] = []
+        for accessory in allAccessories {
+            for service in accessory.services {
+                // Only info service
+                guard service.serviceType == HMServiceTypeAccessoryInformation else {
+                    continue
+                }
+                for characteristic in service.characteristics {
+                    if characteristic.properties.contains(HMCharacteristicPropertyReadable) {
+                        characteristicsToRead.append(characteristic)
+                    }
+                }
+            }
+        }
+
+        print("[HomeKit] 📋 Refreshing \(characteristicsToRead.count) info characteristics...")
+
+        // Read in smaller batches with delays between them
+        let batchSize = 20
+        for batch in stride(from: 0, to: characteristicsToRead.count, by: batchSize) {
+            let end = min(batch + batchSize, characteristicsToRead.count)
+            let batchChars = Array(characteristicsToRead[batch..<end])
+
+            await withTaskGroup(of: Void.self) { group in
+                for characteristic in batchChars {
+                    group.addTask {
+                        try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            characteristic.readValue { error in
+                                if let error = error {
+                                    continuation.resume(throwing: error)
+                                } else {
+                                    continuation.resume()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Small delay between batches to avoid overwhelming devices
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+        }
+
+        print("[HomeKit] ✅ Info characteristics refresh complete")
     }
 
     nonisolated func homeManager(_ manager: HMHomeManager, didAdd home: HMHome) {
