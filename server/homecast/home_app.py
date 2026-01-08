@@ -140,7 +140,9 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
         return json.dumps(state, separators=(',', ':'))
 
     except Exception as e:
-        logger.warning(f"Failed to fetch home state for injection: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        logger.warning(f"Failed to fetch home state for injection: {type(e).__name__}: {e} | {tb}")
         return "(state unavailable)"
 
 
