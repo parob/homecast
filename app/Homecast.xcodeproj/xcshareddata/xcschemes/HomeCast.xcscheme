@@ -18,7 +18,7 @@
                BlueprintIdentifier = "A1000000T"
                BuildableName = "Homecast.app"
                BlueprintName = "Homecast"
-               ReferencedContainer = "container:HomeCast.xcodeproj">
+               ReferencedContainer = "container:Homecast.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -47,7 +47,7 @@
             BlueprintIdentifier = "A1000000T"
             BuildableName = "Homecast.app"
             BlueprintName = "Homecast"
-            ReferencedContainer = "container:HomeCast.xcodeproj">
+            ReferencedContainer = "container:Homecast.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -64,7 +64,7 @@
             BlueprintIdentifier = "A1000000T"
             BuildableName = "Homecast.app"
             BlueprintName = "Homecast"
-            ReferencedContainer = "container:HomeCast.xcodeproj">
+            ReferencedContainer = "container:Homecast.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

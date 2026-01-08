@@ -235,7 +235,8 @@ struct WebViewContainer: UIViewRepresentable {
         // Add message handler for native bridge
         config.userContentController.add(context.coordinator, name: "homecast")
 
-        // Inject auth token BEFORE page loads if available, or clear stale token if signed out
+        // If we have a token at creation time, inject it before page loads
+        // (This handles the case where restoreSession completed before view creation)
         if let token = authToken {
             let script = WKUserScript(
                 source: "localStorage.setItem('homekit-token', '\(token)'); console.log('[Homecast] Token pre-injected');",
@@ -243,15 +244,8 @@ struct WebViewContainer: UIViewRepresentable {
                 forMainFrameOnly: true
             )
             config.userContentController.addUserScript(script)
-        } else {
-            // No token - clear any stale token from localStorage to ensure login screen shows
-            let script = WKUserScript(
-                source: "localStorage.removeItem('homekit-token'); console.log('[Homecast] Cleared stale token');",
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            )
-            config.userContentController.addUserScript(script)
         }
+        // Note: Don't clear localStorage if no token - restoreSession might not have run yet
 
         // Use a reasonable initial frame to avoid CoreGraphics NaN errors
         let webView = FocusableWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
@@ -268,25 +262,38 @@ struct WebViewContainer: UIViewRepresentable {
 
         if oldToken != authToken {
             if let token = authToken {
-                // Token appeared - only reload if localStorage doesn't have it yet
-                // (This avoids reloading when web login already set the token)
-                let js = """
-                if (!localStorage.getItem('homekit-token')) {
-                    localStorage.setItem('homekit-token', '\(token)');
-                    console.log('[Homecast] Token restored from keychain, reloading...');
-                    window.location.reload();
+                // Token appeared - check if this was from WebView login or keychain restore
+                if context.coordinator.webViewInitiatedLogin {
+                    // WebView initiated - frontend already has token and is navigating
+                    print("[WebView] Token synced (WebView-initiated login)")
+                    context.coordinator.webViewInitiatedLogin = false
                 } else {
-                    console.log('[Homecast] Token already in localStorage, skipping reload');
+                    // Keychain restore - inject token and notify frontend via storage event
+                    let js = """
+                    localStorage.setItem('homekit-token', '\(token)');
+                    console.log('[Homecast] Token restored from keychain');
+                    window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: '\(token)' }));
+                    """
+                    webView.evaluateJavaScript(js, completionHandler: nil)
+                    print("[WebView] Token injected from keychain restore")
                 }
-                """
-                webView.evaluateJavaScript(js, completionHandler: nil)
             } else {
-                // Token was cleared (sign out) - clear localStorage and go to login
-                let js = """
-                localStorage.removeItem('homekit-token');
-                window.location.href = '/login';
-                """
-                webView.evaluateJavaScript(js, completionHandler: nil)
+                // Token was cleared (sign out)
+                if context.coordinator.webViewInitiatedLogout {
+                    // WebView initiated - frontend already cleared and is navigating
+                    print("[WebView] Token cleared (WebView-initiated logout)")
+                    context.coordinator.webViewInitiatedLogout = false
+                } else {
+                    // Mac app menu sign out - clear localStorage, notify frontend, and navigate
+                    let js = """
+                    localStorage.removeItem('homekit-token');
+                    console.log('[Homecast] Signed out from Mac app');
+                    window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: null }));
+                    window.location.href = '/login';
+                    """
+                    webView.evaluateJavaScript(js, completionHandler: nil)
+                    print("[WebView] Navigating to login (Mac-initiated sign out)")
+                }
             }
         }
         context.coordinator.authToken = authToken
@@ -297,6 +304,10 @@ struct WebViewContainer: UIViewRepresentable {
         weak var webView: WKWebView?
         private var hasInjectedToken = false
         private let connectionManager: ConnectionManager
+
+        // Track whether auth changes were initiated by WebView (vs Mac app)
+        var webViewInitiatedLogin = false
+        var webViewInitiatedLogout = false
 
         init(connectionManager: ConnectionManager) {
             self.connectionManager = connectionManager
@@ -333,6 +344,8 @@ struct WebViewContainer: UIViewRepresentable {
                     return
                 }
                 print("[WebView] Received login token from web")
+                // Mark as WebView-initiated so updateUIView doesn't interfere with frontend navigation
+                self.webViewInitiatedLogin = true
                 Task { @MainActor in
                     do {
                         try await connectionManager.authenticateWithToken(token)
@@ -340,9 +353,13 @@ struct WebViewContainer: UIViewRepresentable {
                         self.hasInjectedToken = true
                     } catch {
                         print("[WebView] Failed to authenticate with token: \(error)")
+                        self.webViewInitiatedLogin = false  // Reset on failure
                     }
                 }
             case "logout":
+                print("[WebView] Received logout from web")
+                // Mark as WebView-initiated so updateUIView doesn't interfere with frontend navigation
+                self.webViewInitiatedLogout = true
                 Task { @MainActor in
                     connectionManager.signOut()
                 }

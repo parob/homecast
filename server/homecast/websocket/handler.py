@@ -76,8 +76,15 @@ class ConnectionManager:
         self.connections: Dict[str, ConnectedDevice] = {}
         # request_id -> PendingRequest
         self.pending_requests: Dict[str, PendingRequest] = {}
-        # Lock for thread-safe operations
-        self._lock = asyncio.Lock()
+        # Lock for thread-safe operations (created lazily to avoid event loop issues)
+        self._lock: Optional[asyncio.Lock] = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Get the lock, creating it lazily in the current event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def connect(
         self,
@@ -109,7 +116,7 @@ class ConnectionManager:
 
         await websocket.accept()
 
-        async with self._lock:
+        async with self.lock:
             # Close existing connection for this device if any
             if device_id in self.connections:
                 old_conn = self.connections[device_id]
@@ -146,7 +153,7 @@ class ConnectionManager:
 
     async def disconnect(self, device_id: str):
         """Handle device disconnection."""
-        async with self._lock:
+        async with self.lock:
             if device_id in self.connections:
                 del self.connections[device_id]
 
@@ -191,7 +198,7 @@ class ConnectionManager:
         pending = PendingRequest(id=request_id, device_id=device_id, action=action)
 
         t1 = time.time()
-        async with self._lock:
+        async with self.lock:
             self.pending_requests[request_id] = pending
         t2 = time.time()
         logger.info(f"[{request_id[:8]}] Lock acquired in {(t2-t1)*1000:.0f}ms")
@@ -232,7 +239,7 @@ class ConnectionManager:
             return result.get("payload", {})
 
         finally:
-            async with self._lock:
+            async with self.lock:
                 self.pending_requests.pop(request_id, None)
 
     async def handle_message(self, device_id: str, message: Dict[str, Any]):
