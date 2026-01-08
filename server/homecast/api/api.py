@@ -167,6 +167,19 @@ class ExecuteSceneResult:
     scene_id: str
 
 
+@dataclass
+class UserSettings:
+    """User settings."""
+    compact_mode: bool = False
+
+
+@dataclass
+class UpdateSettingsResult:
+    """Result of updating settings."""
+    success: bool
+    settings: Optional[UserSettings] = None
+
+
 # --- Helper Functions ---
 
 def parse_characteristic(data: dict) -> HomeKitCharacteristic:
@@ -406,6 +419,62 @@ class API:
                 created_at=user.created_at.isoformat(),
                 last_login_at=user.last_login_at.isoformat() if user.last_login_at else None
             )
+
+    @field
+    async def settings(self) -> UserSettings:
+        """Get current user's settings. Requires authentication."""
+        auth = require_auth()
+
+        with get_session() as session:
+            settings_json = UserRepository.get_settings(session, auth.user_id)
+
+            if settings_json:
+                try:
+                    data = json.loads(settings_json)
+                    return UserSettings(
+                        compact_mode=data.get("compactMode", False)
+                    )
+                except json.JSONDecodeError:
+                    pass
+
+            return UserSettings()
+
+    @field(mutable=True)
+    async def update_settings(
+        self,
+        compact_mode: Optional[bool] = None
+    ) -> UpdateSettingsResult:
+        """Update current user's settings. Requires authentication."""
+        auth = require_auth()
+
+        with get_session() as session:
+            # Get current settings
+            settings_json = UserRepository.get_settings(session, auth.user_id)
+            settings_data = {}
+
+            if settings_json:
+                try:
+                    settings_data = json.loads(settings_json)
+                except json.JSONDecodeError:
+                    pass
+
+            # Update only provided fields
+            if compact_mode is not None:
+                settings_data["compactMode"] = compact_mode
+
+            # Save
+            new_settings_json = json.dumps(settings_data)
+            success = UserRepository.update_settings(session, auth.user_id, new_settings_json)
+
+            if success:
+                return UpdateSettingsResult(
+                    success=True,
+                    settings=UserSettings(
+                        compact_mode=settings_data.get("compactMode", False)
+                    )
+                )
+            else:
+                return UpdateSettingsResult(success=False)
 
     @field
     async def my_devices(self) -> List[DeviceInfo]:

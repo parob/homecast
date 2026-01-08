@@ -147,3 +147,31 @@ class UserRepository(BaseRepository):
         user.password_hash = cls._hash_password(new_password)
         cls.update(session, user)
         return True
+
+    @classmethod
+    def get_settings(
+        cls,
+        session: Session,
+        user_id: uuid.UUID
+    ) -> Optional[str]:
+        """Get user settings as JSON string."""
+        user = cls.find_by_id(session, user_id)
+        if not user:
+            return None
+        return user.settings_json
+
+    @classmethod
+    def update_settings(
+        cls,
+        session: Session,
+        user_id: uuid.UUID,
+        settings_json: str
+    ) -> bool:
+        """Update user settings."""
+        user = cls.find_by_id(session, user_id)
+        if not user:
+            return False
+
+        user.settings_json = settings_json
+        cls.update(session, user)
+        return True

@@ -308,6 +308,8 @@ class WebSocketClient {
             guard let accessoryId = payload?["accessoryId"]?.stringValue else {
                 throw HomeKitError.invalidRequest("Missing accessoryId")
             }
+            // Refresh characteristic values from device before returning
+            try await homeKitManager.refreshAccessoryValues(id: accessoryId)
             let accessory = try await MainActor.run { try homeKitManager.getAccessory(id: accessoryId) }
             return ["accessory": accessory.toJSON()]
 

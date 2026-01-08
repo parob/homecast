@@ -234,6 +234,54 @@ class HomeKitManager: NSObject, ObservableObject {
         throw HomeKitError.accessoryNotFound(id)
     }
 
+    /// Read all readable characteristics for an accessory to refresh cached values
+    func refreshAccessoryValues(id: String) async throws {
+        guard let uuid = UUID(uuidString: id) else {
+            throw HomeKitError.invalidId(id)
+        }
+
+        var accessory: HMAccessory?
+        for home in homes {
+            if let found = home.accessories.first(where: { $0.uniqueIdentifier == uuid }) {
+                accessory = found
+                break
+            }
+        }
+
+        guard let accessory = accessory else {
+            throw HomeKitError.accessoryNotFound(id)
+        }
+
+        guard accessory.isReachable else {
+            return // Can't read from unreachable device
+        }
+
+        // Read all readable characteristics concurrently
+        await withTaskGroup(of: Void.self) { group in
+            for service in accessory.services {
+                for characteristic in service.characteristics {
+                    if characteristic.properties.contains(HMCharacteristicPropertyReadable) {
+                        group.addTask {
+                            do {
+                                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                                    characteristic.readValue { error in
+                                        if let error = error {
+                                            continuation.resume(throwing: error)
+                                        } else {
+                                            continuation.resume()
+                                        }
+                                    }
+                                }
+                            } catch {
+                                // Ignore individual read errors
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Characteristic Operations
 
     func readCharacteristic(accessoryId: String, characteristicType: String) async throws -> Any {
@@ -363,6 +411,88 @@ extension HomeKitManager: HMHomeManagerDelegate {
                 continuation.resume()
             }
             readyContinuations.removeAll()
+
+            // Refresh key characteristic values in background (not info services)
+            Task.detached(priority: .background) {
+                await self.refreshKeyCharacteristics()
+            }
+        }
+    }
+
+    /// Important characteristic types to refresh (controls and sensors, not info)
+    private static let keyCharacteristicTypes: Set<String> = [
+        HMCharacteristicTypePowerState,
+        HMCharacteristicTypeBrightness,
+        HMCharacteristicTypeHue,
+        HMCharacteristicTypeSaturation,
+        HMCharacteristicTypeColorTemperature,
+        HMCharacteristicTypeCurrentTemperature,
+        HMCharacteristicTypeTargetTemperature,
+        HMCharacteristicTypeCurrentRelativeHumidity,
+        HMCharacteristicTypeTargetRelativeHumidity,
+        HMCharacteristicTypeCurrentPosition,
+        HMCharacteristicTypeTargetPosition,
+        HMCharacteristicTypePositionState,
+        HMCharacteristicTypeCurrentDoorState,
+        HMCharacteristicTypeTargetDoorState,
+        HMCharacteristicTypeLockCurrentState,
+        HMCharacteristicTypeLockTargetState,
+        HMCharacteristicTypeActive,
+        HMCharacteristicTypeInUse,
+        HMCharacteristicTypeRotationSpeed,
+        HMCharacteristicTypeSwingMode,
+        HMCharacteristicTypeCurrentHeatingCooling,
+        HMCharacteristicTypeTargetHeatingCooling,
+        HMCharacteristicTypeContactState,
+        HMCharacteristicTypeMotionDetected,
+        HMCharacteristicTypeOccupancyDetected,
+        HMCharacteristicTypeBatteryLevel,
+        HMCharacteristicTypeStatusLowBattery,
+        HMCharacteristicTypeOutletInUse,
+    ]
+
+    /// Refresh only key characteristics for UI display (skips info services)
+    func refreshKeyCharacteristics() async {
+        let allAccessories = homes.flatMap { $0.accessories }.filter { $0.isReachable }
+
+        // Collect all key characteristics to read
+        var characteristicsToRead: [HMCharacteristic] = []
+        for accessory in allAccessories {
+            for service in accessory.services {
+                // Skip info service - those values rarely change
+                if service.serviceType == HMServiceTypeAccessoryInformation {
+                    continue
+                }
+                for characteristic in service.characteristics {
+                    if characteristic.properties.contains(HMCharacteristicPropertyReadable),
+                       Self.keyCharacteristicTypes.contains(characteristic.characteristicType) {
+                        characteristicsToRead.append(characteristic)
+                    }
+                }
+            }
+        }
+
+        // Read in larger batches - HomeKit handles concurrent reads well
+        let batchSize = 50
+        for batch in stride(from: 0, to: characteristicsToRead.count, by: batchSize) {
+            let end = min(batch + batchSize, characteristicsToRead.count)
+            let batchChars = Array(characteristicsToRead[batch..<end])
+
+            await withTaskGroup(of: Void.self) { group in
+                for characteristic in batchChars {
+                    group.addTask {
+                        try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            characteristic.readValue { error in
+                                if let error = error {
+                                    continuation.resume(throwing: error)
+                                } else {
+                                    continuation.resume()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

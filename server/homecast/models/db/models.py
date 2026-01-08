@@ -45,6 +45,9 @@ class User(BaseModel, table=True):
     # Profile
     name: Optional[str] = Field(default=None)
 
+    # Settings (JSON string)
+    settings_json: Optional[str] = Field(default=None)
+
     # Status
     is_active: bool = Field(default=True)
     last_login_at: Optional[datetime] = Field(default=None)
