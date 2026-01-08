@@ -157,10 +157,10 @@ async def mcp_endpoint(request: Request) -> Response:
                     response_body.append(body)
                     logger.info(f"MCP response body: {body[:500]}")  # First 500 bytes
 
-        # Modify scope to set path to root - MCP app expects requests at /
+        # Modify scope to set path to /mcp - GraphQLRootMiddleware routes /mcp to MCP handler
         mcp_scope = dict(request.scope)
-        mcp_scope["path"] = "/"
-        mcp_scope["raw_path"] = b"/"
+        mcp_scope["path"] = "/mcp"
+        mcp_scope["raw_path"] = b"/mcp"
         logger.info(f"Calling MCP app with modified scope path: {mcp_scope.get('path')} (original: {request.scope.get('path')})")
         await _mcp_http_app(mcp_scope, receive, send)
         logger.info(f"MCP app returned, status={response_status}")
