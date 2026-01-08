@@ -235,10 +235,18 @@ struct WebViewContainer: UIViewRepresentable {
         // Add message handler for native bridge
         config.userContentController.add(context.coordinator, name: "homecast")
 
-        // Inject auth token BEFORE page loads if available
+        // Inject auth token BEFORE page loads if available, or clear stale token if signed out
         if let token = authToken {
             let script = WKUserScript(
                 source: "localStorage.setItem('homekit-token', '\(token)'); console.log('[Homecast] Token pre-injected');",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(script)
+        } else {
+            // No token - clear any stale token from localStorage to ensure login screen shows
+            let script = WKUserScript(
+                source: "localStorage.removeItem('homekit-token'); console.log('[Homecast] Cleared stale token');",
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
@@ -256,14 +264,30 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // If auth token was cleared (sign out), reload to login page
-        if context.coordinator.authToken != nil && authToken == nil {
-            // Clear localStorage and reload to login
-            let js = """
-            localStorage.removeItem('homekit-token');
-            window.location.href = '/login';
-            """
-            webView.evaluateJavaScript(js, completionHandler: nil)
+        let oldToken = context.coordinator.authToken
+
+        if oldToken != authToken {
+            if let token = authToken {
+                // Token appeared - only reload if localStorage doesn't have it yet
+                // (This avoids reloading when web login already set the token)
+                let js = """
+                if (!localStorage.getItem('homekit-token')) {
+                    localStorage.setItem('homekit-token', '\(token)');
+                    console.log('[Homecast] Token restored from keychain, reloading...');
+                    window.location.reload();
+                } else {
+                    console.log('[Homecast] Token already in localStorage, skipping reload');
+                }
+                """
+                webView.evaluateJavaScript(js, completionHandler: nil)
+            } else {
+                // Token was cleared (sign out) - clear localStorage and go to login
+                let js = """
+                localStorage.removeItem('homekit-token');
+                window.location.href = '/login';
+                """
+                webView.evaluateJavaScript(js, completionHandler: nil)
+            }
         }
         context.coordinator.authToken = authToken
     }

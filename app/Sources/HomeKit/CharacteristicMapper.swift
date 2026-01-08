@@ -98,7 +98,6 @@ enum CharacteristicMapper {
         "thermostat": HMServiceTypeThermostat,
         "heater_cooler": HMServiceTypeHeaterCooler,
         "fan": HMServiceTypeFan,
-        "fan_v2": HMServiceTypeFanV2,
         "air_purifier": HMServiceTypeAirPurifier,
         "humidifier_dehumidifier": HMServiceTypeHumidifierDehumidifier,
         "filter_maintenance": HMServiceTypeFilterMaintenance,
