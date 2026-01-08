@@ -273,5 +273,6 @@ class TestHomeScopedMCPApp:
                                         headers={"Authorization": "Bearer good-token"}
                                     )
                                     assert response.status_code == 200
-                                    # Verify context was set
-                                    mock_set_home.assert_called_with("abcd1234")
+                                    # Verify context was set (and then cleaned up)
+                                    mock_set_home.assert_any_call("abcd1234")
+                                    mock_set_home.assert_called_with(None)  # Cleanup

@@ -98,7 +98,8 @@ class HomeScopedMCPApp:
             await self.app(scope, receive, send)
             return
 
-        path = scope.get("path", "")
+        # Use get_route_path to get path relative to mount point
+        path = get_route_path(scope)
 
         # Extract home_id from path
         match = HOME_PATH_PATTERN.match(path)
