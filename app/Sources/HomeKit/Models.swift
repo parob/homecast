@@ -54,7 +54,7 @@ struct RoomModel: Codable {
 
 // MARK: - Accessory Model
 
-struct AccessoryModel: Codable {
+struct AccessoryModel {
     let id: String
     let name: String
     let roomId: String?
@@ -93,7 +93,7 @@ struct AccessoryModel: Codable {
 
 // MARK: - Service Model
 
-struct ServiceModel: Codable {
+struct ServiceModel {
     let id: String
     let name: String
     let serviceType: String

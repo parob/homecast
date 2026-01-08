@@ -251,7 +251,8 @@ class SimpleHTTPServer: ObservableObject {
 
         do {
             let accessories = try manager.listAccessories()
-            let jsonData = try JSONEncoder().encode(accessories)
+            let jsonArray = JSONValue.array(accessories.map { $0.toJSON() })
+            let jsonData = try JSONEncoder().encode(jsonArray)
             if let jsonString = String(data: jsonData, encoding: .utf8) {
                 sendResponse(connection: connection, status: "200 OK", contentType: "application/json", body: jsonString)
             }

@@ -74,7 +74,7 @@ class HomeKitCharacteristic:
     characteristic_type: str
     is_readable: bool
     is_writable: bool
-    value: Optional[str] = None
+    value: Any = None  # Can be bool, int, float, or str depending on characteristic type
 
 
 @dataclass
@@ -130,7 +130,7 @@ class SetCharacteristicResult:
     success: bool
     accessory_id: str
     characteristic_type: str
-    value: Optional[str] = None
+    value: Any = None  # Can be bool, int, float, or str depending on characteristic type
 
 
 @dataclass
@@ -595,7 +595,7 @@ class API:
                 success=result.get("success", True),
                 accessory_id=accessory_id,
                 characteristic_type=characteristic_type,
-                value=json.dumps(result.get("value", parsed_value))
+                value=result.get("value", parsed_value)
             )
         except Exception as e:
             logger.error(f"characteristic.set error: {e}")
