@@ -29,6 +29,8 @@ ALLOWED_CORS_ORIGINS: list[str] = [
 ALLOWED_CORS_ORIGIN_PATTERNS: list[str] = [
     r"https://.*\.lovable\.app",
     r"https://.*\.lovableproject\.com",
+    r"http://localhost:\d+",
+    r"http://127\.0\.0\.1:\d+",
 ]
 
 # Database Configuration
