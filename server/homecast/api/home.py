@@ -517,7 +517,8 @@ class HomeAPI:
               - Turn off all: {"room": {"all_lights": {"on": false}}}
               - Turn off just lamp_1: {"room": {"lamp_1": {"on": false}}}
 
-        Current state: __HOMECAST_STATE__
+        Current state (includes _meta.fetched_at - if within 10s or current time unknown, no need to call get_state):
+        __HOMECAST_STATE__
 
         Examples:
             Single accessory: {"living_room": {"ceiling_light": {"on": true, "brightness": 100}}}

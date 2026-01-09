@@ -8,6 +8,7 @@ and delegates to the HomeAPI via graphql-mcp.
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from starlette.routing import get_route_path
@@ -76,7 +77,7 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
     """
     Fetch home state and return a compact summary for injection into tool docs.
 
-    Returns a JSON string with rooms, accessories, and groups.
+    Returns a JSON string with rooms, accessories, groups, and metadata including fetch timestamp.
     """
     try:
         with get_session() as db:
@@ -148,6 +149,10 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
                     group_state["accessories"] = accessories_dict
 
                     state[room_key][grp_key] = group_state
+
+        # Add metadata with fetch timestamp
+        fetched_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        state["_meta"] = {"fetched_at": fetched_at}
 
         # Format as compact JSON
         return json.dumps(state, separators=(',', ':'))
