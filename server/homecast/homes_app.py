@@ -93,6 +93,8 @@ async def _fetch_all_homes_state_summary(user_id_prefix: str) -> str:
                 if room_key_str not in home_state:
                     home_state[room_key_str] = {}
 
+                # Add fully qualified name: home.room.accessory
+                simplified["name"] = f"{home_key}.{room_key_str}.{accessory_key_str}"
                 home_state[room_key_str][accessory_key_str] = simplified
 
             # Add service groups
@@ -111,6 +113,8 @@ async def _fetch_all_homes_state_summary(user_id_prefix: str) -> str:
 
                         group_state = _simplify_accessory(first_member)
                         group_state["group"] = True
+                        # Add fully qualified name for group: home.room.group
+                        group_state["name"] = f"{home_key}.{room_key_str}.{group_key_str}"
 
                         if room_key_str not in home_state:
                             home_state[room_key_str] = {}
@@ -121,7 +125,10 @@ async def _fetch_all_homes_state_summary(user_id_prefix: str) -> str:
                             member = accessory_by_id.get(acc_id)
                             if member:
                                 member_key = _accessory_key(member.get("name", "Unknown"), acc_id)
-                                accessories_dict[member_key] = _simplify_accessory(member)
+                                member_state = _simplify_accessory(member)
+                                # Add fully qualified name for group member: home.room.group.accessory
+                                member_state["name"] = f"{home_key}.{room_key_str}.{group_key_str}.{member_key}"
+                                accessories_dict[member_key] = member_state
                         group_state["accessories"] = accessories_dict
 
                         home_state[room_key_str][group_key_str] = group_state

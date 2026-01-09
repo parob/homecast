@@ -15,7 +15,7 @@ from graphql_mcp.server import GraphQLMCP
 from graphql_api import GraphQLAPI
 
 from homecast.mcp_base import ScopedMCPApp, send_json_error, extract_auth_from_scope
-from homecast.api.home import HomeAPI, set_home_id, _room_key, _accessory_key, _group_key, _simplify_accessory
+from homecast.api.home import HomeAPI, set_home_id, _room_key, _accessory_key, _group_key, _simplify_accessory, _unique_key
 from homecast.models.db.database import get_session
 from homecast.models.db.repositories import HomeRepository, UserRepository
 from homecast.websocket.handler import route_request, get_user_device_id
@@ -53,6 +53,7 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
                 return "(device not connected)"
 
             full_home_id = str(home.home_id)
+            home_key = _unique_key(home.name, full_home_id)
 
         accessories_result = await route_request(
             device_id=device_id,
@@ -77,6 +78,8 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
             room_key = _room_key(acc.get("roomName", "Unknown"), acc.get("roomId", ""))
             acc_key = _accessory_key(acc.get("name", "Unknown"), acc.get("id", ""))
             simplified = _simplify_accessory(acc)
+            # Add fully qualified name: home.room.accessory
+            simplified["name"] = f"{home_key}.{room_key}.{acc_key}"
 
             if room_key not in state:
                 state[room_key] = {}
@@ -95,13 +98,18 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
 
                     group_state = _simplify_accessory(first_member)
                     group_state["group"] = True
+                    # Add fully qualified name for group: home.room.group
+                    group_state["name"] = f"{home_key}.{room_key}.{grp_key}"
 
                     accessories_dict = {}
                     for acc_id in member_ids:
                         member = accessory_by_id.get(acc_id)
                         if member:
                             member_key = _accessory_key(member.get("name", "Unknown"), acc_id)
-                            accessories_dict[member_key] = _simplify_accessory(member)
+                            member_state = _simplify_accessory(member)
+                            # Add fully qualified name for group member: home.room.group.accessory
+                            member_state["name"] = f"{home_key}.{room_key}.{grp_key}.{member_key}"
+                            accessories_dict[member_key] = member_state
                     group_state["accessories"] = accessories_dict
 
                     state[room_key][grp_key] = group_state

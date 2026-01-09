@@ -348,8 +348,8 @@ def _value_for_characteristic(simple_name: str, value: Any) -> tuple[str, Any]:
     return char_type, value
 
 
-async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str]:
-    """Look up device_id from home ownership."""
+async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str, str]:
+    """Look up device_id from home ownership. Returns (device_id, full_home_id, home_key)."""
     with get_session() as db:
         home = HomeRepository.get_by_prefix(db, home_id_prefix)
         if not home:
@@ -359,7 +359,9 @@ async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str]:
         if not device_id:
             raise DeviceNotConnectedError(f"No connected device for home {home_id_prefix}")
 
-        return device_id, str(home.home_id)
+        full_home_id = str(home.home_id)
+        home_key = _unique_key(home.name, full_home_id)
+        return device_id, full_home_id, home_key
 
 
 def _require_home_id() -> str:
@@ -411,7 +413,7 @@ class HomeAPI:
             }
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, home_key = await _get_device_for_home(home_id_prefix)
 
         # Get accessories with values
         accessories_result = await route_request(
@@ -470,6 +472,8 @@ class HomeAPI:
             if room_key not in result:
                 result[room_key] = {}
 
+            # Add fully qualified name: home.room.accessory
+            simplified["name"] = f"{home_key}.{room_key}.{accessory_key}"
             result[room_key][accessory_key] = simplified
 
         # Add service groups in the room of their first member
@@ -501,13 +505,19 @@ class HomeAPI:
                     if room_key not in result:
                         result[room_key] = {}
 
+                    # Add fully qualified name for group: home.room.group
+                    group_state["name"] = f"{home_key}.{room_key}.{group_key}"
+
                     # Add all member accessories with their states (with unique keys)
                     accessories_dict = {}
                     for acc_id in member_ids:
                         member = accessory_by_id.get(acc_id)
                         if member:
                             member_key = _accessory_key(member.get("name", "Unknown"), acc_id)
-                            accessories_dict[member_key] = _simplify_accessory(member)
+                            member_state = _simplify_accessory(member)
+                            # Add fully qualified name for group member: home.room.group.accessory
+                            member_state["name"] = f"{home_key}.{room_key}.{group_key}.{member_key}"
+                            accessories_dict[member_key] = member_state
                     group_state["accessories"] = accessories_dict
 
                     result[room_key][group_key] = group_state
@@ -558,7 +568,7 @@ class HomeAPI:
             {"ok": 2, "failed": []} on success
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, _ = await _get_device_for_home(home_id_prefix)
 
         logger.info(f"set_state called with: {state}")
 
@@ -587,7 +597,7 @@ class HomeAPI:
             {"ok": true} on success, {"ok": false, "error": "message"} on failure
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, _ = await _get_device_for_home(home_id_prefix)
 
         # Get scenes to find ID by name
         scenes_result = await route_request(

@@ -12,9 +12,11 @@ from contextlib import asynccontextmanager
 # Suppress websockets deprecation warning (legacy server API)
 warnings.filterwarnings("ignore", message="remove second argument of ws_handler")
 
+from pathlib import Path
+
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount, WebSocketRoute
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, FileResponse
 from graphql_api import GraphQLAPI
 from graphql_http import GraphQLHTTP
 
@@ -64,6 +66,11 @@ def create_app() -> Starlette:
     # Health check endpoint
     async def health(request):
         return JSONResponse({"status": "ok"})
+
+    # Favicon endpoint
+    static_dir = Path(__file__).parent / "static"
+    async def favicon(request):
+        return FileResponse(static_dir / "favicon.ico", media_type="image/x-icon")
 
     # Lifespan handler for startup/shutdown
     @asynccontextmanager
@@ -136,6 +143,7 @@ def create_app() -> Starlette:
     app = Starlette(
         routes=[
             Route('/health', endpoint=health, methods=['GET']),
+            Route('/favicon.ico', endpoint=favicon, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),  # Mac app WebSocket
             WebSocketRoute('/ws/web', endpoint=web_client_endpoint),  # Web UI WebSocket
             Mount('/home/', app=home_scoped_app, name='home'),  # Single home API: /home/{home_id}/
