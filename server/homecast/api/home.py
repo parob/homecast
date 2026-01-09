@@ -441,7 +441,20 @@ class HomeAPI:
                     room_key = _sanitize_name(room_name)
                     if room_key not in result:
                         result[room_key] = {}
+
+                    # Build group state from first member + accessories list
                     group_state = _simplify_accessory(first_member)
+                    group_state["group"] = True
+
+                    # Add all member accessories with their states
+                    accessories_dict = {}
+                    for acc_id in member_ids:
+                        member = accessory_by_id.get(acc_id)
+                        if member:
+                            member_key = _sanitize_name(member.get("name", "Unknown"))
+                            accessories_dict[member_key] = _simplify_accessory(member)
+                    group_state["accessories"] = accessories_dict
+
                     result[room_key][group_name] = group_state
 
         # Add scenes
@@ -471,10 +484,19 @@ class HomeAPI:
             blind: target (0-100 position)
             valve: active (bool)
 
+        Groups (identified by "group": true in get_state):
+            - Setting a group affects ALL accessories in that group
+            - Individual accessories can still be controlled directly by name
+            - Example: "all_lights" group contains "lamp_1" and "lamp_2"
+              - Turn off all: {"room": {"all_lights": {"on": false}}}
+              - Turn off just lamp_1: {"room": {"lamp_1": {"on": false}}}
+
         Current state: __HOMECAST_STATE__
 
-        Example:
-            {"living_room": {"ceiling_light": {"on": true, "brightness": 100}}}
+        Examples:
+            Single accessory: {"living_room": {"ceiling_light": {"on": true, "brightness": 100}}}
+            Whole group: {"living_room": {"all_lights": {"on": false}}}
+            Multiple: {"living_room": {"lamp_1": {"on": true}, "lamp_2": {"on": false}}}
 
         Returns:
             {"ok": 2, "failed": []} on success

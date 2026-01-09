@@ -133,7 +133,20 @@ async def _fetch_home_state_summary(home_id_prefix: str) -> str:
                     room_key = _sanitize_name(room_name)
                     if room_key not in state:
                         state[room_key] = {}
+
+                    # Build group state from first member + accessories list
                     group_state = _simplify_accessory(first_member)
+                    group_state["group"] = True
+
+                    # Add all member accessories with their states
+                    accessories_dict = {}
+                    for acc_id in member_ids:
+                        member = accessory_by_id.get(acc_id)
+                        if member:
+                            member_key = _sanitize_name(member.get("name", "Unknown"))
+                            accessories_dict[member_key] = _simplify_accessory(member)
+                    group_state["accessories"] = accessories_dict
+
                     state[room_key][group_name] = group_state
 
         # Format as compact JSON
