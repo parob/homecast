@@ -219,20 +219,44 @@ async def web_client_endpoint(websocket: WebSocket):
     if not client:
         return
 
-    try:
-        # Keep connection alive, handle pings
+    # Start a background task to send server-initiated pings
+    async def ping_task():
         while True:
-            data = await websocket.receive_text()
+            await asyncio.sleep(30)  # Ping every 30 seconds
+            try:
+                await websocket.send_json({"type": "ping"})
+                await web_client_manager.update_heartbeat(client)
+            except Exception:
+                break  # Connection closed
+
+    ping_task_handle = asyncio.create_task(ping_task())
+
+    try:
+        # Keep connection alive, handle messages
+        while True:
+            try:
+                # Use a timeout to detect dead connections
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=90)
+            except asyncio.TimeoutError:
+                logger.warning(f"Web client {client.session_id} timed out - no message in 90s")
+                break
+
             try:
                 message = json.loads(data)
-                if message.get("type") == "ping":
-                    # Update heartbeat in database
+                msg_type = message.get("type")
+                if msg_type == "ping":
+                    # Client-initiated ping - update heartbeat and respond
                     await web_client_manager.update_heartbeat(client)
                     await websocket.send_json({"type": "pong"})
+                elif msg_type == "pong":
+                    # Response to our server-initiated ping
+                    await web_client_manager.update_heartbeat(client)
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
-        await web_client_manager.disconnect(client)
+        pass
     except Exception as e:
         logger.error(f"Web client error: {e}")
+    finally:
+        ping_task_handle.cancel()
         await web_client_manager.disconnect(client)

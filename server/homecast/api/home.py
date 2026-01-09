@@ -47,8 +47,8 @@ class DeviceNotConnectedError(Exception):
 
 
 def _sanitize_name(name: str) -> str:
-    """Convert accessory name to safe key format (spaces to underscores)."""
-    return re.sub(r'\s+', '_', name.strip())
+    """Convert accessory name to safe key format (spaces to underscores, lowercase)."""
+    return re.sub(r'\s+', '_', name.strip()).lower()
 
 
 # --- Characteristic Mapping ---
@@ -474,7 +474,7 @@ class HomeAPI:
         Current state: __HOMECAST_STATE__
 
         Example:
-            {"Living": {"Ceiling_Light": {"on": true, "brightness": 100}}}
+            {"living_room": {"ceiling_light": {"on": true, "brightness": 100}}}
 
         Returns:
             {"ok": 2, "failed": []} on success
@@ -482,114 +482,20 @@ class HomeAPI:
         home_id_prefix = _require_home_id()
         device_id, full_home_id = await _get_device_for_home(home_id_prefix)
 
-        # Get all accessories to map names to IDs
-        accessories_result = await route_request(
-            device_id=device_id,
-            action="accessories.list",
-            payload={"homeId": full_home_id}
-        )
-
-        # Get service groups to map names to IDs
-        groups_result = await route_request(
-            device_id=device_id,
-            action="serviceGroups.list",
-            payload={"homeId": full_home_id}
-        )
-
-        # Build accessory lookup by ID
-        accessory_by_id: Dict[str, Dict] = {}
-        for acc in accessories_result.get("accessories", []):
-            acc_id = acc.get("id")
-            if acc_id:
-                accessory_by_id[acc_id] = acc
-
-        # Build name -> accessory mapping
-        name_to_accessory: Dict[str, Dict] = {}
-        for accessory in accessories_result.get("accessories", []):
-            room_name = _sanitize_name(accessory.get("roomName", "Unknown"))
-            acc_name = _sanitize_name(accessory.get("name", "Unknown"))
-            key = f"{room_name}/{acc_name}"
-            name_to_accessory[key.lower()] = accessory
-
-        # Build name -> group mapping (keyed by room/name like accessories)
-        name_to_group: Dict[str, Dict] = {}
-        for group in groups_result.get("serviceGroups", []):
-            group_name = _sanitize_name(group.get("name", "Unknown"))
-            # Get room from first member
-            member_ids = group.get("accessoryIds", [])
-            if member_ids:
-                first_member = accessory_by_id.get(member_ids[0])
-                if first_member:
-                    room_name = _sanitize_name(first_member.get("roomName", "Unknown"))
-                    key = f"{room_name}/{group_name}"
-                    name_to_group[key.lower()] = group
-
-        ok_count = 0
-        failed = []
-
         logger.info(f"set_state called with: {state}")
 
-        for room_key, accessories in state.items():
-            if room_key == "scenes":
-                continue
+        # Pass directly to app - it handles name->ID mapping locally
+        result = await route_request(
+            device_id=device_id,
+            action="state.set",
+            payload={
+                "homeId": full_home_id,
+                "state": state
+            }
+        )
 
-            for acc_key, properties in accessories.items():
-                full_key = f"{room_key}/{acc_key}"
-
-                # Try as accessory first, then as group
-                accessory = name_to_accessory.get(full_key.lower())
-                group = name_to_group.get(full_key.lower())
-
-                logger.info(f"  {full_key}: accessory={accessory.get('id') if accessory else None}, group={group.get('id') if group else None}")
-
-                if not accessory and not group:
-                    logger.warning(f"  {full_key}: NOT FOUND in accessory or group mappings")
-                    failed.append(f"{full_key}: not found")
-                    continue
-
-                for prop, value in properties.items():
-                    if prop in ('type', '_settable'):
-                        continue
-
-                    char_type, char_value = _value_for_characteristic(prop, value)
-                    logger.info(f"    Setting {prop}={value} -> {char_type}={char_value}")
-
-                    try:
-                        if group:
-                            # Set via group
-                            payload = {
-                                "groupId": group.get("id"),
-                                "characteristicType": char_type,
-                                "value": char_value
-                            }
-                            logger.info(f"    -> serviceGroup.set: {payload}")
-                            result = await route_request(
-                                device_id=device_id,
-                                action="serviceGroup.set",
-                                payload=payload
-                            )
-                            logger.info(f"    -> OK: {result}")
-                        else:
-                            # Set via accessory
-                            payload = {
-                                "accessoryId": accessory.get("id"),
-                                "characteristicType": char_type,
-                                "value": char_value
-                            }
-                            logger.info(f"    -> characteristic.set: {payload}")
-                            result = await route_request(
-                                device_id=device_id,
-                                action="characteristic.set",
-                                payload=payload
-                            )
-                            logger.info(f"    -> OK: {result}")
-                        ok_count += 1
-                    except Exception as e:
-                        logger.error(f"    -> FAILED: {e}")
-                        failed.append(f"{full_key}.{prop}: {str(e)}")
-
-        logger.info(f"set_state complete: ok={ok_count}, failed={failed}")
-        return {"ok": ok_count, "failed": failed}
+        logger.info(f"set_state complete: {result}")
+        return {"ok": result.get("ok", 0), "failed": result.get("failed", [])}
 
     @field(mutable=True)
     async def run_scene(self, name: str) -> Dict[str, Any]:

@@ -146,7 +146,62 @@ enum CharacteristicMapper {
         "label": HMServiceTypeLabel,
     ]
 
+    // MARK: - Simplified Name Mapping (matches server's CHAR_TO_SIMPLE)
+    // Maps server's simplified names to HomeKit characteristic types
+
+    private static let simpleNameMap: [String: String] = [
+        // Power
+        "on": HMCharacteristicTypePowerState,
+
+        // Lighting
+        "brightness": HMCharacteristicTypeBrightness,
+        "hue": HMCharacteristicTypeHue,
+        "saturation": HMCharacteristicTypeSaturation,
+        "color_temp": HMCharacteristicTypeColorTemperature,
+
+        // Climate
+        "current_temp": HMCharacteristicTypeCurrentTemperature,
+        "heat_target": HMCharacteristicTypeHeatingThreshold,
+        "cool_target": HMCharacteristicTypeCoolingThreshold,
+        "active": HMCharacteristicTypeActive,
+        "hvac_mode": "000000B2-0000-1000-8000-0026BB765291",  // Target heater/cooler state
+        "hvac_state": "000000B1-0000-1000-8000-0026BB765291", // Current heater/cooler state
+
+        // Lock
+        "locked": HMCharacteristicTypeCurrentLockMechanismState,
+        "lock_target": HMCharacteristicTypeTargetLockMechanismState,
+
+        // Security/Alarm
+        "alarm_state": HMCharacteristicTypeCurrentSecuritySystemState,
+        "alarm_target": HMCharacteristicTypeTargetSecuritySystemState,
+
+        // Sensors
+        "motion": HMCharacteristicTypeMotionDetected,
+        "contact": HMCharacteristicTypeContactState,
+
+        // Position (blinds, etc)
+        "position": HMCharacteristicTypeCurrentPosition,
+        "target": HMCharacteristicTypeTargetPosition,
+
+        // Fan
+        "speed": HMCharacteristicTypeRotationSpeed,
+
+        // Audio
+        "volume": HMCharacteristicTypeVolume,
+        "mute": HMCharacteristicTypeMute,
+
+        // Battery
+        "battery": HMCharacteristicTypeBatteryLevel,
+    ]
+
     // MARK: - Conversion Methods
+
+    /// Convert server's simplified name to HomeKit characteristic type UUID
+    static func fromSimpleName(_ simpleName: String) -> String {
+        let normalized = simpleName.lowercased()
+        // Try simple name map first, then fall back to standard map
+        return simpleNameMap[normalized] ?? characteristicMap[normalized] ?? simpleName
+    }
 
     /// Convert friendly name to HomeKit characteristic type UUID
     static func toHomeKitType(_ friendlyName: String) -> String {
@@ -176,6 +231,47 @@ enum CharacteristicMapper {
     }
 
     // MARK: - Value Conversion
+
+    /// Convert alarm_target string to HomeKit value
+    private static let alarmTargetMap: [String: Int] = [
+        "home": 0, "away": 1, "night": 2, "off": 3
+    ]
+
+    /// Convert hvac_mode string to HomeKit value
+    private static let hvacModeMap: [String: Int] = [
+        "auto": 0, "heat": 1, "cool": 2
+    ]
+
+    /// Convert a simplified value to HomeKit value based on property name
+    static func convertSimpleValue(_ value: Any, forProperty prop: String) -> Any {
+        let propLower = prop.lowercased()
+
+        // alarm_target: "away" -> 1
+        if propLower == "alarm_target" {
+            if let str = value as? String, let intVal = alarmTargetMap[str.lowercased()] {
+                return intVal
+            }
+        }
+
+        // hvac_mode: "heat" -> 1
+        if propLower == "hvac_mode" {
+            if let str = value as? String, let intVal = hvacModeMap[str.lowercased()] {
+                return intVal
+            }
+        }
+
+        // lock_target: true -> 1, false -> 0
+        if propLower == "lock_target" {
+            if let boolVal = value as? Bool {
+                return boolVal ? 1 : 0
+            }
+            if let intVal = value as? Int {
+                return intVal != 0 ? 1 : 0
+            }
+        }
+
+        return value
+    }
 
     /// Convert a value to the appropriate type for a characteristic
     static func convertValue(_ value: Any, for characteristic: HMCharacteristic) throws -> Any {

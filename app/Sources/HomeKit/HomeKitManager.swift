@@ -402,6 +402,139 @@ class HomeKitManager: NSObject, ObservableObject {
         throw HomeKitError.sceneNotFound(sceneId)
     }
 
+    // MARK: - State Operations (simplified API)
+
+    /// Sanitize a name to match server convention (spaces to underscores, lowercase)
+    private func sanitizeName(_ name: String) -> String {
+        let pattern = try! NSRegularExpression(pattern: "\\s+", options: [])
+        let range = NSRange(name.startIndex..., in: name)
+        let result = pattern.stringByReplacingMatches(in: name, options: [], range: range, withTemplate: "_")
+        return result.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    /// Find an accessory by sanitized room name and accessory name
+    func findAccessoryByName(roomName: String, accessoryName: String, homeId: String? = nil) -> HMAccessory? {
+        let targetRoom = roomName.lowercased()
+        let targetAccessory = accessoryName.lowercased()
+
+        let homesToSearch: [HMHome]
+        if let homeId = homeId, let uuid = UUID(uuidString: homeId),
+           let home = homes.first(where: { $0.uniqueIdentifier == uuid }) {
+            homesToSearch = [home]
+        } else {
+            homesToSearch = homes
+        }
+
+        for home in homesToSearch {
+            for accessory in home.accessories {
+                let accRoom = sanitizeName(accessory.room?.name ?? "unknown")
+                let accName = sanitizeName(accessory.name)
+
+                if accRoom == targetRoom && accName == targetAccessory {
+                    return accessory
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Find a service group by sanitized name
+    func findServiceGroupByName(groupName: String, homeId: String? = nil) -> (HMServiceGroup, HMHome)? {
+        let targetGroup = groupName.lowercased()
+
+        let homesToSearch: [HMHome]
+        if let homeId = homeId, let uuid = UUID(uuidString: homeId),
+           let home = homes.first(where: { $0.uniqueIdentifier == uuid }) {
+            homesToSearch = [home]
+        } else {
+            homesToSearch = homes
+        }
+
+        for home in homesToSearch {
+            for group in home.serviceGroups {
+                if sanitizeName(group.name) == targetGroup {
+                    return (group, home)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Set state using simplified format: {room: {accessory: {prop: value}}}
+    func setState(state: [String: [String: [String: Any]]], homeId: String? = nil) async throws -> (ok: Int, failed: [String]) {
+        var okCount = 0
+        var failed: [String] = []
+
+        for (roomKey, accessories) in state {
+            // Skip special keys
+            if roomKey == "scenes" || roomKey == "groups" {
+                continue
+            }
+
+            for (accKey, properties) in accessories {
+                let fullKey = "\(roomKey)/\(accKey)"
+
+                // Try to find as accessory first
+                if let accessory = findAccessoryByName(roomName: roomKey, accessoryName: accKey, homeId: homeId) {
+                    for (prop, value) in properties {
+                        // Skip metadata properties
+                        if prop == "type" || prop == "_settable" {
+                            continue
+                        }
+
+                        do {
+                            let charType = CharacteristicMapper.fromSimpleName(prop)
+                            // Convert simplified values (e.g., "heat" -> 1 for hvac_mode)
+                            let convertedValue = CharacteristicMapper.convertSimpleValue(value, forProperty: prop)
+                            print("[HomeKit] 📝 setState: \(fullKey).\(prop) = \(value) -> \(charType)=\(convertedValue)")
+
+                            let _ = try await setCharacteristic(
+                                accessoryId: accessory.uniqueIdentifier.uuidString,
+                                characteristicType: charType,
+                                value: convertedValue
+                            )
+                            okCount += 1
+                        } catch {
+                            print("[HomeKit] ❌ setState failed: \(fullKey).\(prop): \(error)")
+                            failed.append("\(fullKey).\(prop): \(error.localizedDescription)")
+                        }
+                    }
+                }
+                // Try as service group
+                else if let (group, _) = findServiceGroupByName(groupName: accKey, homeId: homeId) {
+                    for (prop, value) in properties {
+                        if prop == "type" || prop == "_settable" {
+                            continue
+                        }
+
+                        do {
+                            let charType = CharacteristicMapper.fromSimpleName(prop)
+                            // Convert simplified values (e.g., "heat" -> 1 for hvac_mode)
+                            let convertedValue = CharacteristicMapper.convertSimpleValue(value, forProperty: prop)
+                            print("[HomeKit] 📝 setState (group): \(fullKey).\(prop) = \(value) -> \(charType)=\(convertedValue)")
+
+                            let _ = try await setServiceGroupCharacteristic(
+                                homeId: homeId,
+                                groupId: group.uniqueIdentifier.uuidString,
+                                characteristicType: charType,
+                                value: convertedValue
+                            )
+                            okCount += 1
+                        } catch {
+                            print("[HomeKit] ❌ setState (group) failed: \(fullKey).\(prop): \(error)")
+                            failed.append("\(fullKey).\(prop): \(error.localizedDescription)")
+                        }
+                    }
+                } else {
+                    print("[HomeKit] ⚠️ setState: \(fullKey) not found")
+                    failed.append("\(fullKey): not found")
+                }
+            }
+        }
+
+        return (okCount, failed)
+    }
+
     // MARK: - Private Helpers
 
     private func findCharacteristic(accessoryId: String, type: String) throws -> (HMAccessory, HMCharacteristic) {

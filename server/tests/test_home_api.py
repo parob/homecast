@@ -30,10 +30,10 @@ def sample_home():
 
 class TestSanitizeName:
     def test_spaces_to_underscores(self):
-        assert _sanitize_name("Living Room") == "Living_Room"
+        assert _sanitize_name("Living Room") == "living_room"
 
     def test_multiple_spaces(self):
-        assert _sanitize_name("Living   Room") == "Living_Room"
+        assert _sanitize_name("Living   Room") == "living_room"
 
 
 class TestGetSimpleName:

@@ -386,12 +386,51 @@ class WebSocketClient {
                 "sceneId": .string(sceneId)
             ]
 
+        // MARK: Simplified State API
+        case "state.set":
+            guard let stateValue = payload?["state"]?.objectValue else {
+                throw HomeKitError.invalidRequest("Missing state object")
+            }
+            let homeId = payload?["homeId"]?.stringValue
+
+            // Convert JSONValue to [String: [String: [String: Any]]]
+            var state: [String: [String: [String: Any]]] = [:]
+            for (roomKey, roomValue) in stateValue {
+                guard let accessories = roomValue.objectValue else { continue }
+                var roomState: [String: [String: Any]] = [:]
+                for (accKey, accValue) in accessories {
+                    guard let props = accValue.objectValue else { continue }
+                    var propDict: [String: Any] = [:]
+                    for (propKey, propValue) in props {
+                        propDict[propKey] = propValue.toAny()
+                    }
+                    roomState[accKey] = propDict
+                }
+                state[roomKey] = roomState
+            }
+
+            print("[HomeKit] 🎯 state.set: \(state)")
+            let result = try await homeKitManager.setState(state: state, homeId: homeId)
+            print("[HomeKit] ✅ state.set result: ok=\(result.ok), failed=\(result.failed)")
+
+            return [
+                "ok": .int(result.ok),
+                "failed": .array(result.failed.map { .string($0) })
+            ]
+
         default:
             throw HomeKitError.invalidRequest("Unknown action: \(action)")
         }
     }
 
     // MARK: - Helpers
+
+    /// Sanitize a name to match server convention (spaces to underscores, lowercase)
+    private func sanitizeName(_ name: String) -> String {
+        return name.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "\\s+", with: "_", options: .regularExpression)
+            .lowercased()
+    }
 
     private func homeToJSON(_ home: HomeModel) -> JSONValue {
         return .object([
@@ -618,6 +657,16 @@ enum JSONValue: Codable, Equatable {
 
     var boolValue: Bool? {
         if case .bool(let b) = self { return b }
+        return nil
+    }
+
+    var objectValue: [String: JSONValue]? {
+        if case .object(let o) = self { return o }
+        return nil
+    }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let a) = self { return a }
         return nil
     }
 
