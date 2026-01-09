@@ -380,24 +380,34 @@ class HomeAPI:
     """
 
     @field
-    async def get_state(self, rooms: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def get_state(
+        self,
+        filter_by_room: Optional[str] = None,
+        filter_by_type: Optional[str] = None,
+        filter_by_name: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get the current state of the home.
 
         Args:
-            rooms: Optional list of room names to filter. If empty/None, returns all rooms.
+            filter_by_room: Optional room name substring to filter (e.g. "living" matches "living_0bf8")
+            filter_by_type: Optional accessory type to filter (e.g. "light", "climate", "switch", "lock")
+            filter_by_name: Optional accessory name substring to filter (e.g. "lamp" matches "hue_lamp_a1b2")
+
+        All filters are case-insensitive and use substring matching. Multiple filters are AND'd together.
 
         Returns:
-            Dictionary with room names as keys, containing accessories and their states.
-            Each accessory includes a _settable list of properties that can be changed.
+            Dictionary with room keys as keys, containing accessories and their states.
+            All keys include a _xxxx ID suffix for uniqueness. Each accessory includes a _settable list.
 
         Example response:
             {
-              "Living": {
-                "Ceiling_Light": {"type": "light", "on": true, "brightness": 80, "_settable": ["on", "brightness"]},
-                "Thermostat": {"type": "climate", "current_temp": 18.5, "heat_target": 21, "_settable": ["heat_target", "active"]}
+              "living_0bf8": {
+                "ceiling_light_a1b2": {"type": "light", "on": true, "brightness": 80, "_settable": ["on", "brightness"]},
+                "thermostat_c3d4": {"type": "climate", "current_temp": 18.5, "heat_target": 21, "_settable": ["heat_target", "active"]}
               },
-              "scenes": ["Good Morning", "Goodnight"]
+              "scenes": ["Good Morning", "Goodnight"],
+              "_meta": {"fetched_at": "2024-01-09T12:34:56+00:00"}
             }
         """
         home_id_prefix = _require_home_id()
@@ -431,46 +441,65 @@ class HomeAPI:
             if acc_id:
                 accessory_by_id[acc_id] = acc
 
+        # Normalize filters for case-insensitive matching
+        room_filter = filter_by_room.lower() if filter_by_room else None
+        type_filter = filter_by_type.lower() if filter_by_type else None
+        name_filter = filter_by_name.lower() if filter_by_name else None
+
         # Build room-based structure
         result: Dict[str, Any] = {}
-        rooms_filter = set(r.lower() for r in rooms) if rooms else None
 
         for accessory in accessories_result.get("accessories", []):
             room_name = accessory.get("roomName", "Unknown")
             room_id = accessory.get("roomId", "")
-
-            # Filter by rooms if specified
-            if rooms_filter and room_name.lower() not in rooms_filter:
-                continue
+            acc_name = accessory.get("name", "Unknown")
 
             room_key = _room_key(room_name, room_id)
+            accessory_key = _accessory_key(acc_name, accessory.get("id", ""))
+            simplified = _simplify_accessory(accessory)
+            acc_type = simplified.get("type", "")
+
+            # Apply filters (all are AND'd together)
+            if room_filter and room_filter not in room_key:
+                continue
+            if type_filter and type_filter != acc_type:
+                continue
+            if name_filter and name_filter not in accessory_key:
+                continue
+
             if room_key not in result:
                 result[room_key] = {}
 
-            # Use unique key: name_shortid
-            accessory_key = _accessory_key(accessory.get("name", "Unknown"), accessory.get("id", ""))
-
-            result[room_key][accessory_key] = _simplify_accessory(accessory)
+            result[room_key][accessory_key] = simplified
 
         # Add service groups in the room of their first member
         for group in groups_result.get("serviceGroups", []):
             group_id = group.get("id", "")
-            group_key = _group_key(group.get("name", "Unknown"), group_id)
+            group_name = group.get("name", "Unknown")
+            group_key = _group_key(group_name, group_id)
             member_ids = group.get("accessoryIds", [])
             if member_ids:
                 first_member = accessory_by_id.get(member_ids[0])
                 if first_member:
                     room_name = first_member.get("roomName", "Unknown")
                     room_id = first_member.get("roomId", "")
-                    if rooms_filter and room_name.lower() not in rooms_filter:
-                        continue
                     room_key = _room_key(room_name, room_id)
-                    if room_key not in result:
-                        result[room_key] = {}
 
-                    # Build group state from first member + accessories list
+                    # Build group state from first member
                     group_state = _simplify_accessory(first_member)
                     group_state["group"] = True
+                    group_type = group_state.get("type", "")
+
+                    # Apply filters to groups (name filter matches group name)
+                    if room_filter and room_filter not in room_key:
+                        continue
+                    if type_filter and type_filter != group_type:
+                        continue
+                    if name_filter and name_filter not in group_key:
+                        continue
+
+                    if room_key not in result:
+                        result[room_key] = {}
 
                     # Add all member accessories with their states (with unique keys)
                     accessories_dict = {}
@@ -512,18 +541,18 @@ class HomeAPI:
 
         Groups (identified by "group": true in get_state):
             - Setting a group affects ALL accessories in that group
-            - Individual accessories can still be controlled directly by name
-            - Example: "all_lights" group contains "lamp_1" and "lamp_2"
-              - Turn off all: {"room": {"all_lights": {"on": false}}}
-              - Turn off just lamp_1: {"room": {"lamp_1": {"on": false}}}
+            - Individual accessories can still be controlled directly by their key
+            - Example: "all_lights_c3d4" group contains "lamp_1_e5f6" and "lamp_2_7890"
+              - Turn off all: {"living_0bf8": {"all_lights_c3d4": {"on": false}}}
+              - Turn off just lamp_1: {"living_0bf8": {"lamp_1_e5f6": {"on": false}}}
 
         Current state (includes _meta.fetched_at UTC - if within 10s or current time unknown, no need to call get_state):
         __HOMECAST_STATE__
 
-        Examples:
-            Single accessory: {"living_room": {"ceiling_light": {"on": true, "brightness": 100}}}
-            Whole group: {"living_room": {"all_lights": {"on": false}}}
-            Multiple: {"living_room": {"lamp_1": {"on": true}, "lamp_2": {"on": false}}}
+        Examples (keys must match exactly as shown in current state, including the _xxxx ID suffix):
+            Single accessory: {"living_0bf8": {"ceiling_light_a1b2": {"on": true, "brightness": 100}}}
+            Whole group: {"living_0bf8": {"all_lights_c3d4": {"on": false}}}
+            Multiple: {"living_0bf8": {"lamp_1_e5f6": {"on": true}, "lamp_2_7890": {"on": false}}}
 
         Returns:
             {"ok": 2, "failed": []} on success
