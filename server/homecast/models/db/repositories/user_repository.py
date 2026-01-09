@@ -33,6 +33,23 @@ class UserRepository(BaseRepository):
         return session.exec(statement).one_or_none()
 
     @classmethod
+    def get_by_prefix(
+        cls,
+        session: Session,
+        user_id_prefix: str
+    ) -> Optional[User]:
+        """Find a user by their ID prefix (first 8 characters)."""
+        users = session.exec(select(User)).all()
+        prefix_lower = user_id_prefix.lower()
+
+        for user in users:
+            user_id_str = str(user.id).lower()
+            if user_id_str.startswith(prefix_lower):
+                return user
+
+        return None
+
+    @classmethod
     def create_user(
         cls,
         session: Session,

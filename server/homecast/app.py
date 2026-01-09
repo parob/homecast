@@ -42,6 +42,7 @@ from homecast.websocket.web_clients import (
     cleanup_instance_sessions,
 )
 from homecast.home_app import home_scoped_app, home_http_app
+from homecast.homes_app import homes_scoped_app, homes_http_app
 
 
 logging.basicConfig(
@@ -67,8 +68,8 @@ def create_app() -> Starlette:
     # Lifespan handler for startup/shutdown
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        # Initialize HomeAPI app lifespan (required for FastMCP task group)
-        async with home_http_app.lifespan(app):
+        # Initialize MCP app lifespans (required for FastMCP task group)
+        async with home_http_app.lifespan(app), homes_http_app.lifespan(app):
             logger.info("HomeCast server starting up...")
 
             # Database setup
@@ -137,7 +138,8 @@ def create_app() -> Starlette:
             Route('/health', endpoint=health, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),  # Mac app WebSocket
             WebSocketRoute('/ws/web', endpoint=web_client_endpoint),  # Web UI WebSocket
-            Mount('/home/', app=home_scoped_app, name='home'),  # Home-scoped API endpoints
+            Mount('/home/', app=home_scoped_app, name='home'),  # Single home API: /home/{home_id}/
+            Mount('/homes/', app=homes_scoped_app, name='homes'),  # All homes API: /homes/{user_id}/
             Mount('/', app=graphql_app, name='graphql'),
         ],
         lifespan=lifespan
