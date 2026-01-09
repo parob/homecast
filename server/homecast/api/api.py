@@ -75,6 +75,11 @@ class HomeKitCharacteristic:
     is_readable: bool
     is_writable: bool
     value: Optional[str] = None  # JSON-encoded value (parse with JSON.parse on frontend)
+    # Metadata from HomeKit (optional - only included when available)
+    valid_values: Optional[List[int]] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step_value: Optional[float] = None
 
 
 @dataclass
@@ -196,12 +201,22 @@ def parse_characteristic(data: dict) -> HomeKitCharacteristic:
     raw_value = data.get("value")
     json_value = json.dumps(raw_value) if raw_value is not None else None
 
+    # Extract metadata (optional fields from HomeKit)
+    valid_values = data.get("validValues")
+    min_value = data.get("minValue")
+    max_value = data.get("maxValue")
+    step_value = data.get("stepValue")
+
     return HomeKitCharacteristic(
         id=data.get("id", ""),
         characteristic_type=data.get("characteristicType", ""),
         is_readable=data.get("isReadable", False),
         is_writable=data.get("isWritable", False),
-        value=json_value
+        value=json_value,
+        valid_values=valid_values,
+        min_value=min_value,
+        max_value=max_value,
+        step_value=step_value
     )
 
 

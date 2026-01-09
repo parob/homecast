@@ -172,6 +172,11 @@ struct CharacteristicModel {
     let rawValue: Any?
     let isReadable: Bool
     let isWritable: Bool
+    // Metadata from HomeKit
+    let validValues: [NSNumber]?
+    let minValue: NSNumber?
+    let maxValue: NSNumber?
+    let stepValue: NSNumber?
 
     init(from characteristic: HMCharacteristic, includeValue: Bool = true) {
         self.id = characteristic.uniqueIdentifier.uuidString
@@ -181,6 +186,11 @@ struct CharacteristicModel {
         self.rawValue = includeValue ? characteristic.value : nil
         self.isReadable = characteristic.properties.contains(HMCharacteristicPropertyReadable)
         self.isWritable = characteristic.properties.contains(HMCharacteristicPropertyWritable)
+        // Extract metadata
+        self.validValues = characteristic.metadata?.validValues
+        self.minValue = characteristic.metadata?.minimumValue
+        self.maxValue = characteristic.metadata?.maximumValue
+        self.stepValue = characteristic.metadata?.stepValue
     }
 
     func toJSON() -> JSONValue {
@@ -192,6 +202,19 @@ struct CharacteristicModel {
         ]
         if let value = rawValue {
             obj["value"] = convertToJSONValue(value)
+        }
+        // Include metadata if available
+        if let validValues = validValues, !validValues.isEmpty {
+            obj["validValues"] = .array(validValues.map { convertToJSONValue($0) })
+        }
+        if let minValue = minValue {
+            obj["minValue"] = convertToJSONValue(minValue)
+        }
+        if let maxValue = maxValue {
+            obj["maxValue"] = convertToJSONValue(maxValue)
+        }
+        if let stepValue = stepValue {
+            obj["stepValue"] = convertToJSONValue(stepValue)
         }
         return .object(obj)
     }
