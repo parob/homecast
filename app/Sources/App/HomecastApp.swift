@@ -54,6 +54,7 @@ struct RootView: View {
     var body: some View {
         ContentView()
             .frame(minWidth: 960, minHeight: 600)
+            .ignoresSafeArea()
     }
 }
 
@@ -69,33 +70,33 @@ struct ContentView: View {
     @State private var dKeyHeld = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header - pinned to top, stretches full width
-            headerView
-
-            // WebView - fills remaining space
+        ZStack(alignment: .top) {
+            // WebView - fills entire screen
             WebViewContainer(url: URL(string: "https://homecast.cloud/login")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
-        }
-        .edgesIgnoringSafeArea(.all)
-        .overlay {
-            if showingLogs {
-                ZStack {
-                    // Dimmed background
-                    Color.black.opacity(0.3)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            showingLogs = false
-                        }
+                .ignoresSafeArea()
 
-                    // Logs panel
-                    LogsSheet(logManager: logManager, connectionManager: connectionManager, homeKitManager: homeKitManager, dismiss: {
+            // Header - overlays on top when 'd' key is held
+            if showInfoButton {
+                headerView
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            // Logs panel overlay
+            if showingLogs {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
                         showingLogs = false
-                    })
-                    .shadow(radius: 20)
-                }
+                    }
+
+                LogsSheet(logManager: logManager, connectionManager: connectionManager, homeKitManager: homeKitManager, dismiss: {
+                    showingLogs = false
+                })
+                .shadow(radius: 20)
                 .transition(.opacity)
             }
         }
+        .ignoresSafeArea()
         .onChange(of: showingLogs) { isShowing in
             // Hide info button when logs panel opens
             if isShowing {
@@ -189,6 +190,9 @@ struct ContentView: View {
 /// Custom WKWebView that properly handles keyboard input on Mac Catalyst
 class FocusableWebView: WKWebView {
     override var canBecomeFirstResponder: Bool { true }
+
+    // Override safe area insets to allow full-bleed content
+    override var safeAreaInsets: UIEdgeInsets { .zero }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -319,6 +323,10 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
+
+        // Configure for full-bleed content (no safe area insets)
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.insetsLayoutMarginsFromSafeArea = false
 
         webView.load(URLRequest(url: url))
         return webView

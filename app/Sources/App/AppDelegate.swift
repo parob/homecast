@@ -182,10 +182,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         #if targetEnvironment(macCatalyst)
-        // Configure window for Mac with toolbar
+        // Configure window for Mac - hide titlebar for full-bleed WebView
         if let titlebar = windowScene.titlebar {
             titlebar.titleVisibility = .hidden
-            titlebar.toolbarStyle = .unified
+            titlebar.toolbar = nil
         }
 
         // Set window size - minimum matches default opening size
