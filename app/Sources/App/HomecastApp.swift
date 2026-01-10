@@ -89,10 +89,18 @@ struct ContentView: View {
                         showingLogs = false
                     }
 
-                LogsSheet(logManager: logManager, connectionManager: connectionManager, homeKitManager: homeKitManager, dismiss: {
-                    showingLogs = false
-                })
-                .shadow(radius: 20)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        LogsSheet(logManager: logManager, connectionManager: connectionManager, homeKitManager: homeKitManager, dismiss: {
+                            showingLogs = false
+                        })
+                        .shadow(radius: 20)
+                        Spacer()
+                    }
+                    Spacer()
+                }
                 .transition(.opacity)
             }
         }
