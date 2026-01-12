@@ -52,9 +52,14 @@ struct HomecastApp: App {
 
 struct RootView: View {
     var body: some View {
+        #if targetEnvironment(macCatalyst)
         ContentView()
             .frame(minWidth: 960, minHeight: 600)
             .ignoresSafeArea()
+        #else
+        ContentView()
+            .ignoresSafeArea()
+        #endif
     }
 }
 
@@ -71,7 +76,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // WebView - fills entire screen
+            // WebView - fills entire screen (edge-to-edge)
             WebViewContainer(url: URL(string: "https://homecast.cloud/login")!, authToken: connectionManager.authToken, connectionManager: connectionManager)
                 .ignoresSafeArea()
 
@@ -199,8 +204,11 @@ struct ContentView: View {
 class FocusableWebView: WKWebView {
     override var canBecomeFirstResponder: Bool { true }
 
-    // Override safe area insets to allow full-bleed content
+    #if targetEnvironment(macCatalyst)
+    // On Mac, override safe area insets for full-bleed content
     override var safeAreaInsets: UIEdgeInsets { .zero }
+    #endif
+    // On iOS, keep real safe area insets so CSS env(safe-area-inset-*) works
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -332,9 +340,14 @@ struct WebViewContainer: UIViewRepresentable {
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
 
-        // Configure for full-bleed content (no safe area insets)
+        #if targetEnvironment(macCatalyst)
+        // On Mac, disable content inset adjustment for full-bleed layout
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.insetsLayoutMarginsFromSafeArea = false
+        #else
+        // On iOS, set mobile user agent so website renders mobile layout
+        let iOSVersion = UIDevice.current.systemVersion
+        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS \(iOSVersion.replacingOccurrences(of: ".", with: "_")) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(iOSVersion) Mobile/15E148 Safari/604.1"
+        #endif
 
         webView.load(URLRequest(url: url))
         return webView

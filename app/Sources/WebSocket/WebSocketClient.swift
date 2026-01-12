@@ -12,6 +12,10 @@ class WebSocketClient {
     private var isConnected = false
     private var reconnectAttempts = 0
     private var pingTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+
+    // Refresh connection every 5 minutes to avoid server timeout (600s)
+    private let connectionRefreshInterval: UInt64 = 5 * 60 * 1_000_000_000  // 5 minutes in nanoseconds
 
     // Callbacks
     var onConnect: (() -> Void)?
@@ -19,6 +23,7 @@ class WebSocketClient {
     var onAuthError: (() -> Void)?
     var onWebClientsListeningChanged: ((Bool) -> Void)?
     var onPingHealthChanged: ((Int) -> Void)?  // Reports consecutive ping failures (0 = healthy)
+    var onRefreshNeeded: (() -> Void)?  // Called when connection should be refreshed
 
     init(url: URL, token: String, homeKitManager: HomeKitManager) {
         self.url = url
@@ -52,11 +57,15 @@ class WebSocketClient {
 
         // Start ping task
         startPingTask()
+
+        // Start refresh timer (reconnect before server timeout)
+        startRefreshTask()
     }
 
     func disconnect() {
         isConnected = false
         pingTask?.cancel()
+        refreshTask?.cancel()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         Task { @MainActor in
@@ -562,11 +571,25 @@ class WebSocketClient {
         }
     }
 
+    private func startRefreshTask() {
+        refreshTask = Task {
+            try? await Task.sleep(nanoseconds: connectionRefreshInterval)
+            if isConnected {
+                print("[WebSocket] 🔄 Connection refresh interval reached (5 min) - triggering reconnect")
+                Task { @MainActor in
+                    logManager.log("Refreshing connection (5 min interval)", category: .websocket)
+                }
+                onRefreshNeeded?()
+            }
+        }
+    }
+
     // MARK: - Reconnection
 
     private func handleDisconnect(error: Error?) {
         isConnected = false
         pingTask?.cancel()
+        refreshTask?.cancel()
         onDisconnect?(error)
 
         Task { @MainActor in

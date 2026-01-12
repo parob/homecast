@@ -2,6 +2,9 @@ import Foundation
 import SwiftUI
 import Combine
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Manages authentication and WebSocket connection to the relay server
 @MainActor
@@ -44,12 +47,12 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
         return newId
     }
 
-    // Device name from macOS system
+    // Device name from system
     private var deviceName: String {
         #if targetEnvironment(macCatalyst)
         return ProcessInfo.processInfo.hostName
         #else
-        return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        return UIDevice.current.name
         #endif
     }
 
@@ -318,6 +321,12 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
         webSocketClient?.onPingHealthChanged = { [weak self] failures in
             Task { @MainActor in
                 self?.consecutivePingFailures = failures
+            }
+        }
+
+        webSocketClient?.onRefreshNeeded = { [weak self] in
+            Task { @MainActor in
+                await self?.reconnect()
             }
         }
 
