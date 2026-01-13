@@ -135,6 +135,8 @@ class Collection(GraphQLBaseModel, table=True):
         description="Display name for the collection")
     payload: str = Field(default="[]",
         description='JSON array: [{"home_id": "uuid", "accessory_id": "uuid"}, ...]')
+    settings_json: Optional[str] = Field(default=None,
+        description='JSON settings: {"compactMode": bool, "order": ["id1", "id2", ...]}')
 
 
 class CollectionAccess(GraphQLBaseModel, table=True):

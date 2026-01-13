@@ -937,7 +937,8 @@ class HomecastAPI:
         self,
         collection_id: str,
         name: Optional[str] = None,
-        payload: Optional[str] = None
+        payload: Optional[str] = None,
+        settings_json: Optional[str] = None
     ) -> Optional[Collection]:
         """Update a collection. Requires authentication and owner role."""
         auth = require_auth()
@@ -949,7 +950,8 @@ class HomecastAPI:
             return CollectionRepository.update_collection(
                 session, cid, auth.user_id,
                 name=name.strip() if name else None,
-                payload=payload
+                payload=payload,
+                settings_json=settings_json
             )
 
     @field(mutable=True)
