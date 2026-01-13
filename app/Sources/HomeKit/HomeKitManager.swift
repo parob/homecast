@@ -234,23 +234,30 @@ class HomeKitManager: NSObject, ObservableObject {
     // MARK: - Accessory Operations
 
     func listAccessories(homeId: String? = nil, roomId: String? = nil, includeValues: Bool = false) throws -> [AccessoryModel] {
-        var accessories: [HMAccessory] = []
+        var result: [AccessoryModel] = []
 
         if let homeId = homeId, let uuid = UUID(uuidString: homeId) {
             guard let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
                 throw HomeKitError.homeNotFound(homeId)
             }
-            accessories = home.accessories
+            var accessories = home.accessories
+            if let roomId = roomId, let roomUuid = UUID(uuidString: roomId) {
+                accessories = accessories.filter { $0.room?.uniqueIdentifier == roomUuid }
+            }
+            result = accessories.map { AccessoryModel(from: $0, homeId: homeId, includeValues: includeValues) }
         } else {
-            accessories = homes.flatMap { $0.accessories }
+            // No home filter - iterate through all homes and include homeId
+            for home in homes {
+                let hid = home.uniqueIdentifier.uuidString
+                var accessories = home.accessories
+                if let roomId = roomId, let roomUuid = UUID(uuidString: roomId) {
+                    accessories = accessories.filter { $0.room?.uniqueIdentifier == roomUuid }
+                }
+                result.append(contentsOf: accessories.map { AccessoryModel(from: $0, homeId: hid, includeValues: includeValues) })
+            }
         }
 
-        if let roomId = roomId, let uuid = UUID(uuidString: roomId) {
-            accessories = accessories.filter { $0.room?.uniqueIdentifier == uuid }
-        }
-
-        // Skip characteristic values by default for performance (600+ accessories)
-        return accessories.map { AccessoryModel(from: $0, includeValues: includeValues) }
+        return result
     }
 
     func getAccessory(id: String) throws -> AccessoryModel {
@@ -260,7 +267,7 @@ class HomeKitManager: NSObject, ObservableObject {
 
         for home in homes {
             if let accessory = home.accessories.first(where: { $0.uniqueIdentifier == uuid }) {
-                return AccessoryModel(from: accessory)
+                return AccessoryModel(from: accessory, homeId: home.uniqueIdentifier.uuidString)
             }
         }
 

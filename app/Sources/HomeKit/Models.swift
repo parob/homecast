@@ -105,15 +105,17 @@ struct ServiceGroupModel: Codable {
 struct AccessoryModel {
     let id: String
     let name: String
+    let homeId: String?
     let roomId: String?
     let roomName: String?
     let category: String
     let isReachable: Bool
     let services: [ServiceModel]
 
-    init(from accessory: HMAccessory, includeValues: Bool = true) {
+    init(from accessory: HMAccessory, homeId: String? = nil, includeValues: Bool = true) {
         self.id = accessory.uniqueIdentifier.uuidString
         self.name = accessory.name
+        self.homeId = homeId
         self.roomId = accessory.room?.uniqueIdentifier.uuidString
         self.roomName = accessory.room?.name
         self.category = accessory.category.localizedDescription
@@ -129,6 +131,9 @@ struct AccessoryModel {
             "isReachable": .bool(isReachable),
             "services": .array(services.map { $0.toJSON() })
         ]
+        if let homeId = homeId {
+            obj["homeId"] = .string(homeId)
+        }
         if let roomId = roomId {
             obj["roomId"] = .string(roomId)
         }
