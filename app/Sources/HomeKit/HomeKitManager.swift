@@ -4,6 +4,7 @@ import Foundation
 /// Delegate to receive characteristic value change notifications
 protocol HomeKitManagerDelegate: AnyObject {
     func characteristicDidUpdate(accessoryId: String, characteristicType: String, value: Any)
+    func accessoryReachabilityDidUpdate(accessoryId: String, isReachable: Bool)
 }
 
 @MainActor
@@ -780,6 +781,22 @@ extension HomeKitManager: HMAccessoryDelegate {
                 accessoryId: accessoryId,
                 characteristicType: charType,
                 value: value
+            )
+        }
+    }
+
+    nonisolated func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
+        let accessoryName = accessory.name
+        let accessoryId = accessory.uniqueIdentifier.uuidString
+        let isReachable = accessory.isReachable
+
+        // Log the change
+        print("[HomeKit] 📡 Reachability: \(accessoryName) → \(isReachable ? "reachable" : "unreachable")")
+
+        Task { @MainActor in
+            self.delegate?.accessoryReachabilityDidUpdate(
+                accessoryId: accessoryId,
+                isReachable: isReachable
             )
         }
     }

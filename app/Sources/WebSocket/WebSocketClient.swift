@@ -16,6 +16,7 @@ class WebSocketClient {
     private var pingTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var connectionSerial: Int = 0  // Incremented on each connection to invalidate old tasks
 
     // Refresh connection every 5 minutes to avoid server timeout (600s)
     private let connectionRefreshInterval: UInt64 = 5 * 60 * 1_000_000_000  // 5 minutes in nanoseconds
@@ -42,6 +43,10 @@ class WebSocketClient {
         reconnectTask = nil
         isReconnecting = false
 
+        // Increment connection serial - this invalidates all tasks from previous connections
+        connectionSerial += 1
+        let mySerial = connectionSerial
+
         await MainActor.run {
             logManager.log("Connecting to \(url.host ?? "server")...", category: .websocket)
         }
@@ -64,14 +69,14 @@ class WebSocketClient {
             logManager.log("Connected successfully", category: .websocket)
         }
 
-        // Start listening for messages
-        startListening()
+        // Start listening for messages (passing serial to detect stale connections)
+        startListening(serial: mySerial)
 
         // Start ping task
-        startPingTask()
+        startPingTask(serial: mySerial)
 
         // Start refresh timer (reconnect before server timeout)
-        startRefreshTask()
+        startRefreshTask(serial: mySerial)
     }
 
     func disconnect() {
@@ -118,21 +123,47 @@ class WebSocketClient {
         }
     }
 
+    /// Send a reachability update event to the server
+    func sendReachabilityUpdate(accessoryId: String, isReachable: Bool) {
+        guard isConnected else { return }
+
+        print("[WebSocket] 📤 Event: accessory.reachability (accessory=\(accessoryId.prefix(8))..., isReachable=\(isReachable))")
+
+        let event = ProtocolMessage(
+            id: UUID().uuidString,
+            type: .event,
+            action: "accessory.reachability",
+            payload: [
+                "accessoryId": .string(accessoryId),
+                "isReachable": .bool(isReachable)
+            ]
+        )
+
+        Task {
+            do {
+                try await send(event)
+            } catch {
+                print("[WebSocket] ❌ Failed to send reachability update: \(error)")
+            }
+        }
+    }
+
     // MARK: - Message Handling
 
-    private func startListening() {
+    private func startListening(serial: Int) {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self = self else { return }
-            while self.isConnected {
+            while self.isConnected && self.connectionSerial == serial {
                 do {
                     let message = try await self.receive()
                     await self.handleMessage(message)
                 } catch {
-                    if self.isConnected {
+                    // Only handle disconnect if this is still the current connection
+                    if self.isConnected && self.connectionSerial == serial {
                         await MainActor.run {
                             self.logManager.log("Receive error: \(error.localizedDescription)", category: .websocket)
                         }
-                        self.handleDisconnect(error: error)
+                        self.handleDisconnect(error: error, serial: serial)
                     }
                     break
                 }
@@ -555,13 +586,14 @@ class WebSocketClient {
     private var consecutivePingFailures = 0
     private let maxPingFailures = 2
 
-    private func startPingTask() {
+    private func startPingTask(serial: Int) {
         pingTask = Task {
-            while isConnected {
+            while isConnected && connectionSerial == serial {
                 try? await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
+                guard connectionSerial == serial else { return }
                 if isConnected {
                     webSocketTask?.sendPing { [weak self] error in
-                        guard let self = self else { return }
+                        guard let self = self, self.connectionSerial == serial else { return }
                         let previousFailures = self.consecutivePingFailures
                         if let error = error {
                             print("[WebSocket] ⚠️ Ping failed: \(error)")
@@ -575,7 +607,7 @@ class WebSocketClient {
                                 Task { @MainActor in
                                     self.logManager.log("Connection stale - forcing reconnect", category: .websocket)
                                 }
-                                self.handleDisconnect(error: error)
+                                self.handleDisconnect(error: error, serial: serial)
                             }
                         } else {
                             self.consecutivePingFailures = 0
@@ -590,9 +622,10 @@ class WebSocketClient {
         }
     }
 
-    private func startRefreshTask() {
+    private func startRefreshTask(serial: Int) {
         refreshTask = Task {
             try? await Task.sleep(nanoseconds: connectionRefreshInterval)
+            guard connectionSerial == serial else { return }
             if isConnected {
                 print("[WebSocket] 🔄 Connection refresh interval reached (5 min) - triggering reconnect")
                 Task { @MainActor in
@@ -605,7 +638,13 @@ class WebSocketClient {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect(error: Error?) {
+    private func handleDisconnect(error: Error?, serial: Int) {
+        // Ignore disconnects from stale connections
+        guard connectionSerial == serial else {
+            print("[WebSocket] Ignoring disconnect from stale connection (serial \(serial) != \(connectionSerial))")
+            return
+        }
+
         // Prevent multiple simultaneous reconnection attempts
         guard !isReconnecting else {
             print("[WebSocket] Already reconnecting, ignoring disconnect")
@@ -647,12 +686,17 @@ class WebSocketClient {
         reconnectTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            // Check serial again after sleep - a new connection might have started
+            guard self.connectionSerial == serial else {
+                print("[WebSocket] Cancelling reconnect - new connection already started")
+                return
+            }
             do {
                 try await connect()
             } catch {
                 print("[WebSocket] Reconnect attempt \(reconnectAttempts) failed: \(error)")
                 isReconnecting = false  // Allow another attempt
-                self.handleDisconnect(error: error)
+                self.handleDisconnect(error: error, serial: self.connectionSerial)
             }
         }
     }

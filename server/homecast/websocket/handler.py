@@ -361,6 +361,35 @@ class ConnectionManager:
                 )
 
                 logger.info(f"Broadcast characteristic update to user {user_id}: {accessory_id}/{characteristic_type}")
+
+        elif action == "accessory.reachability":
+            accessory_id = payload.get("accessoryId")
+            is_reachable = payload.get("isReachable")
+
+            if accessory_id is None or is_reachable is None:
+                logger.warning(f"Invalid accessory.reachability event from {device_id}")
+                return
+
+            # Get user_id for this device
+            if device_id in self.connections:
+                user_id = self.connections[device_id].user_id
+
+                # Broadcast to local web clients for this user
+                await web_client_manager.broadcast_reachability_update(
+                    user_id=user_id,
+                    accessory_id=accessory_id,
+                    is_reachable=is_reachable
+                )
+
+                # Broadcast to web clients on other instances via Pub/Sub
+                await pubsub_router.broadcast_reachability_update(
+                    user_id=user_id,
+                    accessory_id=accessory_id,
+                    is_reachable=is_reachable
+                )
+
+                logger.info(f"Broadcast reachability update to user {user_id}: {accessory_id} -> {'reachable' if is_reachable else 'unreachable'}")
+
         else:
             logger.warning(f"Unknown event action from {device_id}: {action}")
 

@@ -511,4 +511,12 @@ extension ConnectionManager {
             value: value
         )
     }
+
+    func accessoryReachabilityDidUpdate(accessoryId: String, isReachable: Bool) {
+        // Forward reachability updates to the server via WebSocket
+        webSocketClient?.sendReachabilityUpdate(
+            accessoryId: accessoryId,
+            isReachable: isReachable
+        )
+    }
 }

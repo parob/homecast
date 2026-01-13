@@ -179,6 +179,19 @@ class WebClientManager:
             "value": value
         })
 
+    async def broadcast_reachability_update(
+        self,
+        user_id: uuid.UUID,
+        accessory_id: str,
+        is_reachable: bool
+    ):
+        """Broadcast a reachability update to all web clients for a user."""
+        await self.broadcast_to_user(user_id, {
+            "type": "reachability_update",
+            "accessoryId": accessory_id,
+            "isReachable": is_reachable
+        })
+
 
 # Global instance
 web_client_manager = WebClientManager()
