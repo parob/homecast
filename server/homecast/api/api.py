@@ -11,11 +11,14 @@ from dataclasses import dataclass
 
 from graphql_api import field
 
+from sqlmodel import select
+
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType
-from homecast.models.db.repositories import UserRepository, SessionRepository
+from homecast.models.db.models import SessionType, CollectionRole, CollectionAccess
+from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository
 from homecast.auth import generate_token, AuthContext
 from homecast.middleware import get_auth_context
+from homecast.config import FRONTEND_URL
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +196,97 @@ class UpdateSettingsResult:
     settings: Optional[UserSettings] = None
 
 
+# --- Collection Types ---
+
+@dataclass
+class CollectionItem:
+    """An item in a collection (home, room, or accessory reference)."""
+    type: str  # "home" | "room" | "accessory"
+    home_id: str
+    room_id: Optional[str] = None
+    accessory_id: Optional[str] = None
+
+
+@dataclass
+class CollectionInfo:
+    """Collection information."""
+    id: str
+    name: str
+    items: List[CollectionItem]
+    role: str  # "owner" | "editor" | "viewer"
+    is_shared: bool
+    share_token: Optional[str] = None
+    share_access_level: Optional[str] = None
+    share_has_password: bool = False
+    share_url: Optional[str] = None
+
+
+@dataclass
+class CollectionResult:
+    """Result of collection operations."""
+    success: bool
+    collection: Optional[CollectionInfo] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class ShareResult:
+    """Result of sharing operations."""
+    success: bool
+    share_token: Optional[str] = None
+    share_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class SharedCollectionInfo:
+    """Public information about a shared collection."""
+    name: str
+    requires_password: bool
+    access_level: str
+
+
+@dataclass
+class SetSharedStateResult:
+    """Result of setting state on a shared collection."""
+    success: bool
+    ok: int = 0
+    failed: List[str] = None
+
+
 # --- Helper Functions ---
+
+def collection_to_info(collection, role: str) -> CollectionInfo:
+    """Convert a Collection model to CollectionInfo."""
+    items = []
+    try:
+        items_data = json.loads(collection.items_json)
+        for item in items_data:
+            items.append(CollectionItem(
+                type=item.get("type", ""),
+                home_id=item.get("home_id", ""),
+                room_id=item.get("room_id"),
+                accessory_id=item.get("accessory_id")
+            ))
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    share_url = None
+    if collection.is_shared and collection.share_token:
+        share_url = f"{FRONTEND_URL}/c/{collection.share_token}"
+
+    return CollectionInfo(
+        id=str(collection.id),
+        name=collection.name,
+        items=items,
+        role=role,
+        is_shared=collection.is_shared,
+        share_token=collection.share_token if role == CollectionRole.OWNER.value else None,
+        share_access_level=collection.share_access_level,
+        share_has_password=collection.share_password_hash is not None,
+        share_url=share_url if role == CollectionRole.OWNER.value else None
+    )
+
 
 def parse_characteristic(data: dict) -> HomeKitCharacteristic:
     """Parse a characteristic dict into a typed object."""
@@ -875,3 +968,419 @@ class HomecastAPI:
         except Exception as e:
             logger.error(f"scene.execute error: {e}")
             raise
+
+    # --- Collection Endpoints (Authenticated) ---
+
+    @field(mutable=True)
+    async def create_collection(self, name: str) -> CollectionResult:
+        """Create a new collection. Requires authentication."""
+        auth = require_auth()
+
+        if not name or not name.strip():
+            return CollectionResult(success=False, error="Name is required")
+
+        try:
+            with get_session() as session:
+                collection = CollectionRepository.create_collection(
+                    session=session,
+                    user_id=auth.user_id,
+                    name=name.strip()
+                )
+                return CollectionResult(
+                    success=True,
+                    collection=collection_to_info(collection, CollectionRole.OWNER.value)
+                )
+        except Exception as e:
+            logger.error(f"create_collection error: {e}", exc_info=True)
+            return CollectionResult(success=False, error="Failed to create collection")
+
+    @field(mutable=True)
+    async def update_collection(
+        self,
+        collection_id: str,
+        name: Optional[str] = None,
+        items: Optional[str] = None  # JSON string
+    ) -> CollectionResult:
+        """Update a collection's name or items. Requires owner or editor role."""
+        from uuid import UUID
+        auth = require_auth()
+
+        try:
+            collection_uuid = UUID(collection_id)
+        except ValueError:
+            return CollectionResult(success=False, error="Invalid collection ID")
+
+        try:
+            with get_session() as session:
+                # Check access
+                role = CollectionRepository.get_user_role(session, auth.user_id, collection_uuid)
+                if not role or role not in [CollectionRole.OWNER.value, CollectionRole.EDITOR.value]:
+                    return CollectionResult(success=False, error="Access denied")
+
+                # Validate items JSON if provided
+                if items is not None:
+                    try:
+                        json.loads(items)
+                    except json.JSONDecodeError:
+                        return CollectionResult(success=False, error="Invalid items JSON")
+
+                collection = CollectionRepository.update_collection(
+                    session=session,
+                    collection_id=collection_uuid,
+                    name=name.strip() if name else None,
+                    items_json=items
+                )
+
+                if not collection:
+                    return CollectionResult(success=False, error="Collection not found")
+
+                return CollectionResult(
+                    success=True,
+                    collection=collection_to_info(collection, role)
+                )
+        except Exception as e:
+            logger.error(f"update_collection error: {e}", exc_info=True)
+            return CollectionResult(success=False, error="Failed to update collection")
+
+    @field(mutable=True)
+    async def remove_collection(self, collection_id: str) -> bool:
+        """
+        Remove a collection or user's access to it.
+        - If owner: deletes the collection
+        - If viewer: removes user's access (unsaves)
+        """
+        from uuid import UUID
+        auth = require_auth()
+
+        try:
+            collection_uuid = UUID(collection_id)
+        except ValueError:
+            return False
+
+        try:
+            with get_session() as session:
+                role = CollectionRepository.get_user_role(session, auth.user_id, collection_uuid)
+                if not role:
+                    return False
+
+                if role == CollectionRole.OWNER.value:
+                    # Delete the collection
+                    return CollectionRepository.delete_collection(session, collection_uuid)
+                else:
+                    # Just remove access
+                    return CollectionRepository.revoke_access(session, auth.user_id, collection_uuid)
+        except Exception as e:
+            logger.error(f"remove_collection error: {e}", exc_info=True)
+            return False
+
+    @field
+    async def collections(self) -> List[CollectionInfo]:
+        """Get all collections the user has access to. Requires authentication."""
+        auth = require_auth()
+
+        try:
+            with get_session() as session:
+                results = CollectionRepository.get_user_collections(session, auth.user_id)
+                return [collection_to_info(coll, role) for coll, role in results]
+        except Exception as e:
+            logger.error(f"collections error: {e}", exc_info=True)
+            return []
+
+    @field(mutable=True)
+    async def share_collection(
+        self,
+        collection_id: str,
+        access_level: str,
+        password: Optional[str] = None,
+        expires_in_days: Optional[int] = None
+    ) -> ShareResult:
+        """Enable or update sharing for a collection. Requires owner role."""
+        from uuid import UUID
+        from datetime import timedelta
+        auth = require_auth()
+
+        if access_level not in ["view", "control"]:
+            return ShareResult(success=False, error="Invalid access level")
+
+        try:
+            collection_uuid = UUID(collection_id)
+        except ValueError:
+            return ShareResult(success=False, error="Invalid collection ID")
+
+        try:
+            with get_session() as session:
+                role = CollectionRepository.get_user_role(session, auth.user_id, collection_uuid)
+                if role != CollectionRole.OWNER.value:
+                    return ShareResult(success=False, error="Only owner can share")
+
+                from datetime import datetime, timezone
+                expires_at = None
+                if expires_in_days:
+                    expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+
+                token = CollectionRepository.enable_sharing(
+                    session=session,
+                    collection_id=collection_uuid,
+                    access_level=access_level,
+                    password=password,
+                    expires_at=expires_at
+                )
+
+                if not token:
+                    return ShareResult(success=False, error="Collection not found")
+
+                return ShareResult(
+                    success=True,
+                    share_token=token,
+                    share_url=f"{FRONTEND_URL}/c/{token}"
+                )
+        except Exception as e:
+            logger.error(f"share_collection error: {e}", exc_info=True)
+            return ShareResult(success=False, error="Failed to share collection")
+
+    @field(mutable=True)
+    async def unshare_collection(self, collection_id: str) -> bool:
+        """Disable sharing for a collection. Requires owner role."""
+        from uuid import UUID
+        auth = require_auth()
+
+        try:
+            collection_uuid = UUID(collection_id)
+        except ValueError:
+            return False
+
+        try:
+            with get_session() as session:
+                role = CollectionRepository.get_user_role(session, auth.user_id, collection_uuid)
+                if role != CollectionRole.OWNER.value:
+                    return False
+
+                return CollectionRepository.disable_sharing(session, collection_uuid)
+        except Exception as e:
+            logger.error(f"unshare_collection error: {e}", exc_info=True)
+            return False
+
+    @field(mutable=True)
+    async def save_collection(self, share_token: str) -> CollectionResult:
+        """Save a shared collection to user's collections. Requires authentication."""
+        auth = require_auth()
+
+        try:
+            with get_session() as session:
+                collection = CollectionRepository.find_by_token(session, share_token)
+                if not collection:
+                    return CollectionResult(success=False, error="Collection not found")
+
+                if not CollectionRepository.is_share_valid(collection):
+                    return CollectionResult(success=False, error="Share link is invalid or expired")
+
+                # Check if password is required
+                if collection.share_password_hash:
+                    return CollectionResult(success=False, error="Cannot save password-protected collections")
+
+                # Check if already has access
+                existing = CollectionRepository.get_user_role(session, auth.user_id, collection.id)
+                if existing:
+                    return CollectionResult(success=False, error="Already in your collections")
+
+                access = CollectionRepository.save_collection(session, auth.user_id, collection.id)
+                if not access:
+                    return CollectionResult(success=False, error="Failed to save collection")
+
+                return CollectionResult(
+                    success=True,
+                    collection=collection_to_info(collection, CollectionRole.VIEWER.value)
+                )
+        except Exception as e:
+            logger.error(f"save_collection error: {e}", exc_info=True)
+            return CollectionResult(success=False, error="Failed to save collection")
+
+    # --- Collection Endpoints (Public - no auth required) ---
+
+    @field
+    async def shared_collection_info(self, token: str) -> Optional[SharedCollectionInfo]:
+        """Get public info about a shared collection. No auth required."""
+        try:
+            with get_session() as session:
+                collection = CollectionRepository.find_by_token(session, token)
+                if not collection:
+                    return None
+
+                if not CollectionRepository.is_share_valid(collection):
+                    return None
+
+                return SharedCollectionInfo(
+                    name=collection.name,
+                    requires_password=collection.share_password_hash is not None,
+                    access_level=collection.share_access_level or "view"
+                )
+        except Exception as e:
+            logger.error(f"shared_collection_info error: {e}", exc_info=True)
+            return None
+
+    @field
+    async def shared_collection_state(
+        self,
+        token: str,
+        password: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get accessory states for a shared collection.
+        Returns JSON string of states, or None if invalid/unauthorized.
+        """
+        from homecast.websocket.handler import route_request, get_user_device_id
+        from homecast.models.db.repositories import HomeRepository
+
+        try:
+            with get_session() as session:
+                collection = CollectionRepository.find_by_token(session, token)
+                if not collection:
+                    return None
+
+                if not CollectionRepository.is_share_valid(collection):
+                    return None
+
+                # Check password if required
+                if collection.share_password_hash:
+                    if not password:
+                        return None
+                    if not CollectionRepository.verify_share_password(password, collection.share_password_hash):
+                        return None
+
+                # Get the collection owner to route requests
+                # Find owner from collection_access
+                statement = (
+                    select(CollectionAccess)
+                    .where(CollectionAccess.collection_id == collection.id)
+                    .where(CollectionAccess.role == CollectionRole.OWNER.value)
+                )
+                owner_access = session.exec(statement).first()
+                if not owner_access:
+                    return None
+
+                device_id = await get_user_device_id(owner_access.user_id)
+                if not device_id:
+                    return json.dumps({"error": "Owner device not connected"})
+
+                # Resolve collection items to accessories
+                items = CollectionRepository.get_items(collection)
+                all_accessories = []
+
+                for item in items:
+                    item_type = item.get("type")
+                    home_id = item.get("home_id")
+
+                    if item_type == "home":
+                        # Get all accessories in home
+                        result = await route_request(
+                            device_id=device_id,
+                            action="accessories.list",
+                            payload={"homeId": home_id, "includeValues": True}
+                        )
+                        all_accessories.extend(result.get("accessories", []))
+
+                    elif item_type == "room":
+                        # Get all accessories in room
+                        room_id = item.get("room_id")
+                        result = await route_request(
+                            device_id=device_id,
+                            action="accessories.list",
+                            payload={"homeId": home_id, "roomId": room_id, "includeValues": True}
+                        )
+                        all_accessories.extend(result.get("accessories", []))
+
+                    elif item_type == "accessory":
+                        # Get single accessory
+                        accessory_id = item.get("accessory_id")
+                        result = await route_request(
+                            device_id=device_id,
+                            action="accessory.get",
+                            payload={"accessoryId": accessory_id}
+                        )
+                        if result.get("accessory"):
+                            all_accessories.append(result["accessory"])
+
+                return json.dumps({"accessories": all_accessories})
+
+        except Exception as e:
+            logger.error(f"shared_collection_state error: {e}", exc_info=True)
+            return None
+
+    @field(mutable=True)
+    async def set_shared_collection_state(
+        self,
+        token: str,
+        state: str,
+        password: Optional[str] = None
+    ) -> SetSharedStateResult:
+        """
+        Set accessory states for a shared collection.
+        Only works if access_level is 'control'.
+        State is JSON: {"accessory_id": {"characteristic_type": value, ...}, ...}
+        """
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        try:
+            with get_session() as session:
+                collection = CollectionRepository.find_by_token(session, token)
+                if not collection:
+                    return SetSharedStateResult(success=False, failed=["Collection not found"])
+
+                if not CollectionRepository.is_share_valid(collection):
+                    return SetSharedStateResult(success=False, failed=["Share link invalid or expired"])
+
+                if collection.share_access_level != "control":
+                    return SetSharedStateResult(success=False, failed=["View-only access"])
+
+                # Check password if required
+                if collection.share_password_hash:
+                    if not password:
+                        return SetSharedStateResult(success=False, failed=["Password required"])
+                    if not CollectionRepository.verify_share_password(password, collection.share_password_hash):
+                        return SetSharedStateResult(success=False, failed=["Invalid password"])
+
+                # Parse state
+                try:
+                    state_data = json.loads(state)
+                except json.JSONDecodeError:
+                    return SetSharedStateResult(success=False, failed=["Invalid state JSON"])
+
+                # Get owner's device
+                statement = (
+                    select(CollectionAccess)
+                    .where(CollectionAccess.collection_id == collection.id)
+                    .where(CollectionAccess.role == CollectionRole.OWNER.value)
+                )
+                owner_access = session.exec(statement).first()
+                if not owner_access:
+                    return SetSharedStateResult(success=False, failed=["Owner not found"])
+
+                device_id = await get_user_device_id(owner_access.user_id)
+                if not device_id:
+                    return SetSharedStateResult(success=False, failed=["Owner device not connected"])
+
+                # Apply state changes
+                ok_count = 0
+                failed = []
+
+                for accessory_id, characteristics in state_data.items():
+                    for char_type, value in characteristics.items():
+                        try:
+                            await route_request(
+                                device_id=device_id,
+                                action="characteristic.set",
+                                payload={
+                                    "accessoryId": accessory_id,
+                                    "characteristicType": char_type,
+                                    "value": value
+                                }
+                            )
+                            ok_count += 1
+                        except Exception as e:
+                            failed.append(f"{accessory_id}.{char_type}: {str(e)}")
+
+                return SetSharedStateResult(
+                    success=len(failed) == 0,
+                    ok=ok_count,
+                    failed=failed if failed else None
+                )

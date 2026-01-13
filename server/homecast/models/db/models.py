@@ -119,6 +119,55 @@ class Home(SQLModel, table=True):
         description="Last time this home was reported by device")
 
 
+class CollectionRole(str, Enum):
+    """Role for collection access (both user and public shares)."""
+    OWNER = "owner"      # Full control (edit, delete, share) - user access only
+    CONTROL = "control"  # Can view and control accessories
+    VIEW = "view"        # Read-only access
+
+
+class Collection(BaseModel, table=True):
+    """
+    User-defined collection of HomeKit accessories.
+
+    Collections can contain entire homes, rooms, or individual accessories.
+    They can be shared publicly via a URL with optional password protection.
+    """
+    __tablename__ = "collections"
+
+    name: str = Field(nullable=False,
+        description="Collection name")
+    items_json: str = Field(default="[]",
+        description="JSON array of items: [{type, home_id, room_id?, accessory_id?}]")
+    is_active: bool = Field(default=True)
+
+    # Sharing settings
+    is_shared: bool = Field(default=False,
+        description="Whether collection is publicly accessible")
+    share_token: Optional[str] = Field(default=None, unique=True, index=True,
+        description="URL token for public access")
+    share_access_level: Optional[str] = Field(default=None,
+        description="ShareAccessLevel: view or control")
+    share_password_hash: Optional[str] = Field(default=None,
+        description="Hashed password for protected shares")
+    share_expires_at: Optional[datetime] = Field(default=None,
+        description="Optional expiration date for share")
+
+
+class CollectionAccess(BaseModel, table=True):
+    """
+    Links users to collections with specific roles.
+
+    Owner is the creator, viewers are users who saved the collection.
+    """
+    __tablename__ = "collection_access"
+
+    user_id: uuid.UUID = Field(nullable=False, foreign_key="users.id", index=True)
+    collection_id: uuid.UUID = Field(nullable=False, foreign_key="collections.id", index=True)
+    role: str = Field(nullable=False,
+        description="CollectionRole: owner, control, or view")
+
+
 __all__ = [
     "BaseModel",
     "User",
@@ -126,4 +175,7 @@ __all__ = [
     "Session",
     "SessionType",
     "Home",
+    "CollectionRole",
+    "Collection",
+    "CollectionAccess",
 ]
