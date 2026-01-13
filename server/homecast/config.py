@@ -13,7 +13,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # Server Configuration
 PORT: int = 8080
-FRONTEND_URL: str = "https://homecast.cloud"  # Base URL for share links
 
 # Allowed CORS origins
 ALLOWED_CORS_ORIGINS: list[str] = [
