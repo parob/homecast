@@ -313,6 +313,18 @@ struct WebViewContainer: UIViewRepresentable {
         // Add message handler for native bridge
         config.userContentController.add(context.coordinator, name: "homecast")
 
+        // Set platform detection flags for the web app
+        #if targetEnvironment(macCatalyst)
+        let platformScript = "window.isHomecastApp = true; window.isHomecastMacApp = true; console.log('[Homecast] Mac app detected');"
+        #else
+        let platformScript = "window.isHomecastApp = true; window.isHomecastIOSApp = true; console.log('[Homecast] iOS app detected');"
+        #endif
+        config.userContentController.addUserScript(WKUserScript(
+            source: platformScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+
         // Sync auth state with WebView at document start
         if let token = authToken {
             // Logged in - inject token
@@ -401,7 +413,6 @@ struct WebViewContainer: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var authToken: String?
         weak var webView: WKWebView?
-        private var hasInjectedToken = false
         private let connectionManager: ConnectionManager
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
@@ -449,7 +460,6 @@ struct WebViewContainer: UIViewRepresentable {
                     do {
                         try await connectionManager.authenticateWithToken(token)
                         self.authToken = token
-                        self.hasInjectedToken = true
                     } catch {
                         print("[WebView] Failed to authenticate with token: \(error)")
                         self.webViewInitiatedLogin = false  // Reset on failure
@@ -480,21 +490,26 @@ struct WebViewContainer: UIViewRepresentable {
                 webView.becomeFirstResponder()
             }
 
-            // Fallback: inject auth token after page loads and trigger re-check
-            guard let token = authToken, !hasInjectedToken else { return }
+            // Always inject auth token after page loads (including reloads)
+            guard let token = authToken else { return }
 
             let js = """
-            localStorage.setItem('homekit-token', '\(token)');
-            console.log('[Homecast] Auth token injected');
-            window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: '\(token)' }));
+            (function() {
+                var currentToken = localStorage.getItem('homekit-token');
+                var newToken = '\(token)';
+                if (currentToken !== newToken) {
+                    localStorage.setItem('homekit-token', newToken);
+                    console.log('[Homecast] Auth token injected/updated');
+                    window.dispatchEvent(new StorageEvent('storage', { key: 'homekit-token', newValue: newToken }));
+                } else {
+                    console.log('[Homecast] Auth token already set');
+                }
+            })();
             """
 
             webView.evaluateJavaScript(js) { _, error in
                 if let error = error {
                     print("[WebView] Failed to inject token: \(error.localizedDescription)")
-                } else {
-                    print("[WebView] Auth token injected into localStorage")
-                    self.hasInjectedToken = true
                 }
             }
         }

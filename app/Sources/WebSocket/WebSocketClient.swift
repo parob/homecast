@@ -8,11 +8,14 @@ class WebSocketClient {
     private let homeKitManager: HomeKitManager
     private let logManager = LogManager.shared
 
+    private var urlSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
     private var isConnected = false
+    private var isReconnecting = false  // Prevent multiple reconnection attempts
     private var reconnectAttempts = 0
     private var pingTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
 
     // Refresh connection every 5 minutes to avoid server timeout (600s)
     private let connectionRefreshInterval: UInt64 = 5 * 60 * 1_000_000_000  // 5 minutes in nanoseconds
@@ -34,12 +37,21 @@ class WebSocketClient {
     // MARK: - Connection
 
     func connect() async throws {
+        // Cancel any pending reconnect
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        isReconnecting = false
+
         await MainActor.run {
             logManager.log("Connecting to \(url.host ?? "server")...", category: .websocket)
         }
 
-        // Token and device_id are passed via query params in the URL
+        // Invalidate old session if exists
+        urlSession?.invalidateAndCancel()
+
+        // Create new session and task
         let session = URLSession(configuration: .default)
+        urlSession = session
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
 
@@ -64,10 +76,17 @@ class WebSocketClient {
 
     func disconnect() {
         isConnected = false
+        isReconnecting = false
         pingTask?.cancel()
         refreshTask?.cancel()
+        reconnectTask?.cancel()
+        pingTask = nil
+        refreshTask = nil
+        reconnectTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
         Task { @MainActor in
             logManager.log("Disconnected", category: .websocket)
         }
@@ -587,9 +606,24 @@ class WebSocketClient {
     // MARK: - Reconnection
 
     private func handleDisconnect(error: Error?) {
+        // Prevent multiple simultaneous reconnection attempts
+        guard !isReconnecting else {
+            print("[WebSocket] Already reconnecting, ignoring disconnect")
+            return
+        }
+
         isConnected = false
+        isReconnecting = true
         pingTask?.cancel()
         refreshTask?.cancel()
+        pingTask = nil
+        refreshTask = nil
+
+        // Invalidate old session
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
+        webSocketTask = nil
+
         onDisconnect?(error)
 
         Task { @MainActor in
@@ -610,14 +644,14 @@ class WebSocketClient {
             logManager.log("Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts))", category: .websocket)
         }
 
-        Task {
+        reconnectTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
             do {
                 try await connect()
             } catch {
                 print("[WebSocket] Reconnect attempt \(reconnectAttempts) failed: \(error)")
-                // If connect() throws, handleDisconnect will be called again from the receive loop
-                // or we need to trigger it manually for connection failures
+                isReconnecting = false  // Allow another attempt
                 self.handleDisconnect(error: error)
             }
         }

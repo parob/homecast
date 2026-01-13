@@ -28,6 +28,76 @@ enum CharacteristicMapper {
         "target_humidity": HMCharacteristicTypeTargetRelativeHumidity,
         "temperature_units": HMCharacteristicTypeTemperatureUnits,
 
+        // Heater/Cooler (different from thermostat)
+        "current_heater_cooler_state": "000000B1-0000-1000-8000-0026BB765291",
+        "target_heater_cooler_state": "000000B2-0000-1000-8000-0026BB765291",
+        "swing_mode": "000000B6-0000-1000-8000-0026BB765291",
+        "lock_physical_controls": "000000A7-0000-1000-8000-0026BB765291",
+
+        // Fan states
+        "current_fan_state": "000000AF-0000-1000-8000-0026BB765291",
+        "target_fan_state": "000000BF-0000-1000-8000-0026BB765291",
+
+        // Air purifier/humidifier
+        "current_air_purifier_state": "000000A9-0000-1000-8000-0026BB765291",
+        "target_air_purifier_state": "000000A8-0000-1000-8000-0026BB765291",
+        "current_humidifier_dehumidifier_state": "000000B3-0000-1000-8000-0026BB765291",
+        "target_humidifier_dehumidifier_state": "000000B4-0000-1000-8000-0026BB765291",
+        "water_level": "000000B5-0000-1000-8000-0026BB765291",
+
+        // Slats/tilt
+        "current_tilt_angle": "000000C1-0000-1000-8000-0026BB765291",
+        "target_tilt_angle": "000000C2-0000-1000-8000-0026BB765291",
+        "slat_type": "000000C0-0000-1000-8000-0026BB765291",
+        "current_slat_state": "000000AA-0000-1000-8000-0026BB765291",
+
+        // Window covering
+        "obstruction_detected": HMCharacteristicTypeObstructionDetected,
+        "hold_position": HMCharacteristicTypeHoldPosition,
+        "current_horizontal_tilt": HMCharacteristicTypeCurrentHorizontalTilt,
+        "target_horizontal_tilt": HMCharacteristicTypeTargetHorizontalTilt,
+        "current_vertical_tilt": HMCharacteristicTypeCurrentVerticalTilt,
+        "target_vertical_tilt": HMCharacteristicTypeTargetVerticalTilt,
+
+        // Thread/WiFi transport (newer HomeKit)
+        "thread_node_capabilities": "0000023A-0000-1000-8000-0026BB765291",
+        "thread_status": "0000023C-0000-1000-8000-0026BB765291",
+        "thread_control_point": "0000024A-0000-1000-8000-0026BB765291",
+        "current_transport": "0000022B-0000-1000-8000-0026BB765291",
+        "wifi_capabilities": "00000702-0000-1000-8000-0026BB765291",
+        "wifi_configuration_control": "00000703-0000-1000-8000-0026BB765291",
+        "wifi_satellite_status": "00000706-0000-1000-8000-0026BB765291",
+
+        // Eve custom characteristics
+        "eve_energy_watt": "E863F10D-079E-48FF-8F27-9C2605A29F52",
+        "eve_energy_kwh": "E863F10C-079E-48FF-8F27-9C2605A29F52",
+        "eve_voltage": "E863F10A-079E-48FF-8F27-9C2605A29F52",
+        "eve_ampere": "E863F126-079E-48FF-8F27-9C2605A29F52",
+        "eve_history_request": "E863F11C-079E-48FF-8F27-9C2605A29F52",
+        "eve_history_status": "E863F116-079E-48FF-8F27-9C2605A29F52",
+        "eve_history_entries": "E863F117-079E-48FF-8F27-9C2605A29F52",
+        "eve_reset_total": "E863F112-079E-48FF-8F27-9C2605A29F52",
+        "eve_firmware": "E863F11E-079E-48FF-8F27-9C2605A29F52",
+        "eve_set_time": "E863F121-079E-48FF-8F27-9C2605A29F52",
+        "eve_weather_trend": "E863F136-079E-48FF-8F27-9C2605A29F52",
+        "eve_elevation": "E863F130-079E-48FF-8F27-9C2605A29F52",
+        "eve_air_pressure": "E863F10F-079E-48FF-8F27-9C2605A29F52",
+        "eve_sensitivity": "E863F120-079E-48FF-8F27-9C2605A29F52",
+        "eve_duration": "E863F12D-079E-48FF-8F27-9C2605A29F52",
+        "eve_last_activation": "E863F11A-079E-48FF-8F27-9C2605A29F52",
+        "eve_closed_duration": "E863F118-079E-48FF-8F27-9C2605A29F52",
+        "eve_open_duration": "E863F119-079E-48FF-8F27-9C2605A29F52",
+        "eve_times_opened": "E863F129-079E-48FF-8F27-9C2605A29F52",
+        "eve_command": "E863F11D-079E-48FF-8F27-9C2605A29F52",
+        "eve_program_data": "E863F12F-079E-48FF-8F27-9C2605A29F52",
+        "eve_valve_position": "E863F12E-079E-48FF-8F27-9C2605A29F52",
+        "eve_program_command": "E863F12C-079E-48FF-8F27-9C2605A29F52",
+        "eve_current_consumption": "E863F10D-079E-48FF-8F27-9C2605A29F52",
+        "eve_total_consumption": "E863F10C-079E-48FF-8F27-9C2605A29F52",
+        "eve_motion_sensitivity": "E863F120-079E-48FF-8F27-9C2605A29F52",
+        "eve_blinds_movement": "E863F158-079E-48FF-8F27-9C2605A29F52",
+        "eve_calibration_data": "E863F131-079E-48FF-8F27-9C2605A29F52",
+
         // Active/In Use
         "active": HMCharacteristicTypeActive,
         "in_use": HMCharacteristicTypeInUse,
@@ -51,7 +121,6 @@ enum CharacteristicMapper {
         "smoke_detected": HMCharacteristicTypeSmokeDetected,
         "carbon_monoxide_detected": HMCharacteristicTypeCarbonMonoxideDetected,
         "carbon_dioxide_detected": HMCharacteristicTypeCarbonDioxideDetected,
-        "water_level": HMCharacteristicTypeWaterLevel,
 
         // Battery
         "battery_level": HMCharacteristicTypeBatteryLevel,
@@ -73,6 +142,17 @@ enum CharacteristicMapper {
         "volume": HMCharacteristicTypeVolume,
         "mute": HMCharacteristicTypeMute,
 
+        // Camera
+        "night_vision": "0000011B-0000-1000-8000-0026BB765291",
+        "camera_operating_mode_indicator": "0000021B-0000-1000-8000-0026BB765291",
+        "third_party_camera_active": "0000021C-0000-1000-8000-0026BB765291",
+        "homekit_camera_active": "0000021D-0000-1000-8000-0026BB765291",
+        "event_snapshots_active": "00000223-0000-1000-8000-0026BB765291",
+        "periodic_snapshots_active": "00000225-0000-1000-8000-0026BB765291",
+        "recording_audio_active": "00000226-0000-1000-8000-0026BB765291",
+        "manually_disabled": "00000227-0000-1000-8000-0026BB765291",
+        "diagonal_field_of_view": "00000224-0000-1000-8000-0026BB765291",
+
         // General
         "name": HMCharacteristicTypeName,
         "identify": HMCharacteristicTypeIdentify,
@@ -81,6 +161,12 @@ enum CharacteristicMapper {
         "serial_number": HMCharacteristicTypeSerialNumber,
         "firmware_revision": HMCharacteristicTypeFirmwareVersion,
         "hardware_revision": HMCharacteristicTypeHardwareVersion,
+        "configured_name": "000000E3-0000-1000-8000-0026BB765291",
+        "label_index": "00000090-0000-1000-8000-0026BB765291",
+        "label_namespace": "000000CD-0000-1000-8000-0026BB765291",
+        "version": "00000037-0000-1000-8000-0026BB765291",
+        "accessory_flags": "000000A6-0000-1000-8000-0026BB765291",
+        "product_data": "00000220-0000-1000-8000-0026BB765291",
     ]
 
     // MARK: - Service Type Mapping
@@ -137,6 +223,7 @@ enum CharacteristicMapper {
         "microphone": HMServiceTypeMicrophone,
         "camera_rtp_stream_management": HMServiceTypeCameraRTPStreamManagement,
         "camera_control": HMServiceTypeCameraControl,
+        "camera_operating_mode": "0000021A-0000-1000-8000-0026BB765291",
 
         // Security
         "security_system": HMServiceTypeSecuritySystem,
@@ -144,6 +231,13 @@ enum CharacteristicMapper {
         // Accessory Info
         "accessory_information": HMServiceTypeAccessoryInformation,
         "label": HMServiceTypeLabel,
+
+        // Thread/WiFi transport services
+        "thread_transport": "00000239-0000-1000-8000-0026BB765291",
+        "wifi_transport": "00000701-0000-1000-8000-0026BB765291",
+
+        // Eve custom service (history/energy)
+        "eve_history": "E863F007-079E-48FF-8F27-9C2605A29F52",
     ]
 
     // MARK: - Simplified Name Mapping (matches server's CHAR_TO_SIMPLE)
