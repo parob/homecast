@@ -255,6 +255,9 @@ class CollectionRepository(BaseRepository):
         for record in access_records:
             session.delete(record)
 
+        # Flush to ensure access records are deleted before collection
+        session.flush()
+
         # Delete collection
         session.delete(collection)
         session.commit()
