@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from graphql_api import field
 
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType
+from homecast.models.db.models import SessionType, Collection, CollectionAccess
 from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository
 from homecast.auth import generate_token, AuthContext
 from homecast.middleware import get_auth_context
@@ -194,59 +194,8 @@ class UpdateSettingsResult:
 
 
 # --- Collection Types ---
-
-@dataclass
-class CollectionItem:
-    """An item in a collection."""
-    type: str  # "home" | "room" | "accessory"
-    item_id: str
-
-
-@dataclass
-class CollectionInfo:
-    """Collection information."""
-    id: str
-    name: str
-    items: List["CollectionItem"]
-    role: str
-    is_shared: bool
-    share_access_level: Optional[str]
-    share_has_password: bool
-    created_at: str
-
-
-@dataclass
-class CollectionResult:
-    """Result of collection operations."""
-    success: bool
-    collection: Optional[CollectionInfo] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class ShareCollectionResult:
-    """Result of sharing a collection."""
-    success: bool
-    share_url: Optional[str] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class PublicCollectionInfo:
-    """Public collection info (before password verification)."""
-    id: str
-    name: str
-    requires_password: bool
-    access_level: Optional[str]  # null if password required
-
-
-@dataclass
-class CollectionItemsResult:
-    """Result of fetching collection items."""
-    success: bool
-    items: Optional[List[CollectionItem]] = None
-    access_level: Optional[str] = None
-    error: Optional[str] = None
+# Collection and CollectionAccess models are imported from homecast.models.db.models
+# The GraphQLSQLAlchemyMixin on these models enables direct GraphQL responses
 
 
 # --- Helper Functions ---
@@ -934,328 +883,138 @@ class HomecastAPI:
 
     # --- Collection Endpoints ---
 
-    def _parse_collection_items(self, payload: str) -> List[CollectionItem]:
-        """Parse collection payload JSON into CollectionItem list."""
-        try:
-            items = json.loads(payload)
-            return [
-                CollectionItem(type=item.get("type", ""), item_id=item.get("item_id", ""))
-                for item in items
-            ]
-        except (json.JSONDecodeError, TypeError):
-            return []
-
-    def _build_collection_info(
-        self,
-        collection,
-        access,
-        public_shares: List = None
-    ) -> CollectionInfo:
-        """Build CollectionInfo from collection and access records."""
-        is_shared = False
-        share_access_level = None
-        share_has_password = False
-
-        if public_shares is None:
-            public_shares = []
-
-        if public_shares:
-            is_shared = True
-            # Find the first share without password, or use the first share
-            for share in public_shares:
-                if not share.passcode_hash:
-                    share_access_level = share.role
-                    break
-            if share_access_level is None and public_shares:
-                share_has_password = True
-
-        return CollectionInfo(
-            id=str(collection.id),
-            name=collection.name,
-            items=self._parse_collection_items(collection.payload),
-            role=access.role,
-            is_shared=is_shared,
-            share_access_level=share_access_level,
-            share_has_password=share_has_password,
-            created_at=collection.created_at.isoformat()
-        )
-
     @field
-    async def collections(self) -> List[CollectionInfo]:
+    async def collections(self) -> List[Collection]:
         """Get all collections for the current user. Requires authentication."""
         auth = require_auth()
-
         with get_session() as session:
             results = CollectionRepository.get_user_collections(session, auth.user_id)
-
-            collections_info = []
-            for collection, access in results:
-                public_shares = CollectionRepository.get_public_shares(session, collection.id)
-                collections_info.append(
-                    self._build_collection_info(collection, access, public_shares)
-                )
-
-            return collections_info
+            return [collection for collection, _ in results]
 
     @field
-    async def collection(self, collection_id: str) -> Optional[CollectionInfo]:
+    async def collection(self, collection_id: str) -> Optional[Collection]:
         """Get a specific collection. Requires authentication."""
         auth = require_auth()
-
         try:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
             return None
-
         with get_session() as session:
             result = CollectionRepository.get_collection_with_access(session, cid, auth.user_id)
-            if not result:
-                return None
+            return result[0] if result else None
 
-            collection, access = result
-            public_shares = CollectionRepository.get_public_shares(session, collection.id)
-            return self._build_collection_info(collection, access, public_shares)
+    @field
+    async def collection_access(self, collection_id: str) -> List[CollectionAccess]:
+        """Get all access records for a collection. Requires authentication and owner role."""
+        auth = require_auth()
+        try:
+            cid = __import__('uuid').UUID(collection_id)
+        except ValueError:
+            return []
+        with get_session() as session:
+            # Verify user is owner
+            result = CollectionRepository.get_collection_with_access(session, cid, auth.user_id)
+            if not result or result[1].role != "owner":
+                return []
+            # Return all access records including public shares
+            from sqlmodel import select
+            statement = select(CollectionAccess).where(CollectionAccess.collection_id == cid)
+            return list(session.exec(statement).all())
 
     @field(mutable=True)
-    async def create_collection(self, name: str) -> CollectionResult:
+    async def create_collection(self, name: str) -> Optional[Collection]:
         """Create a new collection. Requires authentication."""
         auth = require_auth()
-
         if not name or not name.strip():
-            return CollectionResult(success=False, error="Name is required")
-
-        try:
-            with get_session() as session:
-                collection = CollectionRepository.create_collection(
-                    session, name.strip(), auth.user_id
-                )
-                access_result = CollectionRepository.get_collection_with_access(
-                    session, collection.id, auth.user_id
-                )
-                if access_result:
-                    collection, access = access_result
-                    return CollectionResult(
-                        success=True,
-                        collection=self._build_collection_info(collection, access, [])
-                    )
-                return CollectionResult(success=False, error="Failed to create collection")
-        except Exception as e:
-            logger.error(f"create_collection error: {e}")
-            return CollectionResult(success=False, error="An error occurred")
+            raise ValueError("Name is required")
+        with get_session() as session:
+            return CollectionRepository.create_collection(session, name.strip(), auth.user_id)
 
     @field(mutable=True)
     async def update_collection(
         self,
         collection_id: str,
         name: Optional[str] = None,
-        items: Optional[str] = None  # JSON string
-    ) -> CollectionResult:
-        """Update a collection (name and/or items). Requires authentication and owner role."""
+        payload: Optional[str] = None,
+        settings_json: Optional[str] = None
+    ) -> Optional[Collection]:
+        """Update a collection. Requires authentication and owner role."""
         auth = require_auth()
-
         try:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
-            return CollectionResult(success=False, error="Invalid collection ID")
-
-        # Validate items JSON if provided
-        if items is not None:
-            try:
-                json.loads(items)
-            except json.JSONDecodeError:
-                return CollectionResult(success=False, error="Invalid items JSON")
-
-        try:
-            with get_session() as session:
-                collection = CollectionRepository.update_collection(
-                    session, cid, auth.user_id,
-                    name=name.strip() if name else None,
-                    payload=items
-                )
-                if not collection:
-                    return CollectionResult(success=False, error="Collection not found or access denied")
-
-                access_result = CollectionRepository.get_collection_with_access(
-                    session, collection.id, auth.user_id
-                )
-                if access_result:
-                    collection, access = access_result
-                    public_shares = CollectionRepository.get_public_shares(session, collection.id)
-                    return CollectionResult(
-                        success=True,
-                        collection=self._build_collection_info(collection, access, public_shares)
-                    )
-                return CollectionResult(success=False, error="Failed to update collection")
-        except Exception as e:
-            logger.error(f"update_collection error: {e}")
-            return CollectionResult(success=False, error="An error occurred")
+            return None
+        with get_session() as session:
+            return CollectionRepository.update_collection(
+                session, cid, auth.user_id,
+                name=name.strip() if name else None,
+                payload=payload,
+                settings_json=settings_json
+            )
 
     @field(mutable=True)
     async def delete_collection(self, collection_id: str) -> bool:
         """Delete a collection. Requires authentication and owner role."""
         auth = require_auth()
-
         try:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
             return False
-
         with get_session() as session:
             return CollectionRepository.delete_collection(session, cid, auth.user_id)
 
     @field(mutable=True)
-    async def share_collection(
+    async def create_collection_access(
         self,
         collection_id: str,
         role: str = "view",
         passcode: Optional[str] = None,
-        schedule: Optional[str] = None  # JSON string
-    ) -> ShareCollectionResult:
-        """Share a collection publicly. Requires authentication and owner role."""
+        access_schedule: Optional[str] = None
+    ) -> Optional[CollectionAccess]:
+        """Create a public share for a collection. Requires authentication and owner role."""
         auth = require_auth()
-
         if role not in ("view", "control"):
-            return ShareCollectionResult(success=False, error="Invalid role")
-
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return ShareCollectionResult(success=False, error="Invalid collection ID")
-
-        # Validate schedule JSON if provided
-        if schedule is not None:
-            try:
-                json.loads(schedule)
-            except json.JSONDecodeError:
-                return ShareCollectionResult(success=False, error="Invalid schedule JSON")
-
-        try:
-            with get_session() as session:
-                share = CollectionRepository.create_public_share(
-                    session, cid, auth.user_id,
-                    role=role,
-                    passcode=passcode,
-                    schedule=schedule
-                )
-                if not share:
-                    return ShareCollectionResult(success=False, error="Collection not found or access denied")
-
-                # Generate share URL
-                share_url = f"/c/{collection_id}"
-                return ShareCollectionResult(success=True, share_url=share_url)
-        except Exception as e:
-            logger.error(f"share_collection error: {e}")
-            return ShareCollectionResult(success=False, error="An error occurred")
-
-    @field(mutable=True)
-    async def unshare_collection(self, collection_id: str) -> bool:
-        """Remove all public shares from a collection. Requires authentication and owner role."""
-        auth = require_auth()
-
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return False
-
-        with get_session() as session:
-            return CollectionRepository.remove_all_public_shares(session, cid, auth.user_id)
-
-    @field(mutable=True)
-    async def save_shared_collection(self, collection_id: str) -> CollectionResult:
-        """Save a shared collection to the current user's account. Requires authentication."""
-        auth = require_auth()
-
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return CollectionResult(success=False, error="Invalid collection ID")
-
-        with get_session() as session:
-            access = CollectionRepository.save_collection_to_user(
-                session, cid, auth.user_id, role="view"
-            )
-            if not access:
-                return CollectionResult(success=False, error="Collection not found")
-
-            result = CollectionRepository.get_collection_with_access(
-                session, cid, auth.user_id
-            )
-            if result:
-                collection, access = result
-                public_shares = CollectionRepository.get_public_shares(session, collection.id)
-                return CollectionResult(
-                    success=True,
-                    collection=self._build_collection_info(collection, access, public_shares)
-                )
-            return CollectionResult(success=False, error="Failed to save collection")
-
-    # --- Public Collection Endpoints (no auth required) ---
-
-    @field
-    async def public_collection(self, collection_id: str) -> Optional[PublicCollectionInfo]:
-        """Get public info about a collection (no auth required)."""
+            raise ValueError("Invalid role")
         try:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
             return None
-
         with get_session() as session:
-            collection = CollectionRepository.get_collection_for_public(session, cid)
-            if not collection:
-                return None
-
-            has_share, requires_password, access_level = \
-                CollectionRepository.get_public_access_info(session, cid)
-
-            if not has_share:
-                return None
-
-            return PublicCollectionInfo(
-                id=str(collection.id),
-                name=collection.name,
-                requires_password=requires_password,
-                access_level=access_level
+            return CollectionRepository.create_public_share(
+                session, cid, auth.user_id,
+                role=role,
+                passcode=passcode,
+                schedule=access_schedule
             )
 
+    @field(mutable=True)
+    async def delete_collection_access(self, access_id: str) -> bool:
+        """Delete a collection access record. Requires authentication and owner role."""
+        auth = require_auth()
+        try:
+            aid = __import__('uuid').UUID(access_id)
+        except ValueError:
+            return False
+        with get_session() as session:
+            return CollectionRepository.remove_public_share(session, aid, auth.user_id)
+
+    # --- Public Collection Endpoints (no auth required) ---
+
     @field
-    async def public_collection_items(
-        self,
-        collection_id: str,
-        passcode: Optional[str] = None
-    ) -> CollectionItemsResult:
-        """Get collection items (validates passcode and schedule if needed)."""
+    async def public_collection(self, collection_id: str, passcode: Optional[str] = None) -> Optional[Collection]:
+        """Get a public collection (validates passcode if needed)."""
         try:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
-            return CollectionItemsResult(success=False, error="Invalid collection ID")
-
+            return None
         with get_session() as session:
-            collection = CollectionRepository.get_collection_for_public(session, cid)
-            if not collection:
-                return CollectionItemsResult(success=False, error="Collection not found")
-
             access = CollectionRepository.verify_public_access(session, cid, passcode)
             if not access:
-                # Check if collection is shared at all
-                has_share, requires_password, _ = \
-                    CollectionRepository.get_public_access_info(session, cid)
-                if not has_share:
-                    return CollectionItemsResult(success=False, error="Collection not found")
-                if requires_password:
-                    return CollectionItemsResult(success=False, error="Password required")
-                return CollectionItemsResult(success=False, error="Access denied")
-
-            # Check schedule
-            allowed, error_msg = CollectionRepository.check_access_schedule(access)
+                return None
+            allowed, _ = CollectionRepository.check_access_schedule(access)
             if not allowed:
-                return CollectionItemsResult(success=False, error=error_msg)
-
-            items = self._parse_collection_items(collection.payload)
-            return CollectionItemsResult(
-                success=True,
-                items=items,
-                access_level=access.role
-            )
+                return None
+            return CollectionRepository.get_collection_for_public(session, cid)
 
     @field(mutable=True)
     async def public_set_characteristic(
@@ -1314,8 +1073,11 @@ class HomecastAPI:
                     characteristic_type=characteristic_type
                 )
 
-            items = self._parse_collection_items(collection.payload)
-            accessory_ids = [item.item_id for item in items if item.type == "accessory"]
+            try:
+                items = json.loads(collection.payload)
+            except json.JSONDecodeError:
+                items = []
+            accessory_ids = [item.get("item_id") for item in items if item.get("type") == "accessory"]
             if accessory_id not in accessory_ids:
                 return SetCharacteristicResult(
                     success=False,

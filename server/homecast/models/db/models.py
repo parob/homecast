@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
 
+from graphql_db import GraphQLSQLAlchemyMixin
 from sqlalchemy.ext.declarative import declared_attr
 from sqlmodel import Field, SQLModel
 
@@ -29,6 +30,11 @@ class BaseModel(SQLModel):
         s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
         s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
         return s2.lower()
+
+
+class GraphQLBaseModel(GraphQLSQLAlchemyMixin, BaseModel):
+    """Base model with GraphQL support."""
+    pass
 
 
 class User(BaseModel, table=True):
@@ -119,7 +125,7 @@ class Home(SQLModel, table=True):
         description="Last time this home was reported by device")
 
 
-class Collection(BaseModel, table=True):
+class Collection(GraphQLBaseModel, table=True):
     """
     A collection of HomeKit items (homes, rooms, accessories) that can be shared.
     """
@@ -129,9 +135,11 @@ class Collection(BaseModel, table=True):
         description="Display name for the collection")
     payload: str = Field(default="[]",
         description='JSON array: [{"type": "home|room|accessory", "item_id": "uuid"}]')
+    settings_json: Optional[str] = Field(default=None,
+        description='JSON settings: {"groupByRoom": bool, "groupByType": bool}')
 
 
-class CollectionAccess(BaseModel, table=True):
+class CollectionAccess(GraphQLBaseModel, table=True):
     """
     Access control for collections. Handles both user ownership and public shares.
 
@@ -155,6 +163,7 @@ class CollectionAccess(BaseModel, table=True):
 
 __all__ = [
     "BaseModel",
+    "GraphQLBaseModel",
     "User",
     "TopicSlot",
     "Session",
