@@ -256,6 +256,7 @@ def parse_accessory(data: Any) -> HomeKitAccessory:
         category=data.get("category", ""),
         is_reachable=data.get("isReachable", False),
         services=services,
+        home_id=data.get("homeId"),
         room_id=data.get("roomId"),
         room_name=data.get("roomName")
     )
@@ -598,19 +599,46 @@ class HomecastAPI:
         if not device_id:
             raise ValueError("No connected device")
 
-        payload = {}
-        if home_id:
-            payload["homeId"] = home_id
-        if room_id:
-            payload["roomId"] = room_id
-
         try:
-            result = await route_request(
-                device_id=device_id,
-                action="accessories.list",
-                payload=payload
-            )
-            return [parse_accessory(a) for a in result.get("accessories", [])]
+            if home_id:
+                # Single home query - inject homeId into results
+                payload = {"homeId": home_id}
+                if room_id:
+                    payload["roomId"] = room_id
+                result = await route_request(
+                    device_id=device_id,
+                    action="accessories.list",
+                    payload=payload
+                )
+                accessories = []
+                for a in result.get("accessories", []):
+                    a["homeId"] = home_id  # Inject homeId
+                    accessories.append(parse_accessory(a))
+                return accessories
+            else:
+                # No home filter - query all homes and aggregate with homeId
+                homes_result = await route_request(
+                    device_id=device_id,
+                    action="homes.list",
+                    payload={}
+                )
+                all_accessories = []
+                for home_data in homes_result.get("homes", []):
+                    hid = home_data.get("id")
+                    if not hid:
+                        continue
+                    payload = {"homeId": hid}
+                    if room_id:
+                        payload["roomId"] = room_id
+                    result = await route_request(
+                        device_id=device_id,
+                        action="accessories.list",
+                        payload=payload
+                    )
+                    for a in result.get("accessories", []):
+                        a["homeId"] = hid  # Inject homeId
+                        all_accessories.append(parse_accessory(a))
+                return all_accessories
         except Exception as e:
             logger.error(f"accessories.list error: {e}")
             raise
