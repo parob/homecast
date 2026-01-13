@@ -119,6 +119,40 @@ class Home(SQLModel, table=True):
         description="Last time this home was reported by device")
 
 
+class Collection(BaseModel, table=True):
+    """
+    A collection of HomeKit items (homes, rooms, accessories) that can be shared.
+    """
+    __tablename__ = "collections"
+
+    name: str = Field(nullable=False,
+        description="Display name for the collection")
+    payload: str = Field(default="[]",
+        description='JSON array: [{"type": "home|room|accessory", "item_id": "uuid"}]')
+
+
+class CollectionAccess(BaseModel, table=True):
+    """
+    Access control for collections. Handles both user ownership and public shares.
+
+    Two modes:
+    - User access: user_id is set, role determines permission level
+    - Public share: user_id is null, optional passcode_hash and access_schedule
+    """
+    __tablename__ = "collection_access"
+
+    collection_id: uuid.UUID = Field(nullable=False, foreign_key="collections.id", index=True,
+        description="The collection this access record belongs to")
+    user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id", index=True,
+        description="User who has access (null for public shares)")
+    role: str = Field(default="view",
+        description="Access level: 'owner', 'control', or 'view'")
+    passcode_hash: Optional[str] = Field(default=None,
+        description="Hashed passcode for public shares (null = no passcode required)")
+    access_schedule: Optional[str] = Field(default=None,
+        description="JSON schedule config with expires_at, time_windows, timezone")
+
+
 __all__ = [
     "BaseModel",
     "User",
@@ -126,4 +160,6 @@ __all__ = [
     "Session",
     "SessionType",
     "Home",
+    "Collection",
+    "CollectionAccess",
 ]
