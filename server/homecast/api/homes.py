@@ -135,6 +135,13 @@ class HomesAPI:
         user_id_prefix = _require_user_id()
         homes = await _get_user_homes(user_id_prefix)
 
+        # Load visibility settings for filtering (all homes belong to same user)
+        from homecast.api.visibility import (
+            get_server_visibility, is_home_hidden, is_room_hidden,
+            is_device_hidden, is_group_hidden
+        )
+        visibility = get_server_visibility(homes[0]["user_id"]) if homes else None
+
         # Normalize filters
         home_filter = filter_by_home.lower() if filter_by_home else None
         room_filter = filter_by_room.lower() if filter_by_room else None
@@ -147,6 +154,10 @@ class HomesAPI:
             home_key = home_info["home_key"]
             device_id = home_info["device_id"]
             full_home_id = home_info["home_id"]
+
+            # Skip hidden homes
+            if visibility and is_home_hidden(visibility, full_home_id):
+                continue
 
             # Apply home filter
             if home_filter and home_filter not in home_key:
@@ -187,11 +198,18 @@ class HomesAPI:
                 room_name = accessory.get("roomName", "Unknown")
                 room_id = accessory.get("roomId", "")
                 acc_name = accessory.get("name", "Unknown")
+                acc_id = accessory.get("id", "")
 
                 room_key_str = _room_key(room_name, room_id)
-                accessory_key_str = _accessory_key(acc_name, accessory.get("id", ""))
+                accessory_key_str = _accessory_key(acc_name, acc_id)
                 simplified = _simplify_accessory(accessory)
                 acc_type = simplified.get("type", "")
+
+                # Apply visibility filtering (skip hidden rooms/devices)
+                if visibility and is_room_hidden(visibility, full_home_id, room_id):
+                    continue
+                if visibility and is_device_hidden(visibility, full_home_id, room_id, acc_id):
+                    continue
 
                 # Apply filters
                 if room_filter and room_filter not in room_key_str:
@@ -215,12 +233,20 @@ class HomesAPI:
                 group_key_str = _group_key(group_name, group_id)
                 member_ids = group.get("accessoryIds", [])
 
+                # Skip hidden groups
+                if visibility and is_group_hidden(visibility, full_home_id, group_id):
+                    continue
+
                 if member_ids:
                     first_member = accessory_by_id.get(member_ids[0])
                     if first_member:
                         room_name = first_member.get("roomName", "Unknown")
                         room_id = first_member.get("roomId", "")
                         room_key_str = _room_key(room_name, room_id)
+
+                        # Skip if the room is hidden
+                        if visibility and is_room_hidden(visibility, full_home_id, room_id):
+                            continue
 
                         group_state = _simplify_accessory(first_member)
                         group_state["group"] = True
@@ -240,9 +266,12 @@ class HomesAPI:
                         # Add fully qualified name for group: home.room.group
                         group_state["name"] = f"{home_key}.{room_key_str}.{group_key_str}"
 
-                        # Add member accessories
+                        # Add member accessories (filter out hidden members)
                         accessories_dict = {}
                         for acc_id in member_ids:
+                            # Skip hidden devices
+                            if visibility and is_device_hidden(visibility, full_home_id, room_id, acc_id):
+                                continue
                             member = accessory_by_id.get(acc_id)
                             if member:
                                 member_key = _accessory_key(member.get("name", "Unknown"), acc_id)

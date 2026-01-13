@@ -13,6 +13,7 @@ Tools:
 import json
 import logging
 import re
+import uuid
 from contextvars import ContextVar
 from typing import Dict, Any, List, Optional
 
@@ -348,8 +349,8 @@ def _value_for_characteristic(simple_name: str, value: Any) -> tuple[str, Any]:
     return char_type, value
 
 
-async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str, str]:
-    """Look up device_id from home ownership. Returns (device_id, full_home_id, home_key)."""
+async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str, str, uuid.UUID]:
+    """Look up device_id from home ownership. Returns (device_id, full_home_id, home_key, user_id)."""
     with get_session() as db:
         home = HomeRepository.get_by_prefix(db, home_id_prefix)
         if not home:
@@ -361,7 +362,7 @@ async def _get_device_for_home(home_id_prefix: str) -> tuple[str, str, str]:
 
         full_home_id = str(home.home_id)
         home_key = _unique_key(home.name, full_home_id)
-        return device_id, full_home_id, home_key
+        return device_id, full_home_id, home_key, home.user_id
 
 
 def _require_home_id() -> str:
@@ -413,7 +414,11 @@ class HomeAPI:
             }
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id, home_key = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, home_key, user_id = await _get_device_for_home(home_id_prefix)
+
+        # Load visibility settings for filtering
+        from homecast.api.visibility import get_server_visibility, is_room_hidden, is_device_hidden, is_group_hidden
+        visibility = get_server_visibility(user_id)
 
         # Get accessories with values
         accessories_result = await route_request(
@@ -455,11 +460,18 @@ class HomeAPI:
             room_name = accessory.get("roomName", "Unknown")
             room_id = accessory.get("roomId", "")
             acc_name = accessory.get("name", "Unknown")
+            acc_id = accessory.get("id", "")
 
             room_key = _room_key(room_name, room_id)
-            accessory_key = _accessory_key(acc_name, accessory.get("id", ""))
+            accessory_key = _accessory_key(acc_name, acc_id)
             simplified = _simplify_accessory(accessory)
             acc_type = simplified.get("type", "")
+
+            # Apply visibility filtering (skip hidden rooms/devices)
+            if is_room_hidden(visibility, full_home_id, room_id):
+                continue
+            if is_device_hidden(visibility, full_home_id, room_id, acc_id):
+                continue
 
             # Apply filters (all are AND'd together)
             if room_filter and room_filter not in room_key:
@@ -482,12 +494,21 @@ class HomeAPI:
             group_name = group.get("name", "Unknown")
             group_key = _group_key(group_name, group_id)
             member_ids = group.get("accessoryIds", [])
+
+            # Skip hidden groups
+            if is_group_hidden(visibility, full_home_id, group_id):
+                continue
+
             if member_ids:
                 first_member = accessory_by_id.get(member_ids[0])
                 if first_member:
                     room_name = first_member.get("roomName", "Unknown")
                     room_id = first_member.get("roomId", "")
                     room_key = _room_key(room_name, room_id)
+
+                    # Skip if the room is hidden
+                    if is_room_hidden(visibility, full_home_id, room_id):
+                        continue
 
                     # Build group state from first member
                     group_state = _simplify_accessory(first_member)
@@ -509,8 +530,12 @@ class HomeAPI:
                     group_state["name"] = f"{home_key}.{room_key}.{group_key}"
 
                     # Add all member accessories with their states (with unique keys)
+                    # Filter out hidden members
                     accessories_dict = {}
                     for acc_id in member_ids:
+                        # Skip hidden devices
+                        if is_device_hidden(visibility, full_home_id, room_id, acc_id):
+                            continue
                         member = accessory_by_id.get(acc_id)
                         if member:
                             member_key = _accessory_key(member.get("name", "Unknown"), acc_id)
@@ -568,7 +593,7 @@ class HomeAPI:
             {"ok": 2, "failed": []} on success
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id, _ = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, _, _ = await _get_device_for_home(home_id_prefix)
 
         logger.info(f"set_state called with: {state}")
 
@@ -597,7 +622,7 @@ class HomeAPI:
             {"ok": true} on success, {"ok": false, "error": "message"} on failure
         """
         home_id_prefix = _require_home_id()
-        device_id, full_home_id, _ = await _get_device_for_home(home_id_prefix)
+        device_id, full_home_id, _, _ = await _get_device_for_home(home_id_prefix)
 
         # Get scenes to find ID by name
         scenes_result = await route_request(
