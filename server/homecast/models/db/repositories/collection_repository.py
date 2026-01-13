@@ -201,8 +201,7 @@ class CollectionRepository(BaseRepository):
         collection_id: UUID,
         user_id: UUID,
         name: Optional[str] = None,
-        payload: Optional[str] = None,
-        settings_json: Optional[str] = None
+        payload: Optional[str] = None
     ) -> Optional[Collection]:
         """
         Update a collection (must be owner).
@@ -222,8 +221,6 @@ class CollectionRepository(BaseRepository):
             collection.name = name
         if payload is not None:
             collection.payload = payload
-        if settings_json is not None:
-            collection.settings_json = settings_json
 
         session.add(collection)
         session.commit()

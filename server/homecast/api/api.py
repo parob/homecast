@@ -99,6 +99,7 @@ class HomeKitAccessory:
     category: str
     is_reachable: bool
     services: List["HomeKitService"]
+    home_id: Optional[str] = None
     room_id: Optional[str] = None
     room_name: Optional[str] = None
 
@@ -935,8 +936,7 @@ class HomecastAPI:
         self,
         collection_id: str,
         name: Optional[str] = None,
-        payload: Optional[str] = None,
-        settings_json: Optional[str] = None
+        payload: Optional[str] = None
     ) -> Optional[Collection]:
         """Update a collection. Requires authentication and owner role."""
         auth = require_auth()
@@ -948,8 +948,7 @@ class HomecastAPI:
             return CollectionRepository.update_collection(
                 session, cid, auth.user_id,
                 name=name.strip() if name else None,
-                payload=payload,
-                settings_json=settings_json
+                payload=payload
             )
 
     @field(mutable=True)

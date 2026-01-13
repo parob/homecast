@@ -127,16 +127,14 @@ class Home(SQLModel, table=True):
 
 class Collection(GraphQLBaseModel, table=True):
     """
-    A collection of HomeKit items (homes, rooms, accessories) that can be shared.
+    A collection of HomeKit accessories that can be shared.
     """
     __tablename__ = "collections"
 
     name: str = Field(nullable=False,
         description="Display name for the collection")
     payload: str = Field(default="[]",
-        description='JSON array: [{"type": "home|room|accessory", "item_id": "uuid"}]')
-    settings_json: Optional[str] = Field(default=None,
-        description='JSON settings: {"groupByRoom": bool, "groupByType": bool}')
+        description='JSON array: [{"home_id": "uuid", "accessory_id": "uuid"}, ...]')
 
 
 class CollectionAccess(GraphQLBaseModel, table=True):
