@@ -138,7 +138,12 @@ def validate_schema() -> bool:
 
 
 def wipe_and_recreate_db() -> None:
-    """Drop all tables and recreate the database schema."""
+    """Drop all tables and recreate the database schema.
+
+    WARNING: This destroys all data in the database.
+    Uses inspector to find ALL tables (including ones not in metadata)
+    and drops them with CASCADE to handle foreign key constraints.
+    """
     from homecast.models.db import models as _  # noqa: F401
 
     engine = get_engine()
@@ -151,7 +156,25 @@ def wipe_and_recreate_db() -> None:
 
     if existing_tables:
         db_url = str(engine.url)
+        is_postgres = 'postgresql' in db_url or 'postgres' in db_url
         is_sqlite = 'sqlite' in db_url
+
+        if is_postgres:
+            logger.info("PostgreSQL detected - terminating active connections")
+            try:
+                db_name = engine.url.database
+                with engine.begin() as conn:
+                    terminate_sql = text("""
+                        SELECT pg_terminate_backend(pid)
+                        FROM pg_stat_activity
+                        WHERE datname = :db_name
+                        AND pid <> pg_backend_pid()
+                    """)
+                    result = conn.execute(terminate_sql, {"db_name": db_name})
+                    result.close()
+                    logger.info("Terminated active connections")
+            except Exception as exc:
+                logger.warning(f"Could not terminate connections: {exc}")
 
         with engine.begin() as conn:
             if is_sqlite:
@@ -172,6 +195,30 @@ def wipe_and_recreate_db() -> None:
                     logger.info(f"Dropped table: {table_name}")
                 except Exception as exc:
                     logger.error(f"Failed to drop table {table_name}: {exc}", exc_info=True)
+
+            # PostgreSQL: Clean up orphaned composite types that match table names
+            if is_postgres:
+                try:
+                    type_query = text("""
+                        SELECT typname FROM pg_type t
+                        JOIN pg_namespace n ON t.typnamespace = n.oid
+                        WHERE n.nspname = 'public'
+                        AND t.typtype = 'c'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM pg_class c
+                            WHERE c.relname = t.typname AND c.relkind = 'r'
+                        )
+                    """)
+                    orphaned_types = conn.execute(type_query).fetchall()
+                    for (type_name,) in orphaned_types:
+                        try:
+                            logger.info(f"Dropping orphaned type: {type_name}")
+                            conn.execute(text(f'DROP TYPE IF EXISTS "{type_name}" CASCADE'))
+                            logger.info(f"Dropped type: {type_name}")
+                        except Exception as exc:
+                            logger.warning(f"Could not drop type {type_name}: {exc}")
+                except Exception as exc:
+                    logger.warning(f"Could not clean up orphaned types: {exc}")
 
             if is_sqlite:
                 conn.execute(text("PRAGMA foreign_keys = ON"))
