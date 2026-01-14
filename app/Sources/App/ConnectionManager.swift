@@ -28,6 +28,7 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
     private let networkMonitor = NWPathMonitor()
     private let networkMonitorQueue = DispatchQueue(label: "cloud.homecast.networkMonitor")
     @Published private(set) var isNetworkAvailable: Bool = true
+    private var isReconnecting: Bool = false  // Prevent concurrent reconnects
 
     // MARK: - Keychain Keys
 
@@ -290,49 +291,59 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
         await homeKitManager.waitForReady()
 
         // Create and connect WebSocket
-        webSocketClient = WebSocketClient(
+        let client = WebSocketClient(
             url: url,
             token: token,
             homeKitManager: homeKitManager
         )
+        webSocketClient = client
 
-        webSocketClient?.onConnect = { [weak self] in
+        // Set up callbacks - capture the specific client to verify it's still current
+        client.onConnect = { [weak self, weak client] in
             Task { @MainActor in
-                self?.isConnected = true
+                guard let self = self, self.webSocketClient === client else { return }
+                self.isConnected = true
             }
         }
 
-        webSocketClient?.onDisconnect = { [weak self] error in
+        client.onDisconnect = { [weak self, weak client] error in
             Task { @MainActor in
-                self?.isConnected = false
+                guard let self = self, self.webSocketClient === client else { return }
+                self.isConnected = false
                 if let error = error {
                     print("[ConnectionManager] Disconnected: \(error)")
                 }
             }
         }
 
-        webSocketClient?.onAuthError = { [weak self] in
+        client.onAuthError = { [weak self, weak client] in
             Task { @MainActor in
+                guard let self = self, self.webSocketClient === client else { return }
                 print("[ConnectionManager] Auth error - signing out")
-                self?.signOut()
+                self.signOut()
             }
         }
 
-        webSocketClient?.onPingHealthChanged = { [weak self] failures in
+        client.onPingHealthChanged = { [weak self, weak client] failures in
             Task { @MainActor in
-                self?.consecutivePingFailures = failures
+                guard let self = self, self.webSocketClient === client else { return }
+                self.consecutivePingFailures = failures
             }
         }
 
-        webSocketClient?.onRefreshNeeded = { [weak self] in
+        client.onRefreshNeeded = { [weak self, weak client] in
             Task { @MainActor in
-                await self?.reconnect()
+                guard let self = self, self.webSocketClient === client else {
+                    print("[ConnectionManager] Ignoring refresh from stale client")
+                    return
+                }
+                await self.reconnect()
             }
         }
 
-        webSocketClient?.onWebClientsListeningChanged = { [weak self] listening in
+        client.onWebClientsListeningChanged = { [weak self, weak client] listening in
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self = self, self.webSocketClient === client else { return }
                 if listening {
                     if !self.homeKitManager.isObserving {
                         print("[ConnectionManager] 👀 Web clients are listening - starting HomeKit observation")
@@ -348,7 +359,7 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
         }
 
-        try await webSocketClient?.connect()
+        try await client.connect()
     }
 
     func disconnect() {
@@ -369,6 +380,15 @@ class ConnectionManager: NSObject, ObservableObject, HomeKitManagerDelegate {
 
     func reconnect() async {
         guard isAuthenticated else { return }
+
+        // Prevent concurrent reconnects
+        guard !isReconnecting else {
+            print("[ConnectionManager] Already reconnecting, ignoring")
+            return
+        }
+        isReconnecting = true
+        defer { isReconnecting = false }
+
         disconnect()
         do {
             try await connect()
