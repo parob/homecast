@@ -346,6 +346,20 @@ struct WebViewContainer: UIViewRepresentable {
             config.userContentController.addUserScript(script)
         }
 
+        // iOS-specific config must be set before creating webView
+        #if !targetEnvironment(macCatalyst)
+        // Disable text selection on iOS to prevent long-press selecting text in context menus
+        if #available(iOS 14.5, *) {
+            config.preferences.isTextInteractionEnabled = false
+        } else {
+            let selectionScript = WKUserScript(source: """
+                document.body.style.webkitTouchCallout='none';
+                document.body.style.webkitUserSelect='none';
+            """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+            config.userContentController.addUserScript(selectionScript)
+        }
+        #endif
+
         // Use a reasonable initial frame to avoid CoreGraphics NaN errors
         let webView = FocusableWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
         webView.navigationDelegate = context.coordinator
