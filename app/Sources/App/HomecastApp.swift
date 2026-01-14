@@ -14,9 +14,23 @@ enum AppConfig {
 // Notifications
 extension Notification.Name {
     static let reloadWebView = Notification.Name("reloadWebView")
+    static let hardRefreshWebView = Notification.Name("hardRefreshWebView")
     static let showInfoButton = Notification.Name("showInfoButton")
     static let hideInfoButton = Notification.Name("hideInfoButton")
+    static let showLogsSheet = Notification.Name("showLogsSheet")
 }
+
+// MARK: - Shake Gesture Detection (iOS)
+
+#if !targetEnvironment(macCatalyst)
+extension UIWindow {
+    open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        if motion == .motionShake {
+            NotificationCenter.default.post(name: .showLogsSheet, object: nil)
+        }
+    }
+}
+#endif
 
 @main
 struct HomecastApp: App {
@@ -43,6 +57,11 @@ struct HomecastApp: App {
                     NotificationCenter.default.post(name: .reloadWebView, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
+
+                Button("Hard Refresh (Clear Cache)") {
+                    NotificationCenter.default.post(name: .hardRefreshWebView, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
     }
@@ -127,6 +146,9 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 0.15)) {
                 showInfoButton = false
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showLogsSheet)) { _ in
+            showingLogs = true
         }
     }
 
@@ -303,6 +325,17 @@ struct WebViewContainer: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
 
+        // Clear cache on app launch to ensure fresh content after web deploys
+        let dataTypes = Set([
+            WKWebsiteDataTypeDiskCache,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeOfflineWebApplicationCache,
+            WKWebsiteDataTypeFetchCache
+        ])
+        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: .distantPast) {
+            print("[WebView] Cache cleared on launch")
+        }
+
         // Suppress autofill/suggestions to avoid WebKit warnings during focus changes
         if #available(iOS 16.0, macCatalyst 16.0, *) {
             let prefs = WKWebpagePreferences()
@@ -444,11 +477,52 @@ struct WebViewContainer: UIViewRepresentable {
                 name: .reloadWebView,
                 object: nil
             )
+
+            // Listen for hard refresh notification
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleHardRefresh),
+                name: .hardRefreshWebView,
+                object: nil
+            )
         }
 
         @objc private func handleReload() {
             print("[WebView] Reloading page (Cmd+R)")
             webView?.reloadFromOrigin()
+        }
+
+        @objc private func handleHardRefresh() {
+            print("[WebView] Hard refresh - clearing cache")
+            guard let webView = webView else { return }
+
+            // Clear all website data (cache, cookies, etc.) for this domain
+            let dataStore = WKWebsiteDataStore.default()
+            let dataTypes = Set([
+                WKWebsiteDataTypeDiskCache,
+                WKWebsiteDataTypeMemoryCache,
+                WKWebsiteDataTypeOfflineWebApplicationCache,
+                WKWebsiteDataTypeFetchCache
+            ])
+
+            dataStore.fetchDataRecords(ofTypes: dataTypes) { records in
+                // Filter to only homecast.cloud records
+                let homecastRecords = records.filter { $0.displayName.contains("homecast") }
+                if homecastRecords.isEmpty {
+                    print("[WebView] No cached data found, reloading anyway")
+                } else {
+                    print("[WebView] Clearing \(homecastRecords.count) cache records")
+                }
+
+                dataStore.removeData(ofTypes: dataTypes, for: homecastRecords) {
+                    print("[WebView] Cache cleared, reloading page")
+                    DispatchQueue.main.async {
+                        if let url = URL(string: "https://homecast.cloud/login") {
+                            webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+                        }
+                    }
+                }
+            }
         }
 
         // Handle messages from JavaScript
@@ -625,6 +699,14 @@ struct LogsSheet: View {
                 Spacer()
 
                 // Actions
+                Button("Hard Refresh") {
+                    NotificationCenter.default.post(name: .hardRefreshWebView, object: nil)
+                    dismiss()
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.blue)
+
                 if connectionManager.isAuthenticated {
                     Button("Sign Out") {
                         showingSignOutConfirm = true
