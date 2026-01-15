@@ -1,0 +1,9 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["ExpoHomeKitModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.homekit.ExpoHomeKitModule"]
+  }
+}
