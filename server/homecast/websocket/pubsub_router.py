@@ -24,6 +24,14 @@ from homecast import config
 from homecast.models.db.database import get_session
 from homecast.models.db.repositories import SessionRepository, TopicSlotRepository
 
+# Conditional import for catching Pub/Sub NotFound exceptions
+try:
+    from google.api_core.exceptions import NotFound
+except ImportError:
+    class NotFound(Exception):  # type: ignore[no-redef]
+        """Dummy class for when google-cloud is not installed."""
+        pass
+
 logger = logging.getLogger(__name__)
 
 # Unique container instance ID from Cloud Run metadata (resolved lazily)
@@ -93,6 +101,34 @@ class PubSubRouter:
         """Get full topic path for a slot."""
         return self._publisher.topic_path(self._project_id, self._get_topic_name(slot_name))
 
+    def _handle_deleted_topic(self, slot_name: str) -> None:
+        """Remove a slot from DB when its topic has been deleted."""
+        logger.warning(f"Cleaning up deleted topic slot: {slot_name}")
+        try:
+            with get_session() as session:
+                TopicSlotRepository.delete_slot_by_name(session, slot_name)
+        except Exception as e:
+            logger.error(f"Failed to cleanup slot {slot_name}: {e}")
+
+    def _find_orphaned_topic(self) -> Optional[str]:
+        """Find an existing topic not tracked in the database."""
+        prefix = f"projects/{self._project_id}/topics/{config.GCP_PUBSUB_TOPIC_PREFIX}-"
+
+        # Get all slot names from database
+        with get_session() as session:
+            tracked_slots = TopicSlotRepository.get_all_slot_names(session)
+
+        # List all topics in GCP matching our prefix
+        for topic in self._publisher.list_topics(request={"project": f"projects/{self._project_id}"}):
+            if topic.name.startswith(prefix):
+                # Extract slot name from topic path
+                slot_name = topic.name.split("-")[-1]
+                if slot_name not in tracked_slots:
+                    logger.info(f"Found orphaned topic with slot: {slot_name}")
+                    return slot_name
+
+        return None
+
     async def connect(self):
         """Connect to Pub/Sub and start listening for messages."""
         if not self._enabled:
@@ -101,21 +137,30 @@ class PubSubRouter:
 
         try:
             from google.cloud import pubsub_v1
-            from google.api_core.exceptions import AlreadyExists
+            from google.api_core.exceptions import AlreadyExists, NotFound
             from google.protobuf.duration_pb2 import Duration
 
             self._project_id = config.GCP_PROJECT_ID
             self._loop = asyncio.get_event_loop()
 
-            # Claim a topic slot from the database
-            with get_session() as session:
-                slot = TopicSlotRepository.claim_slot(session, _get_instance_id())
-                self._slot_name = slot.slot_name
-
-            logger.info(f"Claimed topic slot: {self._slot_name} (instance: {_get_instance_id()})")
-
-            # Initialize Pub/Sub publisher
+            # Initialize Pub/Sub publisher first (needed to search for orphaned topics)
             self._publisher = pubsub_v1.PublisherClient()
+
+            # Check for orphaned topics before claiming a slot
+            orphaned_slot = self._find_orphaned_topic()
+            if orphaned_slot:
+                # Create DB record for orphaned topic
+                with get_session() as session:
+                    slot = TopicSlotRepository.claim_or_create_slot(session, _get_instance_id(), orphaned_slot)
+                    self._slot_name = slot.slot_name
+                logger.info(f"Recovered orphaned topic slot: {self._slot_name}")
+            else:
+                # Normal slot claiming flow
+                with get_session() as session:
+                    slot = TopicSlotRepository.claim_slot(session, _get_instance_id())
+                    self._slot_name = slot.slot_name
+                logger.info(f"Claimed topic slot: {self._slot_name} (instance: {_get_instance_id()})")
+
             self._topic_path = self._get_topic_path(self._slot_name)
 
             # Create topic for this slot (or reuse existing)
@@ -291,6 +336,10 @@ class PubSubRouter:
             try:
                 self._publisher.publish(target_topic, message_data).result(timeout=5)
                 logger.info(f"Published request {correlation_id[:8]} to topic {target_topic}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {target_slot} - cleaning up")
+                self._handle_deleted_topic(target_slot)
+                raise ValueError(f"Target instance slot {target_slot} no longer exists")
             except Exception as e:
                 raise ValueError(f"Failed to route to slot {target_slot}: {e}")
 
@@ -363,6 +412,9 @@ class PubSubRouter:
                 target_topic = self._get_topic_path(slot_name)
                 self._publisher.publish(target_topic, message_data).result(timeout=5)
                 logger.debug(f"Broadcast characteristic update to slot {slot_name}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {slot_name} - cleaning up")
+                self._handle_deleted_topic(slot_name)
             except Exception as e:
                 logger.error(f"Failed to broadcast to slot {slot_name}: {e}")
 
@@ -417,6 +469,9 @@ class PubSubRouter:
                 target_topic = self._get_topic_path(slot_name)
                 self._publisher.publish(target_topic, message_data).result(timeout=5)
                 logger.debug(f"Broadcast reachability update to slot {slot_name}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {slot_name} - cleaning up")
+                self._handle_deleted_topic(slot_name)
             except Exception as e:
                 logger.error(f"Failed to broadcast to slot {slot_name}: {e}")
 
@@ -495,6 +550,9 @@ class PubSubRouter:
         try:
             self._publisher.publish(source_topic, message_data).result(timeout=5)
             logger.info(f"Published response {correlation_id[:8]} to slot {source_slot}")
+        except NotFound:
+            logger.warning(f"Topic not found for slot {source_slot} - cleaning up")
+            self._handle_deleted_topic(source_slot)
         except Exception as e:
             logger.error(f"Failed to publish response to slot {source_slot}: {e}")
 

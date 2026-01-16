@@ -155,3 +155,47 @@ class TopicSlotRepository:
             TopicSlot.last_heartbeat >= stale_threshold
         )
         return list(session.exec(statement).all())
+
+    @classmethod
+    def delete_slot_by_name(cls, session: Session, slot_name: str) -> bool:
+        """Delete a topic slot when its Pub/Sub topic has been deleted."""
+        slot = session.get(TopicSlot, slot_name)
+        if slot:
+            session.delete(slot)
+            session.commit()
+            logger.info(f"Deleted stale slot: {slot_name}")
+            return True
+        return False
+
+    @classmethod
+    def get_all_slot_names(cls, session: Session) -> set[str]:
+        """Get all slot names currently in the database."""
+        statement = select(TopicSlot.slot_name)
+        return set(session.exec(statement).all())
+
+    @classmethod
+    def claim_or_create_slot(cls, session: Session, instance_id: str, slot_name: str) -> TopicSlot:
+        """Claim a specific slot by name, creating the DB record if needed."""
+        now = datetime.now(timezone.utc)
+
+        existing = session.get(TopicSlot, slot_name)
+        if existing:
+            existing.instance_id = instance_id
+            existing.claimed_at = now
+            existing.last_heartbeat = now
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+            return existing
+
+        new_slot = TopicSlot(
+            slot_name=slot_name,
+            instance_id=instance_id,
+            claimed_at=now,
+            last_heartbeat=now
+        )
+        session.add(new_slot)
+        session.commit()
+        session.refresh(new_slot)
+        logger.info(f"Created slot record for orphaned topic: {slot_name}")
+        return new_slot

@@ -1471,6 +1471,16 @@ class HomecastAPI:
             return None
 
         try:
+            # First, fetch homes to build a home name mapping
+            homes_result = await route_request(
+                device_id=device_id,
+                action="homes.list",
+                payload={}
+            )
+            home_name_map = {}
+            for home in homes_result.get("homes", []):
+                home_name_map[home.get("id")] = home.get("name", "")
+
             # Fetch accessories from each home
             all_accessories = []
             for hid in home_ids:
@@ -1479,6 +1489,11 @@ class HomecastAPI:
                     action="accessories.list",
                     payload={"homeId": hid}
                 )
+                # Inject homeName into each accessory
+                for accessory in result.get("accessories", []):
+                    accessory_home_id = accessory.get("homeId")
+                    if accessory_home_id and accessory_home_id in home_name_map:
+                        accessory["homeName"] = home_name_map[accessory_home_id]
                 all_accessories.extend(result.get("accessories", []))
 
             # Filter based on entity type
