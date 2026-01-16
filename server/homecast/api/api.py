@@ -238,6 +238,7 @@ class SharedEntityData:
     entity_name: str
     role: str  # "view" or "control"
     requires_passcode: bool  # True if passcode required for this access level
+    can_upgrade_with_passcode: bool = False  # True if a passcode exists that grants higher access
     # Entity-specific data (JSON string)
     data: Optional[str] = None
 
@@ -1351,14 +1352,123 @@ class HomecastAPI:
             # For other types (room, home, accessory, group), we'd fetch from HomeKit
             # via the owner's device. For now, return the basic info.
 
+            # Check if user can upgrade to control with a passcode
+            # (only if current role is view and no passcode was provided)
+            can_upgrade_with_passcode = False
+            if access.role == "view" and not passcode:
+                # Check if there's a passcode access with control role
+                passcode_accesses = EntityAccessRepository.get_passcode_access(
+                    session, entity_type, entity_id
+                )
+                if passcode_accesses:
+                    # Check if any passcode grants control
+                    for pa in passcode_accesses:
+                        if pa.role == "control":
+                            can_upgrade_with_passcode = True
+                            break
+
             return SharedEntityData(
                 entity_type=entity_type,
                 entity_id=str(entity_id),
                 entity_name=entity_name,
                 role=access.role,
                 requires_passcode=False,
+                can_upgrade_with_passcode=can_upgrade_with_passcode,
                 data=entity_data
             )
+
+    @field
+    async def public_entity_accessories(
+        self,
+        share_hash: str,
+        passcode: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Fetch full accessory data for a shared entity from owner's device.
+
+        Args:
+            share_hash: The hash from the share URL
+            passcode: Optional passcode for elevated access
+
+        Returns:
+            JSON string of HomeKitAccessory[] or None if access denied
+        """
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        # Try to get authenticated user (optional)
+        auth = get_auth_context()
+        user_id = auth.user_id if auth else None
+
+        with get_session() as session:
+            access, entity_type, entity_id = EntityAccessRepository.verify_access_by_hash(
+                session, share_hash, passcode, user_id
+            )
+
+            if not access:
+                return None
+
+            # Only collections supported for now
+            if entity_type != "collection":
+                return None
+
+            # Get collection and parse items
+            collection = session.get(Collection, entity_id)
+            if not collection:
+                return None
+
+            try:
+                payload_data = json.loads(collection.payload)
+                # Handle both old array format and new object format
+                if isinstance(payload_data, list):
+                    items = payload_data
+                else:
+                    items = payload_data.get("items", [])
+            except json.JSONDecodeError:
+                return None
+
+            # Extract accessory IDs and home IDs from collection
+            accessory_ids = set()
+            home_ids = set()
+            for item in items:
+                if item.get("accessory_id"):
+                    accessory_ids.add(item["accessory_id"])
+                    if item.get("home_id"):
+                        home_ids.add(item["home_id"])
+
+            if not accessory_ids:
+                return "[]"
+
+            # Get owner's device
+            owner_id = access.owner_id
+
+        # Route request to owner's device
+        device_id = await get_user_device_id(owner_id)
+        if not device_id:
+            logger.warning(f"Owner's device not connected for share {share_hash}")
+            return None
+
+        try:
+            # Fetch accessories from each home
+            all_accessories = []
+            for home_id in home_ids:
+                result = await route_request(
+                    device_id=device_id,
+                    action="accessories.list",
+                    payload={"homeId": home_id}
+                )
+                all_accessories.extend(result.get("accessories", []))
+
+            # Filter to only accessories in the collection
+            filtered_accessories = [
+                a for a in all_accessories
+                if a.get("id") in accessory_ids
+            ]
+
+            return json.dumps(filtered_accessories)
+
+        except Exception as e:
+            logger.error(f"public_entity_accessories error: {e}")
+            return None
 
     @field(mutable=True)
     async def public_entity_set_characteristic(

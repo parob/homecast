@@ -40,6 +40,7 @@ from homecast.websocket.handler import (
 )
 from homecast.websocket.web_clients import (
     web_client_endpoint,
+    shared_view_endpoint,
     cleanup_stale_sessions,
     cleanup_instance_sessions,
 )
@@ -146,6 +147,7 @@ def create_app() -> Starlette:
             Route('/favicon.ico', endpoint=favicon, methods=['GET']),
             WebSocketRoute('/ws', endpoint=websocket_endpoint),  # Mac app WebSocket
             WebSocketRoute('/ws/web', endpoint=web_client_endpoint),  # Web UI WebSocket
+            WebSocketRoute('/ws/shared', endpoint=shared_view_endpoint),  # Shared view WebSocket (no auth)
             Mount('/home/', app=home_scoped_app, name='home'),  # Single home API: /home/{home_id}/
             Mount('/homes/', app=homes_scoped_app, name='homes'),  # All homes API: /homes/{user_id}/
             Mount('/', app=graphql_app, name='graphql'),

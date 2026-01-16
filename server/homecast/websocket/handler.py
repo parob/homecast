@@ -360,6 +360,18 @@ class ConnectionManager:
                     value=value
                 )
 
+                # Broadcast to shared view subscribers (for shared collections)
+                await web_client_manager.broadcast_to_share_subscribers(
+                    owner_id=user_id,
+                    accessory_id=accessory_id,
+                    message={
+                        "type": "characteristic_update",
+                        "accessoryId": accessory_id,
+                        "characteristicType": characteristic_type,
+                        "value": value
+                    }
+                )
+
                 logger.info(f"Broadcast characteristic update to user {user_id}: {accessory_id}/{characteristic_type}")
 
         elif action == "accessory.reachability":
@@ -386,6 +398,17 @@ class ConnectionManager:
                     user_id=user_id,
                     accessory_id=accessory_id,
                     is_reachable=is_reachable
+                )
+
+                # Broadcast to shared view subscribers (for shared collections)
+                await web_client_manager.broadcast_to_share_subscribers(
+                    owner_id=user_id,
+                    accessory_id=accessory_id,
+                    message={
+                        "type": "reachability_update",
+                        "accessoryId": accessory_id,
+                        "isReachable": is_reachable
+                    }
                 )
 
                 logger.info(f"Broadcast reachability update to user {user_id}: {accessory_id} -> {'reachable' if is_reachable else 'unreachable'}")

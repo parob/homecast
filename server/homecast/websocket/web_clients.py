@@ -3,6 +3,8 @@ WebSocket handler for web UI clients to receive real-time updates.
 
 Broadcasts characteristic changes to all connected web clients.
 Uses database to track sessions across multiple server instances.
+
+Also handles share subscriptions for anonymous users viewing shared entities.
 """
 
 import asyncio
@@ -10,15 +12,15 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Set, Any, Optional
+from typing import Dict, Set, Any, Optional, List, Tuple
 import uuid
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from homecast.auth import verify_token, extract_token_from_header
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType
-from homecast.models.db.repositories import SessionRepository
+from homecast.models.db.models import SessionType, Collection
+from homecast.models.db.repositories import SessionRepository, EntityAccessRepository
 from homecast.websocket.pubsub_router import router as pubsub_router
 
 logger = logging.getLogger(__name__)
@@ -26,20 +28,49 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WebClient:
-    """A connected web browser client."""
+    """A connected web browser client (authenticated)."""
     websocket: WebSocket
     user_id: uuid.UUID
     session_id: uuid.UUID  # Database session ID
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+@dataclass
+class ShareSubscription:
+    """Tracks a client's subscription to a shared entity."""
+    client_id: str
+    share_hash: str
+    entity_type: str
+    entity_id: uuid.UUID
+    owner_id: uuid.UUID
+    role: str  # "view" or "control"
+    accessory_ids: List[str]  # Only these accessories can be sent to client
+    subscribed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class SharedViewClient:
+    """A connected anonymous client viewing a shared entity."""
+    websocket: WebSocket
+    client_id: str  # Random ID for this connection
+    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class WebClientManager:
-    """Manages WebSocket connections from web UI clients."""
+    """Manages WebSocket connections from web UI clients and shared view clients."""
 
     def __init__(self):
         # Local in-memory tracking for WebSocket connections on THIS instance
-        # session_id -> WebClient
+        # session_id -> WebClient (authenticated users)
         self.local_clients: Dict[uuid.UUID, WebClient] = {}
+
+        # Shared view clients (anonymous, viewing shared entities)
+        # client_id -> SharedViewClient
+        self.shared_view_clients: Dict[str, SharedViewClient] = {}
+
+        # Share subscriptions: share_hash -> {client_id -> ShareSubscription}
+        self.share_subscriptions: Dict[str, Dict[str, ShareSubscription]] = {}
+
         self._lock: Optional[asyncio.Lock] = None
         self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -192,6 +223,166 @@ class WebClientManager:
             "isReachable": is_reachable
         })
 
+    # --- Shared View Client Methods ---
+
+    async def connect_shared_view(self, websocket: WebSocket) -> SharedViewClient:
+        """Accept and register a new shared view client (no auth required)."""
+        await websocket.accept()
+
+        client_id = str(uuid.uuid4())
+        client = SharedViewClient(
+            websocket=websocket,
+            client_id=client_id
+        )
+
+        async with self.lock:
+            self.shared_view_clients[client_id] = client
+
+        logger.info(f"Shared view client connected: {client_id}")
+        return client
+
+    async def disconnect_shared_view(self, client: SharedViewClient):
+        """Handle shared view client disconnection."""
+        # Remove all subscriptions for this client
+        async with self.lock:
+            self.shared_view_clients.pop(client.client_id, None)
+
+            # Remove from all share subscriptions
+            for share_hash in list(self.share_subscriptions.keys()):
+                if client.client_id in self.share_subscriptions[share_hash]:
+                    del self.share_subscriptions[share_hash][client.client_id]
+                    if not self.share_subscriptions[share_hash]:
+                        del self.share_subscriptions[share_hash]
+
+        logger.info(f"Shared view client disconnected: {client.client_id}")
+
+    async def subscribe_to_share(
+        self,
+        client_id: str,
+        share_hash: str,
+        passcode: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Subscribe a shared view client to updates for a share hash.
+
+        SECURITY: Verifies access before allowing subscription.
+
+        Returns:
+            (success, error_message)
+        """
+        # CRITICAL: Verify access at backend level
+        with get_session() as session:
+            access, entity_type, entity_id = EntityAccessRepository.verify_access_by_hash(
+                session, share_hash, passcode, user_id=None
+            )
+
+            if not access:
+                logger.warning(f"Share subscription denied: invalid access for {share_hash}")
+                return (False, "Access denied")
+
+            # Get accessory IDs from collection payload (for filtering updates)
+            accessory_ids: List[str] = []
+            if entity_type == "collection":
+                collection = session.get(Collection, entity_id)
+                if collection:
+                    try:
+                        payload_data = json.loads(collection.payload)
+                        # Handle both old array format and new object format
+                        if isinstance(payload_data, list):
+                            items = payload_data
+                        else:
+                            items = payload_data.get("items", [])
+                        accessory_ids = [
+                            item["accessory_id"] for item in items
+                            if item.get("accessory_id")
+                        ]
+                    except json.JSONDecodeError:
+                        pass
+
+            # Create subscription with verified data
+            subscription = ShareSubscription(
+                client_id=client_id,
+                share_hash=share_hash,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                owner_id=access.owner_id,  # From database, not client
+                role=access.role,
+                accessory_ids=accessory_ids,
+            )
+
+            async with self.lock:
+                if share_hash not in self.share_subscriptions:
+                    self.share_subscriptions[share_hash] = {}
+                self.share_subscriptions[share_hash][client_id] = subscription
+
+            logger.info(f"Share subscription added: {client_id} -> {share_hash} ({len(accessory_ids)} accessories)")
+            return (True, None)
+
+    async def unsubscribe_from_share(self, client_id: str, share_hash: str):
+        """Unsubscribe a shared view client from a share hash."""
+        async with self.lock:
+            if share_hash in self.share_subscriptions:
+                self.share_subscriptions[share_hash].pop(client_id, None)
+                if not self.share_subscriptions[share_hash]:
+                    del self.share_subscriptions[share_hash]
+
+    async def unsubscribe_all_from_share(self, share_hash: str):
+        """
+        Unsubscribe ALL clients from a share hash.
+
+        Called when access is revoked/deleted.
+        """
+        async with self.lock:
+            if share_hash in self.share_subscriptions:
+                client_ids = list(self.share_subscriptions[share_hash].keys())
+                del self.share_subscriptions[share_hash]
+                logger.info(f"Revoked {len(client_ids)} subscriptions for {share_hash}")
+
+    async def broadcast_to_share_subscribers(
+        self,
+        owner_id: uuid.UUID,
+        accessory_id: str,
+        message: Dict[str, Any]
+    ):
+        """
+        Send accessory update to share subscribers.
+
+        SECURITY: Only sends to subscribers where:
+        1. The owner_id matches the subscription's owner_id
+        2. The accessory_id is in the subscription's allowed list
+        """
+        disconnected_clients: List[str] = []
+
+        async with self.lock:
+            subscriptions_snapshot = [
+                (share_hash, sub)
+                for share_hash, subs in self.share_subscriptions.items()
+                for sub in subs.values()
+            ]
+
+        for share_hash, sub in subscriptions_snapshot:
+            # SECURITY CHECK 1: Owner must match
+            if sub.owner_id != owner_id:
+                continue
+
+            # SECURITY CHECK 2: Accessory must be in allowed list
+            if accessory_id not in sub.accessory_ids:
+                continue
+
+            # Get client and send
+            client = self.shared_view_clients.get(sub.client_id)
+            if client:
+                try:
+                    await client.websocket.send_json(message)
+                except Exception:
+                    disconnected_clients.append(sub.client_id)
+
+        # Clean up disconnected clients
+        for client_id in disconnected_clients:
+            client = self.shared_view_clients.get(client_id)
+            if client:
+                await self.disconnect_shared_view(client)
+
 
 # Global instance
 web_client_manager = WebClientManager()
@@ -273,3 +464,94 @@ async def web_client_endpoint(websocket: WebSocket):
     finally:
         ping_task_handle.cancel()
         await web_client_manager.disconnect(client)
+
+
+async def shared_view_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for shared view clients (no auth required).
+
+    Handles subscribe/unsubscribe messages for share hash subscriptions.
+    """
+    client = await web_client_manager.connect_shared_view(websocket)
+
+    # Start a background task to send server-initiated pings
+    async def ping_task():
+        while True:
+            await asyncio.sleep(30)  # Ping every 30 seconds
+            try:
+                await websocket.send_json({"type": "ping"})
+            except Exception:
+                break  # Connection closed
+
+    ping_task_handle = asyncio.create_task(ping_task())
+
+    try:
+        # Keep connection alive, handle messages
+        while True:
+            try:
+                # Use a timeout to detect dead connections
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=90)
+            except asyncio.TimeoutError:
+                logger.warning(f"Shared view client {client.client_id} timed out - no message in 90s")
+                break
+
+            try:
+                message = json.loads(data)
+                msg_type = message.get("type")
+
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+                elif msg_type == "pong":
+                    pass  # Response to our ping
+
+                elif msg_type == "subscribe":
+                    # Subscribe to a share hash
+                    share_hash = message.get("shareHash")
+                    passcode = message.get("passcode")
+
+                    if not share_hash:
+                        await websocket.send_json({
+                            "type": "subscribe_error",
+                            "error": "Missing shareHash"
+                        })
+                        continue
+
+                    success, error = await web_client_manager.subscribe_to_share(
+                        client.client_id, share_hash, passcode
+                    )
+
+                    if success:
+                        await websocket.send_json({
+                            "type": "subscribed",
+                            "shareHash": share_hash
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "subscribe_error",
+                            "shareHash": share_hash,
+                            "error": error or "Access denied"
+                        })
+
+                elif msg_type == "unsubscribe":
+                    # Unsubscribe from a share hash
+                    share_hash = message.get("shareHash")
+                    if share_hash:
+                        await web_client_manager.unsubscribe_from_share(
+                            client.client_id, share_hash
+                        )
+                        await websocket.send_json({
+                            "type": "unsubscribed",
+                            "shareHash": share_hash
+                        })
+
+            except json.JSONDecodeError:
+                pass
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Shared view client error: {e}")
+    finally:
+        ping_task_handle.cancel()
+        await web_client_manager.disconnect_shared_view(client)
