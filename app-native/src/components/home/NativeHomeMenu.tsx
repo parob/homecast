@@ -1,16 +1,9 @@
-import React, { forwardRef } from 'react';
-import * as DropdownMenu from 'zeego/dropdown-menu';
-import { Pressable, StyleSheet, View } from 'react-native';
-import type { PressableProps } from 'react-native';
+import React, { useMemo } from 'react';
+import { MenuView, MenuAction } from '@react-native-menu/menu';
+import { Pressable, StyleSheet, Platform } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import type { Home, Room } from '@/types/homekit';
 import type { Collection } from '@/types/api';
-
-const MenuTriggerButton = forwardRef<View, PressableProps>((props, ref) => (
-  <Pressable ref={ref} {...props} style={{ padding: 8 }}>
-    <FontAwesome name="ellipsis-h" size={18} color="#000000" />
-  </Pressable>
-));
 
 interface CollectionGroup {
   id: string;
@@ -62,165 +55,133 @@ export function NativeHomeMenu({
     ? parseCollectionPayload(selectedCollection.payload).groups
     : [];
 
+  const menuActions = useMemo(() => {
+    const actions: MenuAction[] = [];
+
+    // Settings section
+    actions.push({
+      id: 'settings',
+      title: 'Home Settings',
+      image: Platform.select({ ios: 'gearshape', android: 'ic_menu_preferences' }),
+    });
+    actions.push({
+      id: 'edit-view',
+      title: 'Edit Home View',
+      image: Platform.select({ ios: 'square.grid.2x2', android: 'ic_menu_gallery' }),
+    });
+    actions.push({
+      id: 'reorder',
+      title: 'Reorder Sections',
+      image: Platform.select({ ios: 'list.bullet', android: 'ic_menu_sort_by_size' }),
+    });
+
+    // Each Home with its rooms displayed inline
+    homes.forEach((home) => {
+      const homeRooms = rooms.filter(r => r.homeId === home.id);
+      const isHomeSelected = home.id === selectedHomeId && !selectedCollectionId;
+
+      // Home header item
+      actions.push({
+        id: `home::${home.id}`,
+        title: home.name,
+        image: Platform.select({ ios: 'house', android: 'ic_menu_myplaces' }),
+        state: isHomeSelected && !selectedRoomId ? 'on' : 'off',
+      });
+
+      // Rooms indented under the home (using displayInline)
+      if (homeRooms.length > 0) {
+        actions.push({
+          id: `rooms-group::${home.id}`,
+          title: '',
+          displayInline: true,
+          subactions: homeRooms.map((room) => ({
+            id: `room::${home.id}::${room.id}`,
+            title: `    ${room.name}`,
+            state: isHomeSelected && room.id === selectedRoomId ? 'on' : 'off',
+          })),
+        });
+      }
+    });
+
+    // Each Collection with its groups displayed inline
+    if (collections.length > 0) {
+      collections.forEach((collection) => {
+        const collectionGroups = parseCollectionPayload(collection.payload).groups;
+        const isCollectionSelected = selectedCollectionId === collection.id;
+
+        // Collection header item
+        actions.push({
+          id: `collection::${collection.id}`,
+          title: collection.name,
+          image: Platform.select({ ios: 'folder', android: 'ic_menu_archive' }),
+          state: isCollectionSelected && !selectedGroupId ? 'on' : 'off',
+        });
+
+        // Groups indented under the collection (using displayInline)
+        if (collectionGroups.length > 0) {
+          actions.push({
+            id: `groups-group::${collection.id}`,
+            title: '',
+            displayInline: true,
+            subactions: collectionGroups.map((group) => ({
+              id: `group::${collection.id}::${group.id}`,
+              title: `    ${group.name}`,
+              state: isCollectionSelected && selectedGroupId === group.id ? 'on' : 'off',
+            })),
+          });
+        }
+      });
+    }
+
+    return actions;
+  }, [homes, rooms, collections, selectedHomeId, selectedRoomId, selectedCollectionId, selectedGroupId]);
+
+  const handlePressAction = (actionId: string) => {
+    const parts = actionId.split('::');
+    const type = parts[0];
+
+    if (type === 'room') {
+      // room::homeId::roomId
+      const homeId = parts[1];
+      const roomId = parts[2];
+      onSelectHome(homeId);
+      onSelectRoom(roomId);
+      onSelectCollection(null);
+      onSelectGroup(null);
+    } else if (type === 'home') {
+      // home::homeId or home::homeId::all
+      const homeId = parts[1];
+      onSelectHome(homeId);
+      onSelectRoom(null);
+      onSelectCollection(null);
+      onSelectGroup(null);
+    } else if (type === 'group') {
+      // group::collectionId::groupId
+      const collectionId = parts[1];
+      const groupId = parts[2];
+      onSelectCollection(collectionId);
+      onSelectGroup(groupId);
+      onSelectRoom(null);
+    } else if (type === 'collection') {
+      // collection::collectionId or collection::collectionId::all
+      const collectionId = parts[1];
+      onSelectCollection(collectionId);
+      onSelectGroup(null);
+      onSelectRoom(null);
+    }
+    // Settings actions (settings, edit-view, reorder) can be handled here later
+  };
+
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <MenuTriggerButton />
-      </DropdownMenu.Trigger>
-
-      <DropdownMenu.Content>
-        {/* Settings Group */}
-        <DropdownMenu.Group>
-          <DropdownMenu.Item key="settings">
-            <DropdownMenu.ItemIcon ios={{ name: 'gearshape' }} />
-            <DropdownMenu.ItemTitle>Home Settings</DropdownMenu.ItemTitle>
-          </DropdownMenu.Item>
-
-          <DropdownMenu.Item key="edit-view">
-            <DropdownMenu.ItemIcon ios={{ name: 'square.grid.2x2' }} />
-            <DropdownMenu.ItemTitle>Edit Home View</DropdownMenu.ItemTitle>
-          </DropdownMenu.Item>
-
-          <DropdownMenu.Item key="reorder">
-            <DropdownMenu.ItemIcon ios={{ name: 'list.bullet' }} />
-            <DropdownMenu.ItemTitle>Reorder Sections</DropdownMenu.ItemTitle>
-          </DropdownMenu.Item>
-        </DropdownMenu.Group>
-
-        <DropdownMenu.Separator />
-
-        {/* Homes Submenu */}
-        {homes.length > 0 && (
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger key="homes-trigger">
-              <DropdownMenu.ItemIcon ios={{ name: 'house' }} />
-              <DropdownMenu.ItemTitle>Homes</DropdownMenu.ItemTitle>
-            </DropdownMenu.SubTrigger>
-
-            <DropdownMenu.SubContent>
-              {homes.map((home) => (
-                <DropdownMenu.CheckboxItem
-                  key={`home-${home.id}`}
-                  value={home.id === selectedHomeId && !selectedCollectionId ? 'on' : 'off'}
-                  onValueChange={() => {
-                    onSelectHome(home.id);
-                    onSelectCollection(null);
-                    onSelectGroup(null);
-                    onSelectRoom(null);
-                  }}
-                >
-                  <DropdownMenu.ItemIndicator />
-                  <DropdownMenu.ItemTitle>{home.name}</DropdownMenu.ItemTitle>
-                </DropdownMenu.CheckboxItem>
-              ))}
-            </DropdownMenu.SubContent>
-          </DropdownMenu.Sub>
-        )}
-
-        {/* Rooms Submenu - only show when NOT viewing a collection */}
-        {!selectedCollectionId && rooms.length > 0 && (
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger key="rooms-trigger">
-              <DropdownMenu.ItemIcon ios={{ name: 'door.left.hand.closed' }} />
-              <DropdownMenu.ItemTitle>Rooms</DropdownMenu.ItemTitle>
-            </DropdownMenu.SubTrigger>
-
-            <DropdownMenu.SubContent>
-              <DropdownMenu.CheckboxItem
-                key="room-all"
-                value={!selectedRoomId ? 'on' : 'off'}
-                onValueChange={() => onSelectRoom(null)}
-              >
-                <DropdownMenu.ItemIndicator />
-                <DropdownMenu.ItemTitle>All Rooms</DropdownMenu.ItemTitle>
-              </DropdownMenu.CheckboxItem>
-
-              <DropdownMenu.Separator />
-
-              {rooms.map((room) => (
-                <DropdownMenu.CheckboxItem
-                  key={`room-${room.id}`}
-                  value={room.id === selectedRoomId ? 'on' : 'off'}
-                  onValueChange={() => {
-                    onSelectRoom(room.id);
-                    onSelectCollection(null);
-                    onSelectGroup(null);
-                  }}
-                >
-                  <DropdownMenu.ItemIndicator />
-                  <DropdownMenu.ItemTitle>{room.name}</DropdownMenu.ItemTitle>
-                </DropdownMenu.CheckboxItem>
-              ))}
-            </DropdownMenu.SubContent>
-          </DropdownMenu.Sub>
-        )}
-
-        {/* Collections Submenu */}
-        {collections.length > 0 && (
-          <>
-            <DropdownMenu.Separator />
-
-            <DropdownMenu.Sub>
-              <DropdownMenu.SubTrigger key="collections-trigger">
-                <DropdownMenu.ItemIcon ios={{ name: 'folder' }} />
-                <DropdownMenu.ItemTitle>Collections</DropdownMenu.ItemTitle>
-              </DropdownMenu.SubTrigger>
-
-              <DropdownMenu.SubContent>
-                {collections.map((collection) => (
-                  <DropdownMenu.CheckboxItem
-                    key={`collection-${collection.id}`}
-                    value={selectedCollectionId === collection.id && !selectedGroupId ? 'on' : 'off'}
-                    onValueChange={() => {
-                      onSelectCollection(collection.id);
-                      onSelectRoom(null);
-                      onSelectGroup(null);
-                    }}
-                  >
-                    <DropdownMenu.ItemIndicator />
-                    <DropdownMenu.ItemTitle>{collection.name}</DropdownMenu.ItemTitle>
-                  </DropdownMenu.CheckboxItem>
-                ))}
-              </DropdownMenu.SubContent>
-            </DropdownMenu.Sub>
-          </>
-        )}
-
-        {/* Collection Groups Submenu - only show when a collection with groups is selected */}
-        {selectedCollectionId && selectedCollectionGroups.length > 0 && (
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger key="groups-trigger">
-              <DropdownMenu.ItemIcon ios={{ name: 'square.stack.3d.up' }} />
-              <DropdownMenu.ItemTitle>Groups</DropdownMenu.ItemTitle>
-            </DropdownMenu.SubTrigger>
-
-            <DropdownMenu.SubContent>
-              <DropdownMenu.CheckboxItem
-                key="group-all"
-                value={!selectedGroupId ? 'on' : 'off'}
-                onValueChange={() => onSelectGroup(null)}
-              >
-                <DropdownMenu.ItemIndicator />
-                <DropdownMenu.ItemTitle>All Groups</DropdownMenu.ItemTitle>
-              </DropdownMenu.CheckboxItem>
-
-              <DropdownMenu.Separator />
-
-              {selectedCollectionGroups.map((group) => (
-                <DropdownMenu.CheckboxItem
-                  key={`group-${group.id}`}
-                  value={selectedGroupId === group.id ? 'on' : 'off'}
-                  onValueChange={() => onSelectGroup(group.id)}
-                >
-                  <DropdownMenu.ItemIndicator />
-                  <DropdownMenu.ItemTitle>{group.name}</DropdownMenu.ItemTitle>
-                </DropdownMenu.CheckboxItem>
-              ))}
-            </DropdownMenu.SubContent>
-          </DropdownMenu.Sub>
-        )}
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
+    <MenuView
+      onPressAction={({ nativeEvent }) => handlePressAction(nativeEvent.event)}
+      actions={menuActions}
+      shouldOpenOnLongPress={false}
+    >
+      <Pressable style={styles.menuButton}>
+        <FontAwesome name="ellipsis-h" size={18} color="#000000" />
+      </Pressable>
+    </MenuView>
   );
 }
 

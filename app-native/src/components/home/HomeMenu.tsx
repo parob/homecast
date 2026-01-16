@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   StyleSheet,
   View,
@@ -32,7 +32,7 @@ interface HomeMenuProps {
   selectedCollectionId: string | null;
   selectedGroupId: string | null;
   onSelectHome: (homeId: string) => void;
-  onSelectRoom: (roomId: string) => void;
+  onSelectRoom: (roomId: string | null) => void;
   onSelectCollection: (collectionId: string | null) => void;
   onSelectGroup: (groupId: string | null) => void;
 }
@@ -42,13 +42,15 @@ interface MenuItemProps {
   label: string;
   onPress?: () => void;
   isSelected?: boolean;
-  subtitle?: string;
+  isExpanded?: boolean;
+  hasChildren?: boolean;
+  indented?: boolean;
 }
 
-function MenuItem({ icon, label, onPress, isSelected, subtitle }: MenuItemProps) {
+function MenuItem({ icon, label, onPress, isSelected, isExpanded, hasChildren, indented }: MenuItemProps) {
   return (
     <TouchableOpacity
-      style={styles.menuItem}
+      style={[styles.menuItem, indented && styles.menuItemIndented]}
       onPress={onPress}
       activeOpacity={0.6}
     >
@@ -64,8 +66,16 @@ function MenuItem({ icon, label, onPress, isSelected, subtitle }: MenuItemProps)
       )}
       <View style={styles.labelContainer}>
         <Text style={styles.menuLabel}>{label}</Text>
-        {subtitle && <Text style={styles.menuSubtitle}>{subtitle}</Text>}
       </View>
+      {hasChildren && (
+        <View style={styles.chevronContainer}>
+          <FontAwesome
+            name={isExpanded ? 'chevron-down' : 'chevron-right'}
+            size={12}
+            color={AppleHomeColors.textSecondary}
+          />
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
@@ -101,11 +111,17 @@ export function HomeMenu({
   onSelectCollection,
   onSelectGroup,
 }: HomeMenuProps) {
-  // Get groups for the selected collection
-  const selectedCollection = collections.find(c => c.id === selectedCollectionId);
-  const selectedCollectionGroups = selectedCollection
-    ? parseCollectionPayload(selectedCollection.payload).groups
-    : [];
+  // Track expanded homes and collections
+  const [expandedHomeId, setExpandedHomeId] = useState<string | null>(selectedHomeId);
+  const [expandedCollectionId, setExpandedCollectionId] = useState<string | null>(selectedCollectionId);
+
+  // Reset expanded state when menu opens
+  React.useEffect(() => {
+    if (visible) {
+      setExpandedHomeId(selectedHomeId);
+      setExpandedCollectionId(selectedCollectionId);
+    }
+  }, [visible, selectedHomeId, selectedCollectionId]);
 
   return (
     <Modal
@@ -129,74 +145,106 @@ export function HomeMenu({
 
               <Divider />
 
-              {/* Homes section */}
-              {homes.map((home) => (
-                <MenuItem
-                  key={home.id}
-                  label={home.name}
-                  isSelected={home.id === selectedHomeId && !selectedCollectionId}
-                  subtitle={home.isPrimary ? 'Current Location' : undefined}
-                  onPress={() => {
-                    onSelectHome(home.id);
-                    onSelectCollection(null);
-                    onSelectGroup(null);
-                    onClose();
-                  }}
-                />
-              ))}
+              {/* Homes section - each home expandable with rooms */}
+              {homes.map((home) => {
+                const homeRooms = rooms.filter(r => r.homeId === home.id);
+                const isExpanded = expandedHomeId === home.id;
+                const isHomeSelected = home.id === selectedHomeId && !selectedCollectionId;
 
-              {/* Rooms section - only show when NOT viewing a collection */}
-              {!selectedCollectionId && rooms.length > 0 && (
-                <>
-                  <Divider />
-                  {rooms.map((room) => (
+                return (
+                  <View key={home.id}>
                     <MenuItem
-                      key={room.id}
-                      label={room.name}
-                      isSelected={room.id === selectedRoomId}
+                      icon="home"
+                      label={home.name}
+                      isSelected={isHomeSelected && !selectedRoomId}
+                      hasChildren={homeRooms.length > 0}
+                      isExpanded={isExpanded}
                       onPress={() => {
-                        onSelectRoom(room.id);
-                        onClose();
+                        if (homeRooms.length > 0) {
+                          // Toggle expansion
+                          setExpandedHomeId(isExpanded ? null : home.id);
+                          setExpandedCollectionId(null);
+                        }
+                        // Select home and show all rooms
+                        onSelectHome(home.id);
+                        onSelectRoom(null);
+                        onSelectCollection(null);
+                        onSelectGroup(null);
+                        if (homeRooms.length === 0) {
+                          onClose();
+                        }
                       }}
                     />
-                  ))}
-                </>
-              )}
+                    {/* Expanded rooms */}
+                    {isExpanded && homeRooms.map((room) => (
+                      <MenuItem
+                        key={room.id}
+                        label={room.name}
+                        indented
+                        isSelected={isHomeSelected && room.id === selectedRoomId}
+                        onPress={() => {
+                          onSelectHome(home.id);
+                          onSelectRoom(room.id);
+                          onSelectCollection(null);
+                          onSelectGroup(null);
+                          onClose();
+                        }}
+                      />
+                    ))}
+                  </View>
+                );
+              })}
 
               {/* Collections section */}
               {collections.length > 0 && (
                 <>
                   <Divider />
-                  {collections.map((collection) => (
-                    <MenuItem
-                      key={collection.id}
-                      label={collection.name}
-                      isSelected={selectedCollectionId === collection.id && !selectedGroupId}
-                      onPress={() => {
-                        onSelectCollection(collection.id);
-                        onSelectGroup(null);
-                        onClose();
-                      }}
-                    />
-                  ))}
-                </>
-              )}
+                  {collections.map((collection) => {
+                    const collectionGroups = parseCollectionPayload(collection.payload).groups;
+                    const isExpanded = expandedCollectionId === collection.id;
+                    const isCollectionSelected = selectedCollectionId === collection.id;
 
-              {/* Groups section - only show when a collection is selected */}
-              {selectedCollectionId && selectedCollectionGroups.length > 0 && (
-                <>
-                  <Divider />
-                  {selectedCollectionGroups.map((group) => (
-                    <MenuItem
-                      key={group.id}
-                      label={group.name}
-                      isSelected={selectedGroupId === group.id}
-                      onPress={() => {
-                        onSelectGroup(group.id);
-                        onClose();
-                      }}
-                    />
-                  ))}
+                    return (
+                      <View key={collection.id}>
+                        <MenuItem
+                          icon="folder"
+                          label={collection.name}
+                          isSelected={isCollectionSelected && !selectedGroupId}
+                          hasChildren={collectionGroups.length > 0}
+                          isExpanded={isExpanded}
+                          onPress={() => {
+                            if (collectionGroups.length > 0) {
+                              // Toggle expansion
+                              setExpandedCollectionId(isExpanded ? null : collection.id);
+                              setExpandedHomeId(null);
+                            }
+                            // Select collection
+                            onSelectCollection(collection.id);
+                            onSelectGroup(null);
+                            onSelectRoom(null);
+                            if (collectionGroups.length === 0) {
+                              onClose();
+                            }
+                          }}
+                        />
+                        {/* Expanded groups */}
+                        {isExpanded && collectionGroups.map((group) => (
+                          <MenuItem
+                            key={group.id}
+                            label={group.name}
+                            indented
+                            isSelected={isCollectionSelected && selectedGroupId === group.id}
+                            onPress={() => {
+                              onSelectCollection(collection.id);
+                              onSelectGroup(group.id);
+                              onSelectRoom(null);
+                              onClose();
+                            }}
+                          />
+                        ))}
+                      </View>
+                    );
+                  })}
                 </>
               )}
             </ScrollView>
@@ -234,6 +282,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
   },
+  menuItemIndented: {
+    paddingLeft: 44,
+    backgroundColor: 'rgba(0,0,0,0.1)',
+  },
   checkContainer: {
     width: 24,
     alignItems: 'center',
@@ -245,14 +297,13 @@ const styles = StyleSheet.create({
   labelContainer: {
     flex: 1,
   },
+  chevronContainer: {
+    width: 20,
+    alignItems: 'center',
+  },
   menuLabel: {
     fontSize: 16,
     color: AppleHomeColors.textPrimary,
-  },
-  menuSubtitle: {
-    fontSize: 12,
-    color: AppleHomeColors.textSecondary,
-    marginTop: 2,
   },
   divider: {
     height: 1,

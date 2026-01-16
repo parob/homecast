@@ -26,7 +26,6 @@ import { stringifyCharacteristicValue } from '@/types/homekit';
 import { AccessoryWidget, ServiceGroupWidget, getPrimaryServiceType, getCharacteristic, DeviceControlModal } from '@/components/widgets';
 import { CategoryChips } from '@/components/home/CategoryChips';
 import { SectionHeader } from '@/components/home/SectionHeader';
-import { NativeHomeMenu } from '@/components/home/NativeHomeMenu';
 import { AppleHomeColors } from '@/constants/Colors';
 import type { Home, Accessory, Room, ServiceGroup } from '@/types/homekit';
 import type { SetCharacteristicResult, SetServiceGroupResult, Collection } from '@/types/api';
@@ -61,14 +60,23 @@ function parseCollectionPayload(payloadStr: string): CollectionPayload {
   }
 }
 
-export default function HomeScreen() {
+interface HomeScreenProps {
+  initialHomeId?: string;
+  initialCollectionId?: string;
+}
+
+export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeScreenProps = {}) {
   const insets = useSafeAreaInsets();
   const { isConnected } = useWebSocket();
-  const { selectedHomeId, setSelectedHomeId } = useHomeStore();
+  const { selectedHomeId: globalSelectedHomeId, setSelectedHomeId } = useHomeStore();
+
+  // Use initial props if provided, otherwise fall back to global state
+  const selectedHomeId = initialHomeId || globalSelectedHomeId;
+  const selectedCollectionId = initialCollectionId || null;
+
   const [expandedAccessory, setExpandedAccessory] = useState<Accessory | null>(null);
   const [expandedGroup, setExpandedGroup] = useState<ServiceGroup | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -498,29 +506,9 @@ export default function HomeScreen() {
           />
           <Text style={styles.headerTitle}>Homecast</Text>
           <View style={styles.headerTopSpacer} />
-          <NativeHomeMenu
-            homes={homes}
-            rooms={rooms}
-            collections={collections}
-            selectedHomeId={selectedHomeId}
-            selectedRoomId={selectedRoomId}
-            selectedCollectionId={selectedCollectionId}
-            selectedGroupId={selectedGroupId}
-            onSelectHome={(id) => {
-              setSelectedHomeId(id);
-              setSelectedRoomId(null);
-            }}
-            onSelectRoom={(id) => {
-              setSelectedRoomId(id);
-              setSelectedCollectionId(null);
-              setSelectedGroupId(null);
-            }}
-            onSelectCollection={(id) => {
-              setSelectedCollectionId(id);
-              setSelectedRoomId(null);
-            }}
-            onSelectGroup={setSelectedGroupId}
-          />
+          <TouchableOpacity style={styles.menuButton}>
+            <FontAwesome name="ellipsis-h" size={18} color="#000000" />
+          </TouchableOpacity>
         </View>
       </BlurView>
 
