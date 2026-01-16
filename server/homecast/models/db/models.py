@@ -139,24 +139,44 @@ class Collection(GraphQLBaseModel, table=True):
         description='JSON settings: {"compactMode": bool, "order": ["id1", "id2", ...]}')
 
 
-class CollectionAccess(GraphQLBaseModel, table=True):
+class EntityAccess(GraphQLBaseModel, table=True):
     """
-    Access control for collections. Handles both user ownership and public shares.
+    Unified access control for all entity types (collections, rooms, groups, homes, accessories).
 
-    Two modes:
-    - User access: user_id is set, role determines permission level
-    - Public share: user_id is null, optional passcode_hash and access_schedule
+    Three access types:
+    - "public": Anyone with the link can access (role determines permission level)
+    - "passcode": Requires passcode validation (additive on top of public)
+    - "user": Specific user access (requires authentication)
     """
-    __tablename__ = "collection_access"
+    __tablename__ = "entity_access"
 
-    collection_id: uuid.UUID = Field(nullable=False, foreign_key="collections.id", index=True,
-        description="The collection this access record belongs to")
+    # Entity reference (polymorphic)
+    entity_type: str = Field(nullable=False, index=True,
+        description="Type: 'collection', 'room', 'group', 'home', 'accessory'")
+    entity_id: uuid.UUID = Field(nullable=False, index=True,
+        description="ID of the shared entity")
+    home_id: Optional[uuid.UUID] = Field(default=None, index=True,
+        description="Required for room/group/accessory (for ownership validation)")
+    owner_id: uuid.UUID = Field(nullable=False, foreign_key="users.id", index=True,
+        description="User who owns/created this share")
+
+    # Access type (determines how this access works)
+    access_type: str = Field(nullable=False, index=True,
+        description="Type: 'public', 'passcode', or 'user'")
+
+    # For access_type="user"
     user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id", index=True,
-        description="User who has access (null for public shares)")
-    role: str = Field(default="view",
-        description="Access level: 'owner', 'control', or 'view'")
+        description="Specific user granted access (for access_type='user')")
+
+    # For access_type="passcode"
     passcode_hash: Optional[str] = Field(default=None,
-        description="Hashed passcode for public shares (null = no passcode required)")
+        description="Hashed passcode (for access_type='passcode')")
+    name: Optional[str] = Field(default=None,
+        description="Label for passcode (e.g., 'Guest Access')")
+
+    # Common fields
+    role: str = Field(default="view",
+        description="Permission level: 'view' or 'control'")
     access_schedule: Optional[str] = Field(default=None,
         description="JSON schedule config with expires_at, time_windows, timezone")
 
@@ -170,5 +190,5 @@ __all__ = [
     "SessionType",
     "Home",
     "Collection",
-    "CollectionAccess",
+    "EntityAccess",
 ]

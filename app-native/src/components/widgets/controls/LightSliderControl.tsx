@@ -43,7 +43,7 @@ interface LightSliderControlProps {
   onSaturationChange?: (saturation: number) => void;
 }
 
-const THROTTLE_INTERVAL = 1000;
+const THROTTLE_INTERVAL = 250; // Store sync interval during drag
 
 // Convert HSV to RGB hex
 function hsvToHex(h: number, s: number, v: number): string {
@@ -134,8 +134,11 @@ export function LightSliderControl({
     if (!isDragging.current) return;
     const pageY = e.nativeEvent.pageY;
     const newBrightness = calculateBrightness(pageY, layoutRef.current.y);
+
+    // Update local state immediately for responsive UI
     setDisplayBrightness(newBrightness);
 
+    // Haptic feedback every 10%
     const currentTen = Math.floor(newBrightness / 10);
     const lastTen = Math.floor(lastHapticRef.current / 10);
     if (currentTen !== lastTen) {
@@ -143,6 +146,7 @@ export function LightSliderControl({
       lastHapticRef.current = newBrightness;
     }
 
+    // Throttled store sync (doesn't affect local UI - isDragging prevents prop sync)
     if (onBrightnessChangeLive) {
       const now = Date.now();
       if (now - lastThrottledUpdate.current >= THROTTLE_INTERVAL && newBrightness !== lastSentBrightness.current) {

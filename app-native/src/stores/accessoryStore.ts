@@ -23,6 +23,8 @@ interface AccessoryState {
   revertOptimistic: (accessoryId: string, charType: string) => void;
   updateReachability: (accessoryId: string, isReachable: boolean) => void;
   getCharacteristicValue: (accessoryId: string, charType: string) => unknown | null;
+  isCharacteristicPending: (accessoryId: string, charType: string) => boolean;
+  isAccessoryPending: (accessoryId: string) => boolean;
   clearAll: () => void;
 }
 
@@ -80,6 +82,18 @@ export const useAccessoryStore = create<AccessoryState>()(
     getCharacteristicValue: (accessoryId, charType) => {
       const key = makeKey(accessoryId, charType);
       return get().characteristics[key]?.value ?? null;
+    },
+
+    isCharacteristicPending: (accessoryId, charType) => {
+      const key = makeKey(accessoryId, charType);
+      return get().characteristics[key]?.isOptimistic ?? false;
+    },
+
+    isAccessoryPending: (accessoryId) => {
+      const chars = get().characteristics;
+      return Object.keys(chars).some(
+        (key) => key.startsWith(`${accessoryId}:`) && chars[key].isOptimistic
+      );
     },
 
     clearAll: () => {

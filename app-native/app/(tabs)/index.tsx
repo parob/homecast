@@ -4,14 +4,10 @@ import {
   RefreshControl,
   TouchableOpacity,
   ActivityIndicator,
-  SectionList,
+  ScrollView,
   View,
   Dimensions,
-  Image,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
-import { BlurView } from '@react-native-community/blur';
 import { useQuery, useMutation } from '@apollo/client/react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
@@ -19,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { Text } from '@/components/Themed';
 import { HOMES_QUERY, ACCESSORIES_QUERY, ROOMS_QUERY, SERVICE_GROUPS_QUERY, COLLECTIONS_QUERY } from '@/api/graphql/queries';
 import { SET_CHARACTERISTIC_MUTATION, SET_SERVICE_GROUP_MUTATION } from '@/api/graphql/mutations';
-import { useWebSocket, markLocalChange } from '@/providers/WebSocketProvider';
+import { useWebSocket, markLocalChange, clearLocalChange } from '@/providers/WebSocketProvider';
 import { useAccessoryStore } from '@/stores/accessoryStore';
 import { useHomeStore } from '@/stores/homeStore';
 import { stringifyCharacteristicValue } from '@/types/homekit';
@@ -63,10 +59,11 @@ function parseCollectionPayload(payloadStr: string): CollectionPayload {
 interface HomeScreenProps {
   initialHomeId?: string;
   initialCollectionId?: string;
+  initialRoomId?: string;
+  initialGroupId?: string;
 }
 
-export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeScreenProps = {}) {
-  const insets = useSafeAreaInsets();
+export default function HomeScreen({ initialHomeId, initialCollectionId, initialRoomId, initialGroupId }: HomeScreenProps = {}) {
   const { isConnected } = useWebSocket();
   const { selectedHomeId: globalSelectedHomeId, setSelectedHomeId } = useHomeStore();
 
@@ -76,11 +73,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
 
   const [expandedAccessory, setExpandedAccessory] = useState<Accessory | null>(null);
   const [expandedGroup, setExpandedGroup] = useState<ServiceGroup | null>(null);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(initialRoomId || null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(initialGroupId || null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const { updateCharacteristic, getCharacteristicValue, revertOptimistic } = useAccessoryStore();
+  // Sync state when props change
+  useEffect(() => {
+    setSelectedRoomId(initialRoomId || null);
+  }, [initialRoomId]);
+
+  useEffect(() => {
+    setSelectedGroupId(initialGroupId || null);
+  }, [initialGroupId]);
+
+  const { updateCharacteristic, getCharacteristicValue, revertOptimistic, confirmOptimistic } = useAccessoryStore();
   const [setCharacteristic] = useMutation<{ setCharacteristic: SetCharacteristicResult }>(SET_CHARACTERISTIC_MUTATION);
   const [setServiceGroup] = useMutation<{ setServiceGroup: SetServiceGroupResult }>(SET_SERVICE_GROUP_MUTATION);
 
@@ -323,20 +329,30 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
         },
       });
       if (data?.setCharacteristic?.success) {
+        // Clear pending state - mutation succeeded
+        confirmOptimistic(accessoryId, characteristicType);
+        clearLocalChange(accessoryId, characteristicType);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         revertOptimistic(accessoryId, characteristicType);
+        clearLocalChange(accessoryId, characteristicType);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
     } catch {
       revertOptimistic(accessoryId, characteristicType);
+      clearLocalChange(accessoryId, characteristicType);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
 
-  // Handle slider
+  // Handle slider live update (optimistic only, no mutation)
+  const handleSliderLive = (accessoryId: string, characteristicType: string, value: number) => {
+    markLocalChange(accessoryId, characteristicType);
+    updateCharacteristic(accessoryId, characteristicType, value, true);
+  };
+
+  // Handle slider final value (fire mutation)
   const handleSlider = async (accessoryId: string, characteristicType: string, value: number) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     markLocalChange(accessoryId, characteristicType);
     updateCharacteristic(accessoryId, characteristicType, value, true);
 
@@ -348,12 +364,17 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
           value: stringifyCharacteristicValue(value),
         },
       });
-      if (!data?.setCharacteristic?.success) {
+      if (data?.setCharacteristic?.success) {
+        confirmOptimistic(accessoryId, characteristicType);
+        clearLocalChange(accessoryId, characteristicType);
+      } else {
         revertOptimistic(accessoryId, characteristicType);
+        clearLocalChange(accessoryId, characteristicType);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
     } catch {
       revertOptimistic(accessoryId, characteristicType);
+      clearLocalChange(accessoryId, characteristicType);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
@@ -388,12 +409,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
         },
       });
       if (data?.setServiceGroup?.success) {
+        // Clear pending state for all accessories in group
+        if (group) {
+          for (const accId of group.accessoryIds) {
+            confirmOptimistic(accId, characteristicType);
+            clearLocalChange(accId, characteristicType);
+          }
+        }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         // Revert all accessories in group
         if (group) {
           for (const accId of group.accessoryIds) {
             revertOptimistic(accId, characteristicType);
+            clearLocalChange(accId, characteristicType);
           }
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -402,6 +431,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
       if (group) {
         for (const accId of group.accessoryIds) {
           revertOptimistic(accId, characteristicType);
+          clearLocalChange(accId, characteristicType);
         }
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -409,20 +439,6 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
   };
 
   const isLoading = homesLoading || accessoriesLoading;
-
-  // Determine the page title based on selection (moved before early returns for hooks consistency)
-  const pageTitle = useMemo(() => {
-    if (selectedCollectionId && selectedCollection) {
-      if (selectedGroupId && selectedCollectionGroup) {
-        return selectedCollectionGroup.name;
-      }
-      return selectedCollection.name;
-    }
-    if (selectedRoomId && selectedRoom) {
-      return selectedRoom.name;
-    }
-    return selectedHome?.name || 'Home';
-  }, [selectedCollectionId, selectedCollection, selectedGroupId, selectedCollectionGroup, selectedRoomId, selectedRoom, selectedHome]);
 
   // Get accessories for category chips (filtered to current view)
   const displayedAccessories = useMemo(() => {
@@ -481,101 +497,80 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
   }
 
   // List header component (scrolls with content)
-  const headerHeight = insets.top + 52;
   const ListHeader = () => (
-    <View style={[styles.listHeader, { paddingTop: headerHeight + 8 }]}>
-      {/* Page title */}
-      <Text style={styles.homeTitle}>{pageTitle}</Text>
+    <View style={styles.listHeader}>
       {/* Category chips */}
       <CategoryChips accessories={displayedAccessories} />
     </View>
   );
 
   return (
-    <View style={styles.container}>
-      {/* Fixed header - logo and controls with blur */}
-      <BlurView
-        blurType="light"
-        blurAmount={20}
-        style={[styles.fixedHeader, { height: insets.top + 52 }]}
-      >
-        <View style={[styles.headerTop, { marginTop: insets.top }]}>
-          <Image
-            source={require('@/assets/images/icon.png')}
-            style={styles.headerLogo}
+    <>
+      <ScrollView
+        key={`${selectedHomeId}-${selectedCollectionId}-${selectedRoomId}`}
+        style={styles.container}
+        contentContainerStyle={styles.listContent}
+        contentInsetAdjustmentBehavior="automatic"
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={onRefresh}
+            tintColor="#000"
           />
-          <Text style={styles.headerTitle}>Homecast</Text>
-          <View style={styles.headerTopSpacer} />
-          <TouchableOpacity style={styles.menuButton}>
-            <FontAwesome name="ellipsis-h" size={18} color="#000000" />
-          </TouchableOpacity>
-        </View>
-      </BlurView>
-
-      {/* Scrollable content */}
-      {groupedAccessories.length === 0 && !accessoriesLoading ? (
-        <View style={[styles.emptyAccessories, { marginTop: insets.top + 60 }]}>
-          <Text style={styles.emptyText}>
-            {selectedCollectionId
-              ? 'No accessories in this collection'
-              : selectedRoomId
-              ? 'No accessories in this room'
-              : 'No accessories in this home'}
-          </Text>
-        </View>
-      ) : (
-        <SectionList
-          key={`${selectedHomeId}-${selectedCollectionId}-${selectedRoomId}`}
-          sections={groupedAccessories}
-          ListHeaderComponent={ListHeader}
-          keyExtractor={(item, index) => `row-${index}`}
-          scrollsToTop={false}
-          scrollIndicatorInsets={{ top: 60 }}
-          renderSectionHeader={({ section: { title } }) => (
-            <SectionHeader title={title} />
-          )}
-          renderItem={({ item: row }) => (
-            <View style={styles.row}>
-              {row.map((item, idx) => {
-                if (item.type === 'group') {
-                  const groupAccessories = getGroupAccessories(item.group);
-                  return (
-                    <ServiceGroupWidget
-                      key={item.group.id}
-                      groupId={item.group.id}
-                      groupName={item.group.name}
-                      accessories={groupAccessories}
-                      onToggle={handleGroupToggle}
-                      onCardPress={() => {
-                        setExpandedGroup(item.group);
-                      }}
-                    />
-                  );
-                } else {
-                  return (
-                    <AccessoryWidget
-                      key={item.accessory.id}
-                      accessory={item.accessory}
-                      onCardPress={() => setExpandedAccessory(item.accessory)}
-                    />
-                  );
-                }
-              })}
-              {row.length === 1 && <View style={styles.placeholder} />}
-            </View>
-          )}
-          contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefreshing}
-              onRefresh={onRefresh}
-              tintColor="#000"
-            />
-          }
-          ListFooterComponent={<View style={{ height: 100 }} />}
-          stickySectionHeadersEnabled={false}
-        />
-      )}
+        }
+      >
+        {groupedAccessories.length === 0 && !accessoriesLoading ? (
+          <View style={styles.emptyAccessories}>
+            <Text style={styles.emptyText}>
+              {selectedCollectionId
+                ? 'No accessories in this collection'
+                : selectedRoomId
+                ? 'No accessories in this room'
+                : 'No accessories in this home'}
+            </Text>
+          </View>
+        ) : (
+          <>
+            <ListHeader />
+            {groupedAccessories.map((section, sectionIndex) => (
+              <View key={`section-${sectionIndex}`}>
+                <SectionHeader title={section.title} />
+                {section.data.map((row, rowIndex) => (
+                  <View key={`row-${sectionIndex}-${rowIndex}`} style={styles.row}>
+                    {row.map((item) => {
+                      if (item.type === 'group') {
+                        const groupAccessories = getGroupAccessories(item.group);
+                        return (
+                          <ServiceGroupWidget
+                            key={item.group.id}
+                            groupId={item.group.id}
+                            groupName={item.group.name}
+                            accessories={groupAccessories}
+                            onToggle={handleGroupToggle}
+                            onCardPress={() => {
+                              setExpandedGroup(item.group);
+                            }}
+                          />
+                        );
+                      } else {
+                        return (
+                          <AccessoryWidget
+                            key={item.accessory.id}
+                            accessory={item.accessory}
+                            onCardPress={() => setExpandedAccessory(item.accessory)}
+                          />
+                        );
+                      }
+                    })}
+                    {row.length === 1 && <View style={styles.placeholder} />}
+                  </View>
+                ))}
+              </View>
+            ))}
+            <View style={{ height: 100 }} />
+          </>
+        )}
+      </ScrollView>
 
       {/* Device control modal - single accessory */}
       {expandedAccessory && !expandedGroup && (() => {
@@ -644,7 +639,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
             hue={hue !== null && hue !== undefined ? Number(hue) : undefined}
             saturation={saturation !== null && saturation !== undefined ? Number(saturation) : undefined}
             onBrightnessChange={brightnessChar ? (value) => handleSlider(expandedAccessory.id, 'brightness', value) : undefined}
-            onBrightnessChangeLive={brightnessChar ? (value) => handleSlider(expandedAccessory.id, 'brightness', value) : undefined}
+            onBrightnessChangeLive={brightnessChar ? (value) => handleSliderLive(expandedAccessory.id, 'brightness', value) : undefined}
             onColorTemperatureChange={colorTempChar ? (value) => handleSlider(expandedAccessory.id, 'color_temperature', value) : undefined}
             onHueChange={hueChar ? (value) => handleSlider(expandedAccessory.id, 'hue', value) : undefined}
             onSaturationChange={saturationChar ? (value) => handleSlider(expandedAccessory.id, 'saturation', value) : undefined}
@@ -660,7 +655,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
             // Fan props
             fanSpeed={fanSpeed !== null && fanSpeed !== undefined ? Number(fanSpeed) : undefined}
             onFanSpeedChange={fanSpeedChar ? (value) => handleSlider(expandedAccessory.id, 'rotation_speed', value) : undefined}
-            onFanSpeedChangeLive={fanSpeedChar ? (value) => handleSlider(expandedAccessory.id, 'rotation_speed', value) : undefined}
+            onFanSpeedChangeLive={fanSpeedChar ? (value) => handleSliderLive(expandedAccessory.id, 'rotation_speed', value) : undefined}
             // Common
             onClose={() => setExpandedAccessory(null)}
             onToggle={() => {
@@ -748,6 +743,17 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
             groupSaturation = getEffectiveValue(acc.id, 'saturation', satChar.value) as number;
           }
         }
+
+        // Handle group brightness live update (optimistic only, no mutation)
+        const handleGroupBrightnessLive = (value: number) => {
+          for (const acc of groupAccessories) {
+            const brightnessChar = getCharacteristic(acc, 'brightness');
+            if (brightnessChar) {
+              markLocalChange(acc.id, 'brightness');
+              updateCharacteristic(acc.id, 'brightness', value, true);
+            }
+          }
+        };
 
         // Handle group brightness change - use setServiceGroup mutation (updates all at once)
         const handleGroupBrightnessChange = async (value: number) => {
@@ -908,7 +914,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
             hue={groupHue}
             saturation={groupSaturation}
             onBrightnessChange={handleGroupBrightnessChange}
-            onBrightnessChangeLive={handleGroupBrightnessChange}
+            onBrightnessChangeLive={handleGroupBrightnessLive}
             onColorTemperatureChange={hasColorTempSupport ? handleGroupColorTempChange : undefined}
             onHueChange={hasHueSupport ? handleGroupHueChange : undefined}
             onSaturationChange={hasSaturationSupport ? handleGroupSaturationChange : undefined}
@@ -917,8 +923,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId }: HomeS
           />
         );
       })()}
-
-    </View>
+    </>
   );
 }
 
@@ -942,46 +947,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  fixedHeader: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
-  },
   listHeader: {
     paddingBottom: 8,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    height: 52,
-  },
-  headerLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#000000',
-    marginLeft: 8,
-  },
-  headerTopSpacer: {
-    flex: 1,
-  },
-  menuButton: {
-    padding: 8,
-  },
-  homeTitle: {
-    fontSize: 34,
-    fontWeight: '700',
-    color: '#000000',
-    paddingHorizontal: 16,
-    marginTop: 8,
   },
   row: {
     flexDirection: 'row',

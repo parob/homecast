@@ -1,118 +1,34 @@
 """
 Repository for Collection database operations.
+
+Note: Collection sharing is now handled by EntityAccess via EntityAccessRepository.
+Ownership is tracked via EntityAccess with access_type='user' and role='owner'.
 """
 
-import json
 import logging
-import hashlib
-import secrets
-from datetime import datetime, timezone
 from typing import Optional, Tuple, List
 from uuid import UUID
 
 from sqlmodel import Session, select
 
-from homecast.models.db.models import Collection, CollectionAccess
+from homecast.models.db.models import Collection, EntityAccess
 from homecast.models.db.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
+
+
+# Helper class to represent ownership access (compatible with old API)
+class OwnerAccess:
+    """Represents owner access to a collection."""
+    def __init__(self, user_id: UUID, role: str = "owner"):
+        self.user_id = user_id
+        self.role = role
 
 
 class CollectionRepository(BaseRepository):
     """Repository for collection operations."""
 
     MODEL_CLASS = Collection
-
-    # --- Passcode Hashing (same pattern as UserRepository) ---
-
-    @classmethod
-    def _hash_passcode(cls, passcode: str) -> str:
-        """Hash a passcode with a random salt."""
-        salt = secrets.token_hex(16)
-        hash_obj = hashlib.pbkdf2_hmac(
-            'sha256',
-            passcode.encode('utf-8'),
-            salt.encode('utf-8'),
-            100000
-        )
-        return f"{salt}${hash_obj.hex()}"
-
-    @classmethod
-    def _verify_passcode(cls, passcode: str, passcode_hash: str) -> bool:
-        """Verify a passcode against its hash."""
-        try:
-            salt, stored_hash = passcode_hash.split('$')
-            hash_obj = hashlib.pbkdf2_hmac(
-                'sha256',
-                passcode.encode('utf-8'),
-                salt.encode('utf-8'),
-                100000
-            )
-            return hash_obj.hex() == stored_hash
-        except (ValueError, AttributeError):
-            return False
-
-    # --- Access Schedule Validation ---
-
-    @classmethod
-    def check_access_schedule(
-        cls,
-        access: CollectionAccess
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Check if access is allowed based on the schedule.
-
-        Returns:
-            Tuple of (is_allowed, error_message)
-        """
-        if not access.access_schedule:
-            return (True, None)
-
-        try:
-            schedule = json.loads(access.access_schedule)
-        except json.JSONDecodeError:
-            return (True, None)  # Invalid JSON = no restrictions
-
-        now = datetime.now(timezone.utc)
-
-        # Check expiration
-        expires_at = schedule.get("expires_at")
-        if expires_at:
-            try:
-                expiry = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                if now > expiry:
-                    return (False, "Access has expired")
-            except (ValueError, TypeError):
-                pass
-
-        # Check time windows
-        time_windows = schedule.get("time_windows")
-        if time_windows:
-            tz_name = schedule.get("timezone", "UTC")
-            try:
-                import zoneinfo
-                tz = zoneinfo.ZoneInfo(tz_name)
-            except Exception:
-                tz = timezone.utc
-
-            local_now = now.astimezone(tz)
-            current_day = local_now.strftime("%a").lower()
-            current_time = local_now.strftime("%H:%M")
-
-            in_window = False
-            for window in time_windows:
-                days = [d.lower() for d in window.get("days", [])]
-                start = window.get("start", "00:00")
-                end = window.get("end", "23:59")
-
-                if current_day in days and start <= current_time <= end:
-                    in_window = True
-                    break
-
-            if not in_window:
-                return (False, "Access not available at this time")
-
-        return (True, None)
 
     # --- Collection CRUD ---
 
@@ -139,9 +55,15 @@ class CollectionRepository(BaseRepository):
         session.add(collection)
         session.flush()  # Get the ID
 
-        # Create owner access
-        access = CollectionAccess(
-            collection_id=collection.id,
+        # Create owner access via EntityAccess (internal tracking)
+        # Note: This is just to track who owns the collection, not for sharing
+        # When the user wants to share, they'll use the ShareDialog which
+        # creates proper EntityAccess records via EntityAccessRepository
+        access = EntityAccess(
+            entity_type="collection",
+            entity_id=collection.id,
+            owner_id=user_id,
+            access_type="user",
             user_id=user_id,
             role="owner"
         )
@@ -156,21 +78,24 @@ class CollectionRepository(BaseRepository):
         cls,
         session: Session,
         user_id: UUID
-    ) -> List[Tuple[Collection, CollectionAccess]]:
+    ) -> List[Tuple[Collection, OwnerAccess]]:
         """
-        Get all collections a user has access to.
+        Get all collections a user owns.
 
         Returns:
             List of (collection, access) tuples
         """
         statement = (
-            select(Collection, CollectionAccess)
-            .join(CollectionAccess, Collection.id == CollectionAccess.collection_id)
-            .where(CollectionAccess.user_id == user_id)
+            select(Collection, EntityAccess)
+            .join(EntityAccess, Collection.id == EntityAccess.entity_id)
+            .where(EntityAccess.entity_type == "collection")
+            .where(EntityAccess.user_id == user_id)
+            .where(EntityAccess.role == "owner")
             .order_by(Collection.created_at.desc())
         )
         results = session.exec(statement).all()
-        return list(results)
+        # Convert to OwnerAccess for API compatibility
+        return [(c, OwnerAccess(e.user_id, e.role)) for c, e in results]
 
     @classmethod
     def get_collection_with_access(
@@ -178,7 +103,7 @@ class CollectionRepository(BaseRepository):
         session: Session,
         collection_id: UUID,
         user_id: UUID
-    ) -> Optional[Tuple[Collection, CollectionAccess]]:
+    ) -> Optional[Tuple[Collection, OwnerAccess]]:
         """
         Get a collection with the user's access record.
 
@@ -186,13 +111,17 @@ class CollectionRepository(BaseRepository):
             Tuple of (collection, access) or None if not found/no access
         """
         statement = (
-            select(Collection, CollectionAccess)
-            .join(CollectionAccess, Collection.id == CollectionAccess.collection_id)
+            select(Collection, EntityAccess)
+            .join(EntityAccess, Collection.id == EntityAccess.entity_id)
             .where(Collection.id == collection_id)
-            .where(CollectionAccess.user_id == user_id)
+            .where(EntityAccess.entity_type == "collection")
+            .where(EntityAccess.user_id == user_id)
         )
         result = session.exec(statement).one_or_none()
-        return result
+        if not result:
+            return None
+        collection, entity_access = result
+        return (collection, OwnerAccess(entity_access.user_id, entity_access.role))
 
     @classmethod
     def update_collection(
@@ -251,9 +180,11 @@ class CollectionRepository(BaseRepository):
         if access.role != "owner":
             return False
 
-        # Delete all access records first
+        # Delete all EntityAccess records for this collection first
         access_records = session.exec(
-            select(CollectionAccess).where(CollectionAccess.collection_id == collection_id)
+            select(EntityAccess)
+            .where(EntityAccess.entity_type == "collection")
+            .where(EntityAccess.entity_id == collection_id)
         ).all()
         for record in access_records:
             session.delete(record)
@@ -265,246 +196,6 @@ class CollectionRepository(BaseRepository):
         session.delete(collection)
         session.commit()
         return True
-
-    # --- Public Share Management ---
-
-    @classmethod
-    def get_public_shares(
-        cls,
-        session: Session,
-        collection_id: UUID
-    ) -> List[CollectionAccess]:
-        """
-        Get all public share configs for a collection.
-
-        Returns:
-            List of CollectionAccess records where user_id is null
-        """
-        statement = (
-            select(CollectionAccess)
-            .where(CollectionAccess.collection_id == collection_id)
-            .where(CollectionAccess.user_id == None)
-        )
-        return list(session.exec(statement).all())
-
-    @classmethod
-    def create_public_share(
-        cls,
-        session: Session,
-        collection_id: UUID,
-        user_id: UUID,
-        role: str = "view",
-        passcode: Optional[str] = None,
-        schedule: Optional[str] = None
-    ) -> Optional[CollectionAccess]:
-        """
-        Create a public share config for a collection (must be owner).
-
-        Args:
-            collection_id: Collection to share
-            user_id: User creating the share (must be owner)
-            role: Access level ("view" or "control")
-            passcode: Optional passcode for access
-            schedule: Optional JSON schedule config
-
-        Returns:
-            Created CollectionAccess or None if not owner
-        """
-        # Verify user is owner
-        result = cls.get_collection_with_access(session, collection_id, user_id)
-        if not result:
-            return None
-
-        _, access = result
-        if access.role != "owner":
-            return None
-
-        # Create public share
-        share = CollectionAccess(
-            collection_id=collection_id,
-            user_id=None,  # Public share
-            role=role,
-            passcode_hash=cls._hash_passcode(passcode) if passcode else None,
-            access_schedule=schedule
-        )
-        session.add(share)
-        session.commit()
-        session.refresh(share)
-        return share
-
-    @classmethod
-    def remove_public_share(
-        cls,
-        session: Session,
-        access_id: UUID,
-        user_id: UUID
-    ) -> bool:
-        """
-        Remove a public share config (must be owner of the collection).
-
-        Returns:
-            True if removed, False otherwise
-        """
-        access = session.get(CollectionAccess, access_id)
-        if not access or access.user_id is not None:
-            return False  # Not a public share
-
-        # Verify user is owner of the collection
-        owner_access = cls.get_collection_with_access(session, access.collection_id, user_id)
-        if not owner_access or owner_access[1].role != "owner":
-            return False
-
-        session.delete(access)
-        session.commit()
-        return True
-
-    @classmethod
-    def remove_all_public_shares(
-        cls,
-        session: Session,
-        collection_id: UUID,
-        user_id: UUID
-    ) -> bool:
-        """
-        Remove all public shares for a collection (must be owner).
-
-        Returns:
-            True if any were removed, False otherwise
-        """
-        # Verify user is owner
-        result = cls.get_collection_with_access(session, collection_id, user_id)
-        if not result or result[1].role != "owner":
-            return False
-
-        shares = cls.get_public_shares(session, collection_id)
-        for share in shares:
-            session.delete(share)
-        session.commit()
-        return len(shares) > 0
-
-    # --- Public Access ---
-
-    @classmethod
-    def get_collection_for_public(
-        cls,
-        session: Session,
-        collection_id: UUID
-    ) -> Optional[Collection]:
-        """
-        Get a collection by ID (for public access check).
-
-        Returns:
-            Collection or None if not found
-        """
-        return session.get(Collection, collection_id)
-
-    @classmethod
-    def verify_public_access(
-        cls,
-        session: Session,
-        collection_id: UUID,
-        passcode: Optional[str] = None
-    ) -> Optional[CollectionAccess]:
-        """
-        Verify public access to a collection.
-
-        Args:
-            collection_id: Collection to access
-            passcode: Optional passcode provided by visitor
-
-        Returns:
-            CollectionAccess record if access granted, None otherwise
-        """
-        shares = cls.get_public_shares(session, collection_id)
-        if not shares:
-            return None
-
-        # First try to find a share without passcode
-        for share in shares:
-            if not share.passcode_hash:
-                # Check schedule
-                allowed, _ = cls.check_access_schedule(share)
-                if allowed:
-                    return share
-
-        # If passcode provided, try to match
-        if passcode:
-            for share in shares:
-                if share.passcode_hash and cls._verify_passcode(passcode, share.passcode_hash):
-                    # Check schedule
-                    allowed, _ = cls.check_access_schedule(share)
-                    if allowed:
-                        return share
-
-        return None
-
-    @classmethod
-    def get_public_access_info(
-        cls,
-        session: Session,
-        collection_id: UUID
-    ) -> Tuple[bool, bool, Optional[str]]:
-        """
-        Get public access info for a collection.
-
-        Returns:
-            Tuple of (has_public_share, requires_password, access_level_if_no_password)
-        """
-        shares = cls.get_public_shares(session, collection_id)
-        if not shares:
-            return (False, False, None)
-
-        # Check if any share doesn't require password
-        for share in shares:
-            if not share.passcode_hash:
-                allowed, _ = cls.check_access_schedule(share)
-                if allowed:
-                    return (True, False, share.role)
-
-        # All shares require password
-        return (True, True, None)
-
-    # --- Save Collection to User ---
-
-    @classmethod
-    def save_collection_to_user(
-        cls,
-        session: Session,
-        collection_id: UUID,
-        user_id: UUID,
-        role: str = "view"
-    ) -> Optional[CollectionAccess]:
-        """
-        Save a shared collection to a user's account.
-
-        Args:
-            collection_id: Collection to save
-            user_id: User saving the collection
-            role: Access level to grant (default: view)
-
-        Returns:
-            Created CollectionAccess or None if collection not found
-        """
-        # Verify collection exists
-        collection = session.get(Collection, collection_id)
-        if not collection:
-            return None
-
-        # Check if user already has access
-        existing = cls.get_collection_with_access(session, collection_id, user_id)
-        if existing:
-            return existing[1]  # Already has access
-
-        # Create user access
-        access = CollectionAccess(
-            collection_id=collection_id,
-            user_id=user_id,
-            role=role
-        )
-        session.add(access)
-        session.commit()
-        session.refresh(access)
-        return access
 
     # --- Helper to get owner's user_id ---
 
@@ -521,9 +212,10 @@ class CollectionRepository(BaseRepository):
             Owner's user_id or None if not found
         """
         statement = (
-            select(CollectionAccess)
-            .where(CollectionAccess.collection_id == collection_id)
-            .where(CollectionAccess.role == "owner")
+            select(EntityAccess)
+            .where(EntityAccess.entity_type == "collection")
+            .where(EntityAccess.entity_id == collection_id)
+            .where(EntityAccess.role == "owner")
         )
         access = session.exec(statement).first()
         return access.user_id if access else None

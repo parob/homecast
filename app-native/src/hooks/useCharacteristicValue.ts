@@ -18,3 +18,15 @@ export function useCharacteristicValue(
 
   return storeValue !== undefined ? storeValue : serverValue;
 }
+
+/**
+ * Hook to check if any characteristic of an accessory has a pending (optimistic) update.
+ * Useful for showing loading states on widget cards.
+ */
+export function useAccessoryPending(accessoryId: string): boolean {
+  return useAccessoryStore((state) => {
+    return Object.keys(state.characteristics).some(
+      (key) => key.startsWith(`${accessoryId}:`) && state.characteristics[key].isOptimistic
+    );
+  });
+}

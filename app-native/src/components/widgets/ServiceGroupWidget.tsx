@@ -168,6 +168,13 @@ export function ServiceGroupWidget({
     return storeValue !== undefined ? storeValue : serverValue;
   };
 
+  // Check if any accessory in the group has a pending change
+  const isPending = accessories.some((acc) =>
+    Object.keys(characteristics).some(
+      (key) => key.startsWith(`${acc.id}:`) && characteristics[key].isOptimistic
+    )
+  );
+
   const serviceType = getGroupServiceType(accessories);
   const { onCount, totalCount, isOn } = getGroupStateWithStore(accessories, getEffectiveValue);
   const brightness = serviceType === 'lightbulb' ? getGroupBrightnessWithStore(accessories, getEffectiveValue) : null;
@@ -228,6 +235,7 @@ export function ServiceGroupWidget({
       isReachable={isReachable}
       serviceType={serviceType}
       iconBgColor={iconBgColor}
+      isPending={isPending}
       onIconPress={() => onToggle(groupId, getToggleCharacteristic(), isOn)}
       onCardPress={onCardPress}
     />

@@ -3,7 +3,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { WidgetCard, getIconColor } from './WidgetCard';
 import { WidgetProps, getCharacteristic } from './types';
-import { useCharacteristicValue } from '@/hooks/useCharacteristicValue';
+import { useCharacteristicValue, useAccessoryPending } from '@/hooks/useCharacteristicValue';
 
 export function OutletWidget({
   accessory,
@@ -16,6 +16,7 @@ export function OutletWidget({
 
   // Subscribe to store value for optimistic updates
   const powerValue = useCharacteristicValue(accessory.id, powerChar?.type, powerChar?.value);
+  const isPending = useAccessoryPending(accessory.id);
   const isOn = powerValue === true || powerValue === 1;
   const inUse = inUseChar?.value === true || inUseChar?.value === 1;
   const iconColors = getIconColor('outlet', isOn);
@@ -30,6 +31,7 @@ export function OutletWidget({
       isOn={isOn}
       isReachable={accessory.isReachable}
       serviceType="outlet"
+      isPending={isPending}
       onIconPress={powerChar ? () => onToggle(accessory.id, powerChar.type, isOn) : undefined}
       onCardPress={onCardPress}
     />

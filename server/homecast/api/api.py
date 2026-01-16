@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from graphql_api import field
 
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType, Collection, CollectionAccess
-from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository
+from homecast.models.db.models import SessionType, Collection, EntityAccess
+from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository, EntityAccessRepository
 from homecast.auth import generate_token, AuthContext
 from homecast.middleware import get_auth_context
+from homecast.utils.share_hash import encode_share_hash, decode_share_hash
 
 logger = logging.getLogger(__name__)
 
@@ -195,8 +196,65 @@ class UpdateSettingsResult:
 
 
 # --- Collection Types ---
-# Collection and CollectionAccess models are imported from homecast.models.db.models
+# Collection model is imported from homecast.models.db.models
 # The GraphQLSQLAlchemyMixin on these models enables direct GraphQL responses
+
+
+# --- Entity Access Types ---
+
+@dataclass
+class EntityAccessInfo:
+    """Entity access configuration for GraphQL responses."""
+    id: str
+    entity_type: str
+    entity_id: str
+    access_type: str  # "public", "passcode", "user"
+    role: str  # "view", "control"
+    name: Optional[str] = None  # Label for passcode
+    user_id: Optional[str] = None  # For user access
+    user_email: Optional[str] = None  # Resolved email for user access
+    has_passcode: bool = False  # True if passcode is set
+    access_schedule: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+@dataclass
+class SharingInfo:
+    """Summary of sharing configuration for an entity."""
+    is_shared: bool
+    has_public: bool
+    public_role: Optional[str]  # "view" or "control" if public
+    passcode_count: int
+    user_count: int
+    share_hash: str  # The hash for the share URL
+    share_url: str  # Full URL: https://homecast.cloud/s/{hash}
+
+
+@dataclass
+class SharedEntityData:
+    """Data returned for a shared entity."""
+    entity_type: str
+    entity_id: str
+    entity_name: str
+    role: str  # "view" or "control"
+    requires_passcode: bool  # True if passcode required for this access level
+    # Entity-specific data (JSON string)
+    data: Optional[str] = None
+
+
+@dataclass
+class CreateEntityAccessResult:
+    """Result of creating entity access."""
+    success: bool
+    access: Optional[EntityAccessInfo] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class DeleteEntityAccessResult:
+    """Result of deleting entity access."""
+    success: bool
+    error: Optional[str] = None
 
 
 # --- Helper Functions ---
@@ -905,24 +963,6 @@ class HomecastAPI:
             result = CollectionRepository.get_collection_with_access(session, cid, auth.user_id)
             return result[0] if result else None
 
-    @field
-    async def collection_access(self, collection_id: str) -> List[CollectionAccess]:
-        """Get all access records for a collection. Requires authentication and owner role."""
-        auth = require_auth()
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return []
-        with get_session() as session:
-            # Verify user is owner
-            result = CollectionRepository.get_collection_with_access(session, cid, auth.user_id)
-            if not result or result[1].role != "owner":
-                return []
-            # Return all access records including public shares
-            from sqlmodel import select
-            statement = select(CollectionAccess).where(CollectionAccess.collection_id == cid)
-            return list(session.exec(statement).all())
-
     @field(mutable=True)
     async def create_collection(self, name: str) -> Optional[Collection]:
         """Create a new collection. Requires authentication."""
@@ -965,83 +1005,394 @@ class HomecastAPI:
         with get_session() as session:
             return CollectionRepository.delete_collection(session, cid, auth.user_id)
 
-    @field(mutable=True)
-    async def create_collection_access(
-        self,
-        collection_id: str,
-        role: str = "view",
-        passcode: Optional[str] = None,
-        access_schedule: Optional[str] = None
-    ) -> Optional[CollectionAccess]:
-        """Create a public share for a collection. Requires authentication and owner role."""
+    # --- Entity Access Endpoints (Unified Sharing) ---
+
+    def _entity_access_to_info(self, access: EntityAccess, user_email: Optional[str] = None) -> EntityAccessInfo:
+        """Convert EntityAccess model to EntityAccessInfo dataclass."""
+        return EntityAccessInfo(
+            id=str(access.id),
+            entity_type=access.entity_type,
+            entity_id=str(access.entity_id),
+            access_type=access.access_type,
+            role=access.role,
+            name=access.name,
+            user_id=str(access.user_id) if access.user_id else None,
+            user_email=user_email,
+            has_passcode=access.passcode_hash is not None,
+            access_schedule=access.access_schedule,
+            created_at=access.created_at.isoformat() if access.created_at else None
+        )
+
+    @field
+    async def entity_access(self, entity_type: str, entity_id: str) -> List[EntityAccessInfo]:
+        """
+        Get all access configs for an entity. Requires authentication and ownership.
+
+        Args:
+            entity_type: Type of entity (collection, room, group, home, accessory)
+            entity_id: Entity UUID
+
+        Returns:
+            List of EntityAccessInfo records
+        """
         auth = require_auth()
-        if role not in ("view", "control"):
-            raise ValueError("Invalid role")
+
         try:
-            cid = __import__('uuid').UUID(collection_id)
+            eid = __import__('uuid').UUID(entity_id)
+        except ValueError:
+            return []
+
+        with get_session() as session:
+            # Get all access records
+            access_list = EntityAccessRepository.get_entity_access(session, entity_type, eid)
+
+            # Verify user is owner
+            if not access_list:
+                return []
+
+            is_owner = any(a.owner_id == auth.user_id for a in access_list)
+            if not is_owner:
+                return []
+
+            # Resolve user emails for user access types
+            result = []
+            for access in access_list:
+                user_email = None
+                if access.access_type == "user" and access.user_id:
+                    user = UserRepository.find_by_id(session, access.user_id)
+                    user_email = user.email if user else None
+                result.append(self._entity_access_to_info(access, user_email))
+
+            return result
+
+    @field
+    async def sharing_info(self, entity_type: str, entity_id: str) -> Optional[SharingInfo]:
+        """
+        Get sharing summary for an entity. Requires authentication and ownership.
+
+        Args:
+            entity_type: Type of entity
+            entity_id: Entity UUID
+
+        Returns:
+            SharingInfo or None if not owner
+        """
+        auth = require_auth()
+
+        try:
+            eid = __import__('uuid').UUID(entity_id)
         except ValueError:
             return None
+
         with get_session() as session:
-            return CollectionRepository.create_public_share(
-                session, cid, auth.user_id,
-                role=role,
-                passcode=passcode,
-                schedule=access_schedule
+            # Get sharing info
+            info = EntityAccessRepository.get_sharing_info(session, entity_type, eid)
+
+            # Verify ownership by checking if any access record has this user as owner
+            access_list = EntityAccessRepository.get_entity_access(session, entity_type, eid)
+            is_owner = any(a.owner_id == auth.user_id for a in access_list)
+
+            # Allow if owner OR if no shares exist yet (for initial setup)
+            if not is_owner and access_list:
+                return None
+
+            return SharingInfo(
+                is_shared=info["is_shared"],
+                has_public=info["has_public"],
+                public_role=info["public_role"],
+                passcode_count=info["passcode_count"],
+                user_count=info["user_count"],
+                share_hash=info["share_hash"],
+                share_url=f"https://homecast.cloud/s/{info['share_hash']}"
             )
 
-    @field(mutable=True)
-    async def delete_collection_access(self, access_id: str) -> bool:
-        """Delete a collection access record. Requires authentication and owner role."""
+    @field
+    async def my_shared_entities(self) -> List[EntityAccessInfo]:
+        """
+        Get all entities shared WITH the current user.
+
+        Returns:
+            List of EntityAccessInfo records where user has user-specific access
+        """
         auth = require_auth()
+
+        with get_session() as session:
+            access_list = EntityAccessRepository.get_user_shared_entities(session, auth.user_id)
+            return [self._entity_access_to_info(a) for a in access_list]
+
+    @field(mutable=True)
+    async def create_entity_access(
+        self,
+        entity_type: str,
+        entity_id: str,
+        access_type: str,
+        role: str = "view",
+        home_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        passcode: Optional[str] = None,
+        name: Optional[str] = None,
+        access_schedule: Optional[str] = None
+    ) -> CreateEntityAccessResult:
+        """
+        Create a new access config for an entity. Requires authentication.
+
+        Args:
+            entity_type: Type of entity (collection, room, group, home, accessory)
+            entity_id: Entity UUID
+            access_type: Type of access (public, passcode, user)
+            role: Permission level (view, control)
+            home_id: Required for room/group/accessory
+            user_email: Email of user to grant access (for access_type="user")
+            passcode: Passcode (for access_type="passcode")
+            name: Label for passcode
+            access_schedule: JSON schedule config
+
+        Returns:
+            CreateEntityAccessResult
+        """
+        auth = require_auth()
+
+        try:
+            eid = __import__('uuid').UUID(entity_id)
+            hid = __import__('uuid').UUID(home_id) if home_id else None
+        except ValueError:
+            return CreateEntityAccessResult(success=False, error="Invalid UUID")
+
+        # For user access, resolve email to user_id
+        user_id = None
+        if access_type == "user":
+            if not user_email:
+                return CreateEntityAccessResult(success=False, error="Email required for user access")
+            with get_session() as session:
+                user = UserRepository.find_by_email(session, user_email)
+                if not user:
+                    return CreateEntityAccessResult(success=False, error="User not found")
+                user_id = user.id
+
+        try:
+            with get_session() as session:
+                # For collections, verify ownership via CollectionRepository
+                if entity_type == "collection":
+                    result = CollectionRepository.get_collection_with_access(session, eid, auth.user_id)
+                    if not result or result[1].role != "owner":
+                        return CreateEntityAccessResult(success=False, error="Not authorized")
+
+                access = EntityAccessRepository.create_access(
+                    session=session,
+                    entity_type=entity_type,
+                    entity_id=eid,
+                    owner_id=auth.user_id,
+                    access_type=access_type,
+                    role=role,
+                    home_id=hid,
+                    user_id=user_id,
+                    passcode=passcode,
+                    name=name,
+                    access_schedule=access_schedule
+                )
+
+                return CreateEntityAccessResult(
+                    success=True,
+                    access=self._entity_access_to_info(access, user_email)
+                )
+
+        except ValueError as e:
+            return CreateEntityAccessResult(success=False, error=str(e))
+        except Exception as e:
+            logger.error(f"create_entity_access error: {e}", exc_info=True)
+            return CreateEntityAccessResult(success=False, error="Failed to create access")
+
+    @field(mutable=True)
+    async def update_entity_access(
+        self,
+        access_id: str,
+        role: Optional[str] = None,
+        passcode: Optional[str] = None,
+        name: Optional[str] = None,
+        access_schedule: Optional[str] = None
+    ) -> CreateEntityAccessResult:
+        """
+        Update an access config. Requires authentication and ownership.
+
+        Args:
+            access_id: Access record ID
+            role: New role (optional)
+            passcode: New passcode (optional, only for passcode access)
+            name: New name (optional)
+            access_schedule: New schedule (optional)
+
+        Returns:
+            CreateEntityAccessResult
+        """
+        auth = require_auth()
+
         try:
             aid = __import__('uuid').UUID(access_id)
         except ValueError:
-            return False
-        with get_session() as session:
-            return CollectionRepository.remove_public_share(session, aid, auth.user_id)
+            return CreateEntityAccessResult(success=False, error="Invalid access ID")
 
-    # --- Public Collection Endpoints (no auth required) ---
-
-    @field
-    async def public_collection(self, collection_id: str, passcode: Optional[str] = None) -> Optional[Collection]:
-        """Get a public collection (validates passcode if needed)."""
         try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return None
-        with get_session() as session:
-            access = CollectionRepository.verify_public_access(session, cid, passcode)
-            if not access:
-                return None
-            allowed, _ = CollectionRepository.check_access_schedule(access)
-            if not allowed:
-                return None
-            return CollectionRepository.get_collection_for_public(session, cid)
+            with get_session() as session:
+                access = EntityAccessRepository.update_access(
+                    session=session,
+                    access_id=aid,
+                    owner_id=auth.user_id,
+                    role=role,
+                    passcode=passcode,
+                    name=name,
+                    access_schedule=access_schedule
+                )
+
+                if not access:
+                    return CreateEntityAccessResult(success=False, error="Not found or not authorized")
+
+                return CreateEntityAccessResult(
+                    success=True,
+                    access=self._entity_access_to_info(access)
+                )
+
+        except ValueError as e:
+            return CreateEntityAccessResult(success=False, error=str(e))
+        except Exception as e:
+            logger.error(f"update_entity_access error: {e}", exc_info=True)
+            return CreateEntityAccessResult(success=False, error="Failed to update access")
 
     @field(mutable=True)
-    async def public_set_characteristic(
-        self,
-        collection_id: str,
-        accessory_id: str,
-        characteristic_type: str,
-        value: str,  # JSON-encoded
-        passcode: Optional[str] = None
-    ) -> SetCharacteristicResult:
-        """Set a characteristic value via a shared collection (validates access)."""
-        from homecast.websocket.handler import route_request, get_user_device_id
+    async def delete_entity_access(self, access_id: str) -> DeleteEntityAccessResult:
+        """
+        Delete an access config. Requires authentication and ownership.
+
+        Args:
+            access_id: Access record ID
+
+        Returns:
+            DeleteEntityAccessResult
+        """
+        auth = require_auth()
 
         try:
-            cid = __import__('uuid').UUID(collection_id)
+            aid = __import__('uuid').UUID(access_id)
         except ValueError:
-            return SetCharacteristicResult(
-                success=False,
-                accessory_id=accessory_id,
-                characteristic_type=characteristic_type
-            )
+            return DeleteEntityAccessResult(success=False, error="Invalid access ID")
 
         with get_session() as session:
-            # Verify access
-            access = CollectionRepository.verify_public_access(session, cid, passcode)
+            success = EntityAccessRepository.delete_access(session, aid, auth.user_id)
+
+            if not success:
+                return DeleteEntityAccessResult(success=False, error="Not found or not authorized")
+
+            return DeleteEntityAccessResult(success=True)
+
+    # --- Public Entity Endpoints (no auth required) ---
+
+    @field
+    async def public_entity(
+        self,
+        share_hash: str,
+        passcode: Optional[str] = None
+    ) -> Optional[SharedEntityData]:
+        """
+        Get a shared entity by its share hash. No authentication required.
+
+        Args:
+            share_hash: The hash from the share URL (e.g., "c86974af0ab3")
+            passcode: Optional passcode for elevated access
+
+        Returns:
+            SharedEntityData or None if access denied
+        """
+        # Try to get authenticated user (optional)
+        auth = get_auth_context()
+        user_id = auth.user_id if auth else None
+
+        with get_session() as session:
+            access, entity_type, entity_id = EntityAccessRepository.verify_access_by_hash(
+                session, share_hash, passcode, user_id
+            )
+
+            if not access:
+                # Check if entity exists but requires passcode
+                try:
+                    decoded_type, id_prefix, _ = decode_share_hash(share_hash)
+                    # Find if any passcode access exists
+                    entity_id_found = EntityAccessRepository._find_entity_by_prefix(
+                        session, decoded_type, id_prefix
+                    )
+                    if entity_id_found:
+                        passcode_access = EntityAccessRepository.get_passcode_access(
+                            session, decoded_type, entity_id_found
+                        )
+                        if passcode_access:
+                            # Entity exists but requires passcode
+                            return SharedEntityData(
+                                entity_type=decoded_type,
+                                entity_id=str(entity_id_found),
+                                entity_name="",  # Don't reveal name
+                                role="view",
+                                requires_passcode=True
+                            )
+                except ValueError:
+                    pass
+                return None
+
+            # Get entity data based on type
+            entity_name = ""
+            entity_data = None
+
+            if entity_type == "collection":
+                collection = session.get(Collection, entity_id)
+                if collection:
+                    entity_name = collection.name
+                    entity_data = json.dumps({
+                        "payload": collection.payload,
+                        "settings_json": collection.settings_json
+                    })
+
+            # For other types (room, home, accessory, group), we'd fetch from HomeKit
+            # via the owner's device. For now, return the basic info.
+
+            return SharedEntityData(
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                entity_name=entity_name,
+                role=access.role,
+                requires_passcode=False,
+                data=entity_data
+            )
+
+    @field(mutable=True)
+    async def public_entity_set_characteristic(
+        self,
+        share_hash: str,
+        accessory_id: str,
+        characteristic_type: str,
+        value: str,
+        passcode: Optional[str] = None
+    ) -> SetCharacteristicResult:
+        """
+        Set a characteristic value via a shared entity link.
+
+        Args:
+            share_hash: The hash from the share URL
+            accessory_id: Accessory UUID
+            characteristic_type: Characteristic type
+            value: JSON-encoded value
+            passcode: Optional passcode
+
+        Returns:
+            SetCharacteristicResult
+        """
+        from homecast.websocket.handler import route_request, get_user_device_id
+
+        # Try to get authenticated user (optional)
+        auth = get_auth_context()
+        user_id = auth.user_id if auth else None
+
+        with get_session() as session:
+            access, entity_type, entity_id = EntityAccessRepository.verify_access_by_hash(
+                session, share_hash, passcode, user_id
+            )
+
             if not access:
                 return SetCharacteristicResult(
                     success=False,
@@ -1057,44 +1408,31 @@ class HomecastAPI:
                     characteristic_type=characteristic_type
                 )
 
-            # Check schedule
-            allowed, _ = CollectionRepository.check_access_schedule(access)
-            if not allowed:
-                return SetCharacteristicResult(
-                    success=False,
-                    accessory_id=accessory_id,
-                    characteristic_type=characteristic_type
-                )
+            # For collections, verify accessory is in collection
+            if entity_type == "collection":
+                collection = session.get(Collection, entity_id)
+                if not collection:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
 
-            # Verify accessory is in collection
-            collection = CollectionRepository.get_collection_for_public(session, cid)
-            if not collection:
-                return SetCharacteristicResult(
-                    success=False,
-                    accessory_id=accessory_id,
-                    characteristic_type=characteristic_type
-                )
+                try:
+                    items = json.loads(collection.payload)
+                except json.JSONDecodeError:
+                    items = []
 
-            try:
-                items = json.loads(collection.payload)
-            except json.JSONDecodeError:
-                items = []
-            accessory_ids = [item.get("item_id") for item in items if item.get("type") == "accessory"]
-            if accessory_id not in accessory_ids:
-                return SetCharacteristicResult(
-                    success=False,
-                    accessory_id=accessory_id,
-                    characteristic_type=characteristic_type
-                )
+                accessory_ids = [item.get("item_id") for item in items if item.get("type") == "accessory"]
+                if accessory_id not in accessory_ids:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
 
             # Get owner's device
-            owner_id = CollectionRepository.get_collection_owner_id(session, cid)
-            if not owner_id:
-                return SetCharacteristicResult(
-                    success=False,
-                    accessory_id=accessory_id,
-                    characteristic_type=characteristic_type
-                )
+            owner_id = access.owner_id
 
         # Route request to owner's device
         device_id = await get_user_device_id(owner_id)
@@ -1124,5 +1462,5 @@ class HomecastAPI:
                 value=json.dumps(result.get("value", parsed_value))
             )
         except Exception as e:
-            logger.error(f"public_set_characteristic error: {e}")
+            logger.error(f"public_entity_set_characteristic error: {e}")
             raise

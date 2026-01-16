@@ -4,7 +4,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { WidgetCard, getIconColor } from './WidgetCard';
 import { WidgetProps, getCharacteristic, hasServiceType } from './types';
-import { useCharacteristicValue } from '@/hooks/useCharacteristicValue';
+import { useCharacteristicValue, useAccessoryPending } from '@/hooks/useCharacteristicValue';
 import { Text } from '@/components/Themed';
 import { AppleHomeColors } from '@/constants/Colors';
 
@@ -23,6 +23,7 @@ export function ThermostatWidget({
   // Subscribe to store values for optimistic updates
   const activeValue = useCharacteristicValue(accessory.id, activeChar?.type, activeChar?.value);
   const currentTemp = useCharacteristicValue(accessory.id, currentTempChar?.type, currentTempChar?.value);
+  const isPending = useAccessoryPending(accessory.id);
 
   // Active state
   const isActive = activeValue === true || activeValue === 1 || activeChar === null;
@@ -54,6 +55,7 @@ export function ThermostatWidget({
       isOn={isActive}
       isReachable={accessory.isReachable}
       serviceType="thermostat"
+      isPending={isPending}
       onIconPress={activeChar?.isWritable ? () => onToggle(accessory.id, 'active', isActive) : undefined}
       onCardPress={onCardPress}
     />

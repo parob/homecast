@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useApolloClient } from '@apollo/client/react';
 import { webSocketClient } from '@/api/websocket/client';
 import { useAuthStore } from '@/stores/authStore';
@@ -22,6 +22,17 @@ interface Props {
 // Module-level map to track recent local changes (prevents echo updates)
 const recentLocalChanges = new Map<string, number>();
 
+// Pending cache updates - batched for performance
+interface PendingCharUpdate {
+  accessoryId: string;
+  characteristicType: string;
+  value: unknown;
+}
+interface PendingReachUpdate {
+  accessoryId: string;
+  isReachable: boolean;
+}
+
 /**
  * Mark a characteristic as recently changed locally.
  * WebSocket updates for this characteristic will be ignored for a short period.
@@ -35,6 +46,15 @@ export function markLocalChange(accessoryId: string, characteristicType: string)
   }, 2000);
 }
 
+/**
+ * Clear a local change marker after mutation succeeds.
+ * This allows WebSocket updates to come through again.
+ */
+export function clearLocalChange(accessoryId: string, characteristicType: string) {
+  const key = `${accessoryId}:${characteristicType}`;
+  recentLocalChanges.delete(key);
+}
+
 export function WebSocketProvider({ children }: Props) {
   const client = useApolloClient();
   const { token, isAuthenticated } = useAuthStore();
@@ -42,79 +62,99 @@ export function WebSocketProvider({ children }: Props) {
   const wsConnected = useConnectionStore((state) => state.wsConnected);
   const selectedHomeId = useHomeStore((state) => state.selectedHomeId);
 
-  // Update characteristic in Apollo cache
-  const updateCharacteristicInCache = useCallback((
-    accessoryId: string,
-    characteristicType: string,
-    newValue: unknown
-  ) => {
-    const homeId = selectedHomeId;
+  // Refs for batching cache updates
+  const pendingCharUpdates = useRef<PendingCharUpdate[]>([]);
+  const pendingReachUpdates = useRef<PendingReachUpdate[]>([]);
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const homeIdRef = useRef(selectedHomeId);
+
+  // Keep homeId ref in sync
+  useEffect(() => {
+    homeIdRef.current = selectedHomeId;
+  }, [selectedHomeId]);
+
+  // Flush all pending updates to Apollo cache in one batch
+  const flushCacheUpdates = useCallback(() => {
+    const homeId = homeIdRef.current;
     if (!homeId) return;
 
-    // JSON-stringify the value to match GraphQL format
-    const jsonEncodedValue = JSON.stringify(newValue);
+    const charUpdates = pendingCharUpdates.current;
+    const reachUpdates = pendingReachUpdates.current;
 
+    if (charUpdates.length === 0 && reachUpdates.length === 0) return;
+
+    // Clear pending queues
+    pendingCharUpdates.current = [];
+    pendingReachUpdates.current = [];
+
+    // Single cache update for all pending changes
     client.cache.updateQuery<{ accessories: Accessory[] }>(
       { query: ACCESSORIES_QUERY, variables: { homeId } },
       (data) => {
         if (!data?.accessories) return data;
 
-        let updated = false;
-
-        const newAccessories = data.accessories.map((acc) => {
-          if (acc.id !== accessoryId) return acc;
-          return {
-            ...acc,
-            services: acc.services.map((service) => ({
-              ...service,
-              characteristics: service.characteristics.map((char) => {
-                if (char.characteristicType !== characteristicType) return char;
-                updated = true;
-                return { ...char, value: jsonEncodedValue };
-              }),
-            })),
-          };
-        });
-
-        if (updated) {
-          console.log(`[WS] Updated cache: ${accessoryId.slice(0, 8)}... ${characteristicType} = ${newValue}`);
+        // Build lookup maps for efficient updates
+        const charUpdateMap = new Map<string, Map<string, unknown>>();
+        for (const update of charUpdates) {
+          if (!charUpdateMap.has(update.accessoryId)) {
+            charUpdateMap.set(update.accessoryId, new Map());
+          }
+          charUpdateMap.get(update.accessoryId)!.set(update.characteristicType, update.value);
         }
 
+        const reachUpdateMap = new Map<string, boolean>();
+        for (const update of reachUpdates) {
+          reachUpdateMap.set(update.accessoryId, update.isReachable);
+        }
+
+        const newAccessories = data.accessories.map((acc) => {
+          const charChanges = charUpdateMap.get(acc.id);
+          const reachChange = reachUpdateMap.get(acc.id);
+
+          if (!charChanges && reachChange === undefined) return acc;
+
+          let newAcc = acc;
+
+          // Apply reachability change
+          if (reachChange !== undefined && acc.isReachable !== reachChange) {
+            newAcc = { ...newAcc, isReachable: reachChange };
+          }
+
+          // Apply characteristic changes
+          if (charChanges && charChanges.size > 0) {
+            newAcc = {
+              ...newAcc,
+              services: acc.services.map((service) => ({
+                ...service,
+                characteristics: service.characteristics.map((char) => {
+                  const newValue = charChanges.get(char.characteristicType);
+                  if (newValue === undefined) return char;
+                  return { ...char, value: JSON.stringify(newValue) };
+                }),
+              })),
+            };
+          }
+
+          return newAcc;
+        });
+
+        console.log(`[WS] Batch updated cache: ${charUpdates.length} chars, ${reachUpdates.length} reachability`);
         return { accessories: newAccessories };
       }
     );
-  }, [client, selectedHomeId]);
+  }, [client]);
 
-  // Update reachability in Apollo cache
-  const updateReachabilityInCache = useCallback((
-    accessoryId: string,
-    isReachable: boolean
-  ) => {
-    const homeId = selectedHomeId;
-    if (!homeId) return;
-
-    client.cache.updateQuery<{ accessories: Accessory[] }>(
-      { query: ACCESSORIES_QUERY, variables: { homeId } },
-      (data) => {
-        if (!data?.accessories) return data;
-
-        let updated = false;
-
-        const newAccessories = data.accessories.map((acc) => {
-          if (acc.id !== accessoryId) return acc;
-          if (acc.isReachable === isReachable) return acc;
-          updated = true;
-          return { ...acc, isReachable };
-        });
-
-        if (updated) {
-          console.log(`[WS] Reachability: ${accessoryId.slice(0, 8)}... → ${isReachable ? 'reachable' : 'unreachable'}`);
-        }
-
-        return { accessories: newAccessories };
-      }
-    );
-  }, [client, selectedHomeId]);
+  // Schedule a flush (debounced)
+  const scheduleFlush = useCallback(() => {
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current);
+    }
+    // Flush after 100ms of inactivity
+    flushTimeoutRef.current = setTimeout(() => {
+      flushCacheUpdates();
+      flushTimeoutRef.current = null;
+    }, 100);
+  }, [flushCacheUpdates]);
 
   const handleMessage = useCallback(
     (message: WebSocketMessage) => {
@@ -127,34 +167,39 @@ export function WebSocketProvider({ children }: Props) {
           // Skip if this characteristic was recently changed locally (within 1.5s)
           const localChangeTime = recentLocalChanges.get(key);
           if (localChangeTime && now - localChangeTime < 1500) {
-            console.log(`[WS] Skipped (local change pending): ${msg.accessoryId.slice(0, 8)}... ${msg.characteristicType}`);
             return;
           }
-
-          console.log(`[WS] Update received: ${msg.accessoryId.slice(0, 8)}... ${msg.characteristicType} = ${msg.value}`);
 
           // Update Zustand store for immediate UI update
           updateCharacteristic(msg.accessoryId, msg.characteristicType, msg.value, false);
 
-          // Update Apollo cache for data consistency
-          updateCharacteristicInCache(msg.accessoryId, msg.characteristicType, msg.value);
+          // Queue cache update (batched)
+          pendingCharUpdates.current.push({
+            accessoryId: msg.accessoryId,
+            characteristicType: msg.characteristicType,
+            value: msg.value,
+          });
+          scheduleFlush();
           break;
         }
 
         case 'reachability_update': {
           const msg = message as ReachabilityUpdateMessage;
-          console.log(`[WS] Reachability received: ${msg.accessoryId.slice(0, 8)}... → ${msg.isReachable ? 'reachable' : 'unreachable'}`);
 
           // Update Zustand store
           updateReachability(msg.accessoryId, msg.isReachable);
 
-          // Update Apollo cache
-          updateReachabilityInCache(msg.accessoryId, msg.isReachable);
+          // Queue cache update (batched)
+          pendingReachUpdates.current.push({
+            accessoryId: msg.accessoryId,
+            isReachable: msg.isReachable,
+          });
+          scheduleFlush();
           break;
         }
       }
     },
-    [updateCharacteristic, updateReachability, updateCharacteristicInCache, updateReachabilityInCache]
+    [updateCharacteristic, updateReachability, scheduleFlush]
   );
 
   // Connect WebSocket when authenticated
@@ -165,11 +210,16 @@ export function WebSocketProvider({ children }: Props) {
 
       return () => {
         unsubscribe();
+        // Flush any pending updates on unmount
+        if (flushTimeoutRef.current) {
+          clearTimeout(flushTimeoutRef.current);
+          flushCacheUpdates();
+        }
       };
     } else {
       webSocketClient.disconnect();
     }
-  }, [isAuthenticated, token, handleMessage]);
+  }, [isAuthenticated, token, handleMessage, flushCacheUpdates]);
 
   return (
     <WebSocketContext.Provider value={{ isConnected: wsConnected }}>

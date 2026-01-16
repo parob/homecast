@@ -15,7 +15,7 @@ interface FanSliderControlProps {
   onToggle: () => void;
 }
 
-const THROTTLE_INTERVAL = 1000;
+const THROTTLE_INTERVAL = 250; // Store sync interval during drag
 
 export function FanSliderControl({
   speed,
@@ -62,6 +62,8 @@ export function FanSliderControl({
     if (!isDragging.current) return;
     const pageY = e.nativeEvent.pageY;
     const newSpeed = calculateSpeed(pageY, layoutRef.current.y);
+
+    // Update local state immediately for responsive UI
     setDisplaySpeed(newSpeed);
 
     // Haptic at 10% intervals
@@ -72,7 +74,7 @@ export function FanSliderControl({
       lastHapticRef.current = newSpeed;
     }
 
-    // Throttled live updates
+    // Throttled store sync (doesn't affect local UI - isDragging prevents prop sync)
     if (onSpeedChangeLive) {
       const now = Date.now();
       if (now - lastThrottledUpdate.current >= THROTTLE_INTERVAL && newSpeed !== lastSentSpeed.current) {

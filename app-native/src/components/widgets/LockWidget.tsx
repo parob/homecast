@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { WidgetCard, getIconColor } from './WidgetCard';
 import { WidgetProps, getCharacteristic } from './types';
-import { useCharacteristicValue } from '@/hooks/useCharacteristicValue';
+import { useCharacteristicValue, useAccessoryPending } from '@/hooks/useCharacteristicValue';
 
 // Normalize lock state: 0=Unlocked, 1=Locked, 2=Jammed, 3=Unknown
 function normalizeLockState(value: unknown): number {
@@ -29,38 +29,15 @@ export function LockWidget({
     currentStateChar?.value ?? 3
   );
   const currentState = normalizeLockState(rawCurrentState);
+  const isPending = useAccessoryPending(accessory.id);
 
   const isLocked = currentState === 1;
   const isJammed = currentState === 2;
   const hasControls = targetStateChar?.isWritable;
   const iconColors = getIconColor('lock', isLocked);
 
-  // Track pending state
-  const [isPending, setIsPending] = useState(false);
-  const lastStateRef = useRef(currentState);
-
-  useEffect(() => {
-    if (currentState !== lastStateRef.current) {
-      setIsPending(false);
-      lastStateRef.current = currentState;
-    }
-  }, [currentState]);
-
-  useEffect(() => {
-    if (isPending) {
-      const timeout = setTimeout(() => setIsPending(false), 15000);
-      return () => clearTimeout(timeout);
-    }
-  }, [isPending]);
-
-  const handleToggle = () => {
-    setIsPending(true);
-    onToggle(accessory.id, 'lock_target_state', isLocked);
-  };
-
   const getSubtitle = () => {
     if (isJammed) return 'Jammed';
-    if (isPending) return isLocked ? 'Unlocking...' : 'Locking...';
     return isLocked ? 'Locked' : 'Unlocked';
   };
 
@@ -72,7 +49,8 @@ export function LockWidget({
       isOn={isLocked}
       isReachable={accessory.isReachable}
       serviceType="lock"
-      onIconPress={hasControls ? handleToggle : undefined}
+      isPending={isPending}
+      onIconPress={hasControls ? () => onToggle(accessory.id, 'lock_target_state', isLocked) : undefined}
       onCardPress={onCardPress}
     />
   );

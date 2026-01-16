@@ -1,5 +1,5 @@
-import React from 'react';
-import { StyleSheet, View, TouchableOpacity, Dimensions } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, View, TouchableOpacity, Dimensions, Animated, ActivityIndicator } from 'react-native';
 import { Text } from '@/components/Themed';
 import { AppleHomeColors } from '@/constants/Colors';
 import type { ServiceType } from './types';
@@ -81,6 +81,7 @@ interface WidgetCardProps {
   serviceType: ServiceType | null;
   iconBgColor?: string;      // Custom icon background color (e.g., from hue)
   tileBgColor?: string;      // Custom tile background color
+  isPending?: boolean;       // Show loading indicator for pending changes
   onIconPress?: () => void;  // Tap on icon = toggle
   onCardPress?: () => void;  // Tap on card = open controls
   onPress?: () => void;      // Legacy - same as onIconPress
@@ -97,6 +98,7 @@ export function WidgetCard({
   serviceType,
   iconBgColor,
   tileBgColor,
+  isPending,
   onIconPress,
   onCardPress,
   onPress,
@@ -104,6 +106,32 @@ export function WidgetCard({
 }: WidgetCardProps) {
   const defaultTileBg = getTileBackground(serviceType, isOn && isReachable);
   const defaultIconColors = getIconColor(serviceType, isOn && isReachable);
+
+  // Pulse animation for pending state
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (isPending) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.6,
+            duration: 400,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 400,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isPending, pulseAnim]);
 
   // Use custom colors if provided, otherwise defaults
   const tileBackground = tileBgColor || defaultTileBg;
@@ -127,11 +155,17 @@ export function WidgetCard({
         {/* Icon - separate tap zone */}
         <TouchableOpacity
           onPress={handleIconPress}
-          disabled={!handleIconPress || !isReachable}
+          disabled={!handleIconPress || !isReachable || isPending}
           activeOpacity={0.6}
           style={[styles.iconContainer, { backgroundColor: iconColors.bg }]}
         >
-          {icon}
+          {isPending ? (
+            <Animated.View style={{ opacity: pulseAnim }}>
+              <ActivityIndicator size="small" color={iconColors.icon} />
+            </Animated.View>
+          ) : (
+            icon
+          )}
         </TouchableOpacity>
 
         {/* Text */}
@@ -140,7 +174,7 @@ export function WidgetCard({
             {title}
           </Text>
           <Text style={styles.subtitle} numberOfLines={1}>
-            {!isReachable ? 'Unreachable' : subtitle || (isOn ? 'On' : 'Off')}
+            {!isReachable ? 'Unreachable' : isPending ? 'Updating...' : subtitle || (isOn ? 'On' : 'Off')}
           </Text>
         </View>
       </TouchableOpacity>

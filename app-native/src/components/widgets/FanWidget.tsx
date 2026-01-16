@@ -3,7 +3,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { WidgetCard, getIconColor } from './WidgetCard';
 import { WidgetProps, getCharacteristic } from './types';
-import { useCharacteristicValue } from '@/hooks/useCharacteristicValue';
+import { useCharacteristicValue, useAccessoryPending } from '@/hooks/useCharacteristicValue';
 
 export function FanWidget({
   accessory,
@@ -19,6 +19,7 @@ export function FanWidget({
   // Subscribe to store values for optimistic updates
   const powerValue = useCharacteristicValue(accessory.id, powerChar?.type, powerChar?.value);
   const speed = useCharacteristicValue(accessory.id, speedChar?.type, speedChar?.value);
+  const isPending = useAccessoryPending(accessory.id);
 
   const isOn = powerValue === true || powerValue === 1;
   const iconColors = getIconColor('fan', isOn);
@@ -35,6 +36,7 @@ export function FanWidget({
       isOn={isOn}
       isReachable={accessory.isReachable}
       serviceType="fan"
+      isPending={isPending}
       onIconPress={powerChar ? () => onToggle(accessory.id, powerChar.type, isOn) : undefined}
       onCardPress={onCardPress}
     />

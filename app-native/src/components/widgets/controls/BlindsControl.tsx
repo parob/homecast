@@ -6,6 +6,7 @@ import { Text } from '@/components/Themed';
 
 const SLIDER_HEIGHT = 260;
 const SLIDER_WIDTH = 90;
+const THROTTLE_INTERVAL = 250; // Store sync interval during drag
 
 interface BlindsControlProps {
   position: number; // 0 = closed, 100 = open
@@ -26,11 +27,15 @@ export function BlindsControl({
   const [localTilt, setLocalTilt] = useState(tiltAngle);
   const isDragging = useRef(false);
   const lastHapticRef = useRef(position);
+  const lastThrottledUpdate = useRef(0);
+  const lastSentPosition = useRef(position);
   const layoutRef = useRef({ y: 0 });
 
   useEffect(() => {
     if (!isDragging.current) {
       setDisplayPosition(position);
+      lastSentPosition.current = position;
+      lastThrottledUpdate.current = 0;
     }
   }, [position]);
 
@@ -57,6 +62,8 @@ export function BlindsControl({
     if (!isDragging.current) return;
     const pageY = e.nativeEvent.pageY;
     const newPosition = calculatePosition(pageY, layoutRef.current.y);
+
+    // Update local state immediately for responsive UI
     setDisplayPosition(newPosition);
 
     const currentTen = Math.floor(newPosition / 10);
@@ -66,8 +73,14 @@ export function BlindsControl({
       lastHapticRef.current = newPosition;
     }
 
+    // Throttled store sync (doesn't affect local UI - isDragging prevents prop sync)
     if (onPositionChangeLive) {
-      onPositionChangeLive(newPosition);
+      const now = Date.now();
+      if (now - lastThrottledUpdate.current >= THROTTLE_INTERVAL && newPosition !== lastSentPosition.current) {
+        lastThrottledUpdate.current = now;
+        lastSentPosition.current = newPosition;
+        onPositionChangeLive(newPosition);
+      }
     }
   };
 

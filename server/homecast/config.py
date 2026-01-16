@@ -45,6 +45,9 @@ JWT_SECRET: str = "change-me-in-production"
 JWT_ALGORITHM: str = "HS256"
 JWT_EXPIRY_HOURS: int = 24 * 7  # 1 week
 
+# Share URL hash secret (used for HMAC signatures in share links)
+SHARE_SECRET_KEY: str = "change-me-share-secret"
+
 # Database startup behavior
 VALIDATE_OR_WIPE_DB_ON_STARTUP: bool = True
 CREATE_DB_ON_STARTUP: bool = True
