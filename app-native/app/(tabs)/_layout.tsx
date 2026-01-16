@@ -84,7 +84,7 @@ export default function TabLayout() {
           component={HomeScreen}
           options={{
             title: 'Home',
-            tabBarIcon: () => homecastIcon,
+            tabBarIcon: { type: 'image', source: homecastIcon },
           }}
         />
       </Tab.Navigator>
@@ -111,7 +111,7 @@ export default function TabLayout() {
           initialParams={{ homeId: home.id }}
           options={{
             title: home.name,
-            tabBarIcon: () => homecastIcon,
+            tabBarIcon: { type: 'image', source: homecastIcon },
           }}
         />
       ))}
@@ -124,7 +124,7 @@ export default function TabLayout() {
           initialParams={{ collectionId: firstCollection.id }}
           options={{
             title: firstCollection.name,
-            tabBarIcon: () => ({ sfSymbol: 'folder.fill' }),
+            tabBarIcon: { type: 'sfSymbol', name: 'folder.fill' },
           }}
         />
       )}
@@ -136,7 +136,7 @@ export default function TabLayout() {
         options={{
           title: 'Settings',
           tabBarItemHidden: true,
-          tabBarIcon: () => ({ sfSymbol: 'gear' }),
+          tabBarIcon: { type: 'sfSymbol', name: 'gear' },
         }}
       />
     </Tab.Navigator>

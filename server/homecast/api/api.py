@@ -1505,9 +1505,11 @@ class HomecastAPI:
                 ]
             elif accessory_ids is not None:
                 # Filter to specific accessory IDs (collection or single accessory)
+                # Normalize IDs for comparison (remove hyphens and lowercase)
+                normalized_accessory_ids = {aid.replace("-", "").lower() for aid in accessory_ids}
                 filtered_accessories = [
                     a for a in all_accessories
-                    if a.get("id") in accessory_ids
+                    if a.get("id", "").replace("-", "").lower() in normalized_accessory_ids
                 ]
             else:
                 # Return all (home entity type)
