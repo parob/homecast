@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import uuid
+import concurrent.futures
 from concurrent.futures import Future as ThreadFuture
 from typing import Any, Callable, Dict, Optional
 
@@ -347,10 +348,10 @@ class PubSubRouter:
             loop = asyncio.get_running_loop()
             try:
                 result = await loop.run_in_executor(None, future.result, timeout)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(f"Device {device_id} did not respond within {timeout}s")
             except Exception as e:
-                if "timed out" in str(e).lower():
-                    raise TimeoutError(f"Device {device_id} did not respond in time")
-                raise
+                raise ValueError(f"Request failed: {type(e).__name__}: {e}")
 
             if "error" in result:
                 raise ValueError(result["error"].get("message", "Unknown error"))

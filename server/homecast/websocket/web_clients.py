@@ -423,6 +423,15 @@ async def web_client_endpoint(websocket: WebSocket):
     if not client:
         return
 
+    # Send connection info with server instance details
+    instance_id = web_client_manager._get_instance_id()
+    await websocket.send_json({
+        "type": "connected",
+        "serverInstanceId": instance_id,
+        "pubsubEnabled": pubsub_router.enabled,
+        "pubsubSlot": pubsub_router._slot_name if pubsub_router.enabled else None
+    })
+
     # Start a background task to send server-initiated pings
     async def ping_task():
         while True:

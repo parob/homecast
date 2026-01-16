@@ -19,6 +19,7 @@ from homecast import config
 # Entity type to code mapping
 TYPE_TO_CODE = {
     "collection": "c",
+    "collection_group": "G",  # Capital G for collection groups
     "room": "r",
     "group": "g",
     "home": "h",

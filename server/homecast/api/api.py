@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional, Any
 from dataclasses import dataclass
 
+from graphql import GraphQLError
 from graphql_api import field
 
 from homecast.models.db.database import get_session
@@ -27,10 +28,10 @@ class AuthenticationError(Exception):
 
 
 def require_auth() -> AuthContext:
-    """Get auth context or raise AuthenticationError."""
+    """Get auth context or raise GraphQLError."""
     auth = get_auth_context()
     if not auth:
-        raise AuthenticationError("Authentication required")
+        raise GraphQLError("Authentication required. Please sign in.")
     return auth
 
 
@@ -64,6 +65,18 @@ class DeviceInfo:
     name: Optional[str]
     session_type: str
     last_seen_at: Optional[str]
+
+
+@dataclass
+class ConnectionDebugInfo:
+    """Debug information about server connection and routing."""
+    server_instance_id: str
+    pubsub_enabled: bool
+    pubsub_slot: Optional[str]
+    device_connected: bool
+    device_id: Optional[str]
+    device_instance_id: Optional[str]
+    routing_mode: str  # "local", "pubsub", or "not_connected"
 
 
 # --- HomeKit Types ---
@@ -594,6 +607,49 @@ class HomecastAPI:
 
             return SessionRepository.delete_by_device_id(db, device_id)
 
+    @field
+    async def connection_debug_info(self) -> ConnectionDebugInfo:
+        """Get debug information about server connection and routing."""
+        from homecast.websocket.handler import get_user_device_id, connection_manager
+        from homecast.websocket.pubsub_router import pubsub_router, _get_instance_id
+
+        auth = require_auth()
+
+        # Get server instance info
+        server_instance_id = _get_instance_id()
+        pubsub_enabled = pubsub_router.enabled
+        pubsub_slot = pubsub_router._slot_name if pubsub_enabled else None
+
+        # Get device info
+        device_id = await get_user_device_id(auth.user_id)
+        device_connected = device_id is not None
+        device_instance_id = None
+        routing_mode = "not_connected"
+
+        if device_id:
+            # Check if device is local
+            is_local = device_id in connection_manager.connections
+            if is_local:
+                routing_mode = "local"
+                device_instance_id = server_instance_id
+            else:
+                # Device is on another instance - look up from DB
+                with get_session() as db:
+                    session = SessionRepository.get_device_session(db, device_id)
+                    if session:
+                        device_instance_id = session.instance_id
+                        routing_mode = "pubsub" if pubsub_enabled else "unreachable"
+
+        return ConnectionDebugInfo(
+            server_instance_id=server_instance_id,
+            pubsub_enabled=pubsub_enabled,
+            pubsub_slot=pubsub_slot,
+            device_connected=device_connected,
+            device_id=device_id,
+            device_instance_id=device_instance_id,
+            routing_mode=routing_mode
+        )
+
     # --- HomeKit Commands (via WebSocket to Mac app) ---
 
     @field
@@ -608,7 +664,7 @@ class HomecastAPI:
         device_id = await get_user_device_id(auth.user_id)
 
         if not device_id:
-            raise ValueError("No connected device")
+            raise GraphQLError("No connected device. Please ensure your HomeKit device is running and connected.")
 
         try:
             result = await route_request(
@@ -617,9 +673,12 @@ class HomecastAPI:
                 payload={}
             )
             return [parse_home(h) for h in result.get("homes", [])]
+        except TimeoutError as e:
+            logger.error(f"homes.list timeout: {e}", exc_info=True)
+            raise GraphQLError("Device did not respond in time. Please check your connection.")
         except Exception as e:
-            logger.error(f"homes.list error: {e}")
-            raise
+            logger.error(f"homes.list error: {type(e).__name__}: {e}", exc_info=True)
+            raise GraphQLError(f"Failed to fetch homes: {e}")
 
     @field
     async def rooms(self, home_id: str) -> List[HomeKitRoom]:
@@ -630,7 +689,7 @@ class HomecastAPI:
         device_id = await get_user_device_id(auth.user_id)
 
         if not device_id:
-            raise ValueError("No connected device")
+            raise GraphQLError("No connected device. Please ensure your HomeKit device is running and connected.")
 
         try:
             result = await route_request(
@@ -639,9 +698,12 @@ class HomecastAPI:
                 payload={"homeId": home_id}
             )
             return [parse_room(r) for r in result.get("rooms", [])]
+        except TimeoutError as e:
+            logger.error(f"rooms.list timeout: {e}", exc_info=True)
+            raise GraphQLError("Device did not respond in time. Please check your connection.")
         except Exception as e:
-            logger.error(f"rooms.list error: {e}")
-            raise
+            logger.error(f"rooms.list error: {type(e).__name__}: {e}", exc_info=True)
+            raise GraphQLError(f"Failed to fetch rooms: {e}")
 
     @field
     async def accessories(
@@ -656,7 +718,7 @@ class HomecastAPI:
         device_id = await get_user_device_id(auth.user_id)
 
         if not device_id:
-            raise ValueError("No connected device")
+            raise GraphQLError("No connected device. Please ensure your HomeKit device is running and connected.")
 
         payload = {}
         if home_id:
@@ -671,9 +733,12 @@ class HomecastAPI:
                 payload=payload
             )
             return [parse_accessory(a) for a in result.get("accessories", [])]
+        except TimeoutError as e:
+            logger.error(f"accessories.list timeout: {e}", exc_info=True)
+            raise GraphQLError("Device did not respond in time. Please check your connection.")
         except Exception as e:
-            logger.error(f"accessories.list error: {e}")
-            raise
+            logger.error(f"accessories.list error: {type(e).__name__}: {e}", exc_info=True)
+            raise GraphQLError(f"Failed to fetch accessories: {e}")
 
     @field
     async def accessory(self, accessory_id: str) -> Optional[HomeKitAccessory]:
@@ -987,6 +1052,21 @@ class HomecastAPI:
             cid = __import__('uuid').UUID(collection_id)
         except ValueError:
             return None
+
+        # Validate payload format - each item must have home_id for sharing to work
+        if payload:
+            try:
+                payload_data = json.loads(payload)
+                items = payload_data if isinstance(payload_data, list) else payload_data.get("items", [])
+                for item in items:
+                    if item.get("accessory_id") and not item.get("home_id"):
+                        raise ValueError(f"Item with accessory_id {item.get('accessory_id')} missing home_id")
+            except json.JSONDecodeError:
+                return None
+            except ValueError as e:
+                logger.warning(f"Collection payload validation failed: {e}")
+                return None
+
         with get_session() as session:
             return CollectionRepository.update_collection(
                 session, cid, auth.user_id,
@@ -1158,6 +1238,14 @@ class HomecastAPI:
             hid = __import__('uuid').UUID(home_id) if home_id else None
         except ValueError:
             return CreateEntityAccessResult(success=False, error="Invalid UUID")
+
+        # Require home_id for room/group/accessory (needed for fetching accessories)
+        if entity_type in ("room", "group", "accessory") and not hid:
+            return CreateEntityAccessResult(success=False, error=f"home_id is required for {entity_type}")
+
+        # For collection_group, home_id stores the collection_id
+        if entity_type == "collection_group" and not hid:
+            return CreateEntityAccessResult(success=False, error="home_id (collection_id) is required for collection_group")
 
         # For user access, resolve email to user_id
         user_id = None
@@ -1349,6 +1437,24 @@ class HomecastAPI:
                         "settings_json": collection.settings_json
                     })
 
+            elif entity_type == "collection_group":
+                # For collection_group, home_id stores the collection_id
+                collection_id = access.home_id
+                if collection_id:
+                    collection = session.get(Collection, collection_id)
+                    if collection:
+                        # Find the group name from the collection's payload
+                        try:
+                            payload_data = json.loads(collection.payload)
+                            groups = payload_data.get("groups", []) if isinstance(payload_data, dict) else []
+                            group_id_str = str(entity_id)
+                            for group in groups:
+                                if group.get("id") == group_id_str:
+                                    entity_name = group.get("name", "Group")
+                                    break
+                        except json.JSONDecodeError:
+                            pass
+
             # For other types (room, home, accessory, group), we'd fetch from HomeKit
             # via the owner's device. For now, return the basic info.
 
@@ -1442,12 +1548,61 @@ class HomecastAPI:
                 if not accessory_ids:
                     return "[]"
 
+                if not home_ids:
+                    logger.warning(f"Collection {entity_id} has accessories but no home_ids in payload")
+                    return "[]"
+
+            elif entity_type == "collection_group":
+                # Get collection (stored in home_id field) and filter by group_id (entity_id)
+                collection_id = home_id  # For collection_group, home_id stores collection_id
+                if not collection_id:
+                    logger.warning(f"Collection group share missing collection_id")
+                    return "[]"
+
+                collection = session.get(Collection, collection_id)
+                if not collection:
+                    logger.warning(f"Collection {collection_id} not found for group share")
+                    return None
+
+                try:
+                    payload_data = json.loads(collection.payload)
+                    if isinstance(payload_data, list):
+                        items = payload_data
+                        groups = []
+                    else:
+                        items = payload_data.get("items", [])
+                        groups = payload_data.get("groups", [])
+                except json.JSONDecodeError:
+                    return None
+
+                # Filter items by group_id
+                group_id_str = str(entity_id)
+                accessory_ids = set()
+                service_group_ids = set()
+                for item in items:
+                    if item.get("group_id") == group_id_str:
+                        if item.get("accessory_id"):
+                            accessory_ids.add(item["accessory_id"])
+                            if item.get("home_id"):
+                                home_ids.add(item["home_id"])
+                        if item.get("service_group_id"):
+                            service_group_ids.add(item["service_group_id"])
+                            if item.get("home_id"):
+                                home_ids.add(item["home_id"])
+
+                if not accessory_ids and not service_group_ids:
+                    return "[]"
+
+                if not home_ids:
+                    logger.warning(f"Collection group {entity_id} has items but no home_ids in payload")
+                    return "[]"
+
             elif entity_type == "room":
                 # Fetch all accessories in the room
                 if not home_id:
-                    return None
+                    logger.warning(f"Room share {entity_id} missing home_id on EntityAccess")
+                    return "[]"
                 home_ids.add(str(home_id))
-                # We'll filter by room after fetching
 
             elif entity_type == "home":
                 # Fetch all accessories in the home
@@ -1456,9 +1611,17 @@ class HomecastAPI:
             elif entity_type == "accessory":
                 # Fetch single accessory
                 if not home_id:
-                    return None
+                    logger.warning(f"Accessory share {entity_id} missing home_id on EntityAccess")
+                    return "[]"
                 home_ids.add(str(home_id))
                 accessory_ids = {str(entity_id)}
+
+            elif entity_type == "group":
+                # Service groups
+                if not home_id:
+                    logger.warning(f"Group share {entity_id} missing home_id on EntityAccess")
+                    return "[]"
+                home_ids.add(str(home_id))
 
             else:
                 # Unsupported entity type
@@ -1502,6 +1665,29 @@ class HomecastAPI:
                 filtered_accessories = [
                     a for a in all_accessories
                     if a.get("roomId") == str(entity_id)
+                ]
+            elif entity_type == "group":
+                # Filter to accessories in the service group
+                # Fetch the service group to get its accessory IDs
+                groups_result = await route_request(
+                    device_id=device_id,
+                    action="serviceGroups.list",
+                    payload={"homeId": str(home_id)}
+                )
+                group_accessory_ids = set()
+                for group in groups_result.get("serviceGroups", []):
+                    group_id_normalized = str(group.get("id", "")).replace("-", "").lower()
+                    entity_id_normalized = str(entity_id).replace("-", "").lower()
+                    if group_id_normalized == entity_id_normalized:
+                        group_accessory_ids = {
+                            aid.replace("-", "").lower()
+                            for aid in group.get("accessoryIds", [])
+                        }
+                        break
+
+                filtered_accessories = [
+                    a for a in all_accessories
+                    if a.get("id", "").replace("-", "").lower() in group_accessory_ids
                 ]
             elif accessory_ids is not None:
                 # Filter to specific accessory IDs (collection or single accessory)
@@ -1598,6 +1784,46 @@ class HomecastAPI:
                     if isinstance(item, dict):
                         # New format uses accessory_id
                         aid = item.get("accessory_id") or item.get("item_id")
+                        if aid:
+                            accessory_ids.append(aid)
+
+                if accessory_id not in accessory_ids:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
+
+            elif entity_type == "collection_group":
+                # For collection_group, verify accessory is in the group
+                collection_id = access.home_id
+                if not collection_id:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
+
+                collection = session.get(Collection, collection_id)
+                if not collection:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
+
+                try:
+                    payload = json.loads(collection.payload)
+                    items = payload.get("items", []) if isinstance(payload, dict) else payload
+                except json.JSONDecodeError:
+                    items = []
+
+                # Filter items by group_id and extract accessory_ids
+                group_id_str = str(entity_id)
+                accessory_ids = []
+                for item in items:
+                    if isinstance(item, dict) and item.get("group_id") == group_id_str:
+                        aid = item.get("accessory_id")
                         if aid:
                             accessory_ids.append(aid)
 
