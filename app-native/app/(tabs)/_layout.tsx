@@ -14,7 +14,7 @@ import type { Collection } from '@/types/api';
 const Tab = createNativeBottomTabNavigator();
 
 // Homecast logo for tab bar
-const homecastLogo = require('@/assets/images/homecast-tab-icon.png');
+const homecastIcon = require('@/assets/images/homecast-tab-icon.png');
 
 // Header menu button
 function HeaderMenuButton() {
@@ -84,7 +84,7 @@ export default function TabLayout() {
           component={HomeScreen}
           options={{
             title: 'Home',
-            tabBarIcon: { type: 'image', source: homecastLogo },
+            tabBarIcon: () => homecastIcon,
           }}
         />
       </Tab.Navigator>
@@ -111,7 +111,7 @@ export default function TabLayout() {
           initialParams={{ homeId: home.id }}
           options={{
             title: home.name,
-            tabBarIcon: { type: 'image', source: homecastLogo },
+            tabBarIcon: () => homecastIcon,
           }}
         />
       ))}
@@ -124,7 +124,7 @@ export default function TabLayout() {
           initialParams={{ collectionId: firstCollection.id }}
           options={{
             title: firstCollection.name,
-            tabBarIcon: { type: 'sfSymbol', name: 'folder' },
+            tabBarIcon: () => ({ sfSymbol: 'folder.fill' }),
           }}
         />
       )}
@@ -136,7 +136,7 @@ export default function TabLayout() {
         options={{
           title: 'Settings',
           tabBarItemHidden: true,
-          tabBarIcon: { type: 'sfSymbol', name: 'gear' },
+          tabBarIcon: () => ({ sfSymbol: 'gear' }),
         }}
       />
     </Tab.Navigator>
