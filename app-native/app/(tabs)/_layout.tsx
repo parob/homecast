@@ -13,7 +13,7 @@ import type { Collection } from '@/types/api';
 
 const Tab = createNativeBottomTabNavigator();
 
-// Homecast logo for tab bar
+// Tab bar icons
 const homecastIcon = require('@/assets/images/homecast-tab-icon.png');
 
 // Header menu button
@@ -124,7 +124,10 @@ export default function TabLayout() {
           initialParams={{ collectionId: firstCollection.id }}
           options={{
             title: firstCollection.name,
-            tabBarIcon: { type: 'sfSymbol', name: 'folder.fill' },
+            tabBarIcon: Platform.select({
+              ios: { type: 'sfSymbol', name: 'folder.fill' },
+              default: { type: 'image', source: homecastIcon },
+            }),
           }}
         />
       )}
@@ -136,7 +139,10 @@ export default function TabLayout() {
         options={{
           title: 'Settings',
           tabBarItemHidden: true,
-          tabBarIcon: { type: 'sfSymbol', name: 'gear' },
+          tabBarIcon: Platform.select({
+            ios: { type: 'sfSymbol', name: 'gear' },
+            default: { type: 'image', source: homecastIcon },
+          }),
         }}
       />
     </Tab.Navigator>

@@ -234,8 +234,9 @@ class FocusableWebView: WKWebView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil {
-            DispatchQueue.main.async {
+        if window != nil && !isFirstResponder {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, !self.isFirstResponder else { return }
                 self.becomeFirstResponder()
             }
         }
@@ -573,9 +574,12 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Ensure WebView has keyboard focus
-            DispatchQueue.main.async {
-                webView.becomeFirstResponder()
+            // Ensure WebView has keyboard focus (only if not already)
+            if !webView.isFirstResponder {
+                DispatchQueue.main.async {
+                    guard !webView.isFirstResponder else { return }
+                    webView.becomeFirstResponder()
+                }
             }
 
             // Always inject auth token after page loads (including reloads)
