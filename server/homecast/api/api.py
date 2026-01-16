@@ -1407,39 +1407,62 @@ class HomecastAPI:
             if not access:
                 return None
 
-            # Only collections supported for now
-            if entity_type != "collection":
-                return None
-
-            # Get collection and parse items
-            collection = session.get(Collection, entity_id)
-            if not collection:
-                return None
-
-            try:
-                payload_data = json.loads(collection.payload)
-                # Handle both old array format and new object format
-                if isinstance(payload_data, list):
-                    items = payload_data
-                else:
-                    items = payload_data.get("items", [])
-            except json.JSONDecodeError:
-                return None
-
-            # Extract accessory IDs and home IDs from collection
-            accessory_ids = set()
-            home_ids = set()
-            for item in items:
-                if item.get("accessory_id"):
-                    accessory_ids.add(item["accessory_id"])
-                    if item.get("home_id"):
-                        home_ids.add(item["home_id"])
-
-            if not accessory_ids:
-                return "[]"
-
             # Get owner's device
             owner_id = access.owner_id
+            home_id = access.home_id  # For room/accessory, this is required
+
+            # Determine what to fetch based on entity type
+            accessory_ids = None  # None means fetch all, set() means filter
+            home_ids = set()
+
+            if entity_type == "collection":
+                # Get collection and parse items
+                collection = session.get(Collection, entity_id)
+                if not collection:
+                    return None
+
+                try:
+                    payload_data = json.loads(collection.payload)
+                    # Handle both old array format and new object format
+                    if isinstance(payload_data, list):
+                        items = payload_data
+                    else:
+                        items = payload_data.get("items", [])
+                except json.JSONDecodeError:
+                    return None
+
+                # Extract accessory IDs and home IDs from collection
+                accessory_ids = set()
+                for item in items:
+                    if item.get("accessory_id"):
+                        accessory_ids.add(item["accessory_id"])
+                        if item.get("home_id"):
+                            home_ids.add(item["home_id"])
+
+                if not accessory_ids:
+                    return "[]"
+
+            elif entity_type == "room":
+                # Fetch all accessories in the room
+                if not home_id:
+                    return None
+                home_ids.add(str(home_id))
+                # We'll filter by room after fetching
+
+            elif entity_type == "home":
+                # Fetch all accessories in the home
+                home_ids.add(str(entity_id))
+
+            elif entity_type == "accessory":
+                # Fetch single accessory
+                if not home_id:
+                    return None
+                home_ids.add(str(home_id))
+                accessory_ids = {str(entity_id)}
+
+            else:
+                # Unsupported entity type
+                return None
 
         # Route request to owner's device
         device_id = await get_user_device_id(owner_id)
@@ -1450,19 +1473,30 @@ class HomecastAPI:
         try:
             # Fetch accessories from each home
             all_accessories = []
-            for home_id in home_ids:
+            for hid in home_ids:
                 result = await route_request(
                     device_id=device_id,
                     action="accessories.list",
-                    payload={"homeId": home_id}
+                    payload={"homeId": hid}
                 )
                 all_accessories.extend(result.get("accessories", []))
 
-            # Filter to only accessories in the collection
-            filtered_accessories = [
-                a for a in all_accessories
-                if a.get("id") in accessory_ids
-            ]
+            # Filter based on entity type
+            if entity_type == "room":
+                # Filter to only accessories in this room
+                filtered_accessories = [
+                    a for a in all_accessories
+                    if a.get("roomId") == str(entity_id)
+                ]
+            elif accessory_ids is not None:
+                # Filter to specific accessory IDs (collection or single accessory)
+                filtered_accessories = [
+                    a for a in all_accessories
+                    if a.get("id") in accessory_ids
+                ]
+            else:
+                # Return all (home entity type)
+                filtered_accessories = all_accessories
 
             return json.dumps(filtered_accessories)
 
@@ -1518,8 +1552,9 @@ class HomecastAPI:
                     characteristic_type=characteristic_type
                 )
 
-            # For collections, verify accessory is in collection
+            # Verify accessory is within the shared entity scope
             if entity_type == "collection":
+                # For collections, verify accessory is in collection
                 collection = session.get(Collection, entity_id)
                 if not collection:
                     return SetCharacteristicResult(
@@ -1529,17 +1564,45 @@ class HomecastAPI:
                     )
 
                 try:
-                    items = json.loads(collection.payload)
+                    payload = json.loads(collection.payload)
+                    # Handle both old array format and new object format
+                    if isinstance(payload, list):
+                        # Old format: array of items
+                        items = payload
+                    else:
+                        # New format: {"groups": [...], "items": [...]}
+                        items = payload.get("items", [])
                 except json.JSONDecodeError:
                     items = []
 
-                accessory_ids = [item.get("item_id") for item in items if item.get("type") == "accessory"]
+                # Extract accessory IDs from items (handle both old and new field names)
+                accessory_ids = []
+                for item in items:
+                    if isinstance(item, dict):
+                        # New format uses accessory_id
+                        aid = item.get("accessory_id") or item.get("item_id")
+                        if aid:
+                            accessory_ids.append(aid)
+
                 if accessory_id not in accessory_ids:
                     return SetCharacteristicResult(
                         success=False,
                         accessory_id=accessory_id,
                         characteristic_type=characteristic_type
                     )
+
+            elif entity_type == "accessory":
+                # For single accessory, must match exactly
+                if str(entity_id) != accessory_id:
+                    return SetCharacteristicResult(
+                        success=False,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type
+                    )
+
+            # For room and home entity types, we'll verify the accessory belongs
+            # to the room/home when routing the request (the device will reject
+            # if the accessory doesn't exist in the requested home)
 
             # Get owner's device
             owner_id = access.owner_id
