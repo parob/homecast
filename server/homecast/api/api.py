@@ -1895,6 +1895,9 @@ class HomecastAPI:
                     a for a in all_accessories
                     if a.get("id", "").replace("-", "").lower() in normalized_accessory_ids
                 ]
+                # Capture accessory name for single accessory shares
+                if entity_type == "accessory" and filtered_accessories and not resolved_entity_name:
+                    resolved_entity_name = filtered_accessories[0].get("name", "")
             else:
                 # Return all (home entity type)
                 filtered_accessories = all_accessories
@@ -1935,7 +1938,8 @@ class HomecastAPI:
             return json.dumps({
                 "accessories": filtered_accessories,
                 "serviceGroups": all_service_groups,
-                "layout": layout
+                "layout": layout,
+                "entityName": resolved_entity_name
             })
 
         except Exception as e:
