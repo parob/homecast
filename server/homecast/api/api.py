@@ -13,8 +13,8 @@ from graphql import GraphQLError
 from graphql_api import field
 
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType, Collection, EntityAccess
-from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository, EntityAccessRepository
+from homecast.models.db.models import SessionType, Collection, EntityAccess, StoredEntity
+from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository, EntityAccessRepository, StoredEntityRepository
 from homecast.auth import generate_token, AuthContext
 from homecast.middleware import get_auth_context
 from homecast.utils.share_hash import encode_share_hash, decode_share_hash
@@ -206,6 +206,34 @@ class UpdateSettingsResult:
     """Result of updating settings."""
     success: bool
     settings: Optional[UserSettings] = None
+
+
+# --- Stored Entity Types ---
+
+@dataclass
+class StoredEntityInfo:
+    """Stored entity information for GraphQL responses."""
+    id: str
+    entity_type: str
+    entity_id: str
+    parent_id: Optional[str]
+    data_json: str
+    layout_json: str
+    updated_at: str
+
+
+@dataclass
+class SyncEntitiesResult:
+    """Result of syncing entities."""
+    success: bool
+    synced_count: int
+
+
+@dataclass
+class UpdateEntityLayoutResult:
+    """Result of updating entity layout."""
+    success: bool
+    entity: Optional[StoredEntityInfo] = None
 
 
 # --- Collection Types ---
@@ -555,6 +583,103 @@ class HomecastAPI:
                 )
             else:
                 return UpdateSettingsResult(success=False)
+
+    # --- Stored Entity Endpoints ---
+
+    @field
+    async def stored_entities(self, entity_type: str) -> List[StoredEntityInfo]:
+        """Get all stored entities of a type for the authenticated user."""
+        auth = require_auth()
+        with get_session() as session:
+            entities = StoredEntityRepository.get_entities_by_type(
+                session, auth.user_id, entity_type
+            )
+            return [StoredEntityInfo(
+                id=str(e.id),
+                entity_type=e.entity_type,
+                entity_id=e.entity_id,
+                parent_id=e.parent_id,
+                data_json=e.data_json,
+                layout_json=e.layout_json,
+                updated_at=e.updated_at.isoformat()
+            ) for e in entities]
+
+    @field
+    async def stored_entity_layout(self, entity_type: str, entity_id: str) -> Optional[StoredEntityInfo]:
+        """Get a specific entity's layout."""
+        auth = require_auth()
+        with get_session() as session:
+            entity = StoredEntityRepository.get_entity(
+                session, auth.user_id, entity_type, entity_id
+            )
+            if not entity:
+                return None
+            return StoredEntityInfo(
+                id=str(entity.id),
+                entity_type=entity.entity_type,
+                entity_id=entity.entity_id,
+                parent_id=entity.parent_id,
+                data_json=entity.data_json,
+                layout_json=entity.layout_json,
+                updated_at=entity.updated_at.isoformat()
+            )
+
+    @field(mutable=True)
+    async def sync_entities(
+        self,
+        entities: List[dict]  # [{entityType, entityId, parentId?, dataJson}]
+    ) -> SyncEntitiesResult:
+        """Sync entities from device (bulk upsert). Preserves existing layouts."""
+        auth = require_auth()
+        with get_session() as session:
+            # Transform frontend format to backend format
+            backend_entities = []
+            for e in entities:
+                backend_entities.append({
+                    "entity_type": e.get("entityType"),
+                    "entity_id": e.get("entityId"),
+                    "parent_id": e.get("parentId"),
+                    "data_json": e.get("dataJson", "{}")
+                })
+            results = StoredEntityRepository.bulk_upsert(
+                session, auth.user_id, backend_entities
+            )
+            return SyncEntitiesResult(success=True, synced_count=len(results))
+
+    @field(mutable=True)
+    async def update_stored_entity_layout(
+        self,
+        entity_type: str,
+        entity_id: str,
+        layout_json: str
+    ) -> UpdateEntityLayoutResult:
+        """Update just the layout for an entity."""
+        auth = require_auth()
+
+        # Validate it's valid JSON
+        try:
+            json.loads(layout_json)
+        except json.JSONDecodeError:
+            return UpdateEntityLayoutResult(success=False)
+
+        with get_session() as session:
+            entity = StoredEntityRepository.update_layout(
+                session, auth.user_id, entity_type, entity_id, layout_json
+            )
+            if entity:
+                return UpdateEntityLayoutResult(
+                    success=True,
+                    entity=StoredEntityInfo(
+                        id=str(entity.id),
+                        entity_type=entity.entity_type,
+                        entity_id=entity.entity_id,
+                        parent_id=entity.parent_id,
+                        data_json=entity.data_json,
+                        layout_json=entity.layout_json,
+                        updated_at=entity.updated_at.isoformat()
+                    )
+                )
+            return UpdateEntityLayoutResult(success=False)
 
     @field
     async def devices(self) -> List[DeviceInfo]:
@@ -1719,7 +1844,45 @@ class HomecastAPI:
                 # Return all (home entity type)
                 filtered_accessories = all_accessories
 
-            return json.dumps(filtered_accessories)
+            # Fetch service groups for the relevant homes
+            all_service_groups = []
+            if entity_type in ('room', 'home', 'collection'):
+                for hid in home_ids:
+                    try:
+                        groups_result = await route_request(
+                            device_id=device_id,
+                            action="serviceGroups.list",
+                            payload={"homeId": hid}
+                        )
+                        all_service_groups.extend(groups_result.get("serviceGroups", []))
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch service groups for home {hid}: {e}")
+
+            # Get layout from StoredEntity table
+            layout = None
+            with get_session() as session:
+                entity_id_str = str(entity_id)
+                if entity_type == 'home':
+                    home_entity = StoredEntityRepository.get_entity(session, owner_id, 'home', entity_id_str)
+                    if home_entity:
+                        layout = json.loads(home_entity.layout_json) if home_entity.layout_json else {}
+                        # Also get room layouts
+                        room_entities = StoredEntityRepository.get_entities_by_parent(session, owner_id, entity_id_str)
+                        layout['rooms'] = {e.entity_id: json.loads(e.layout_json) if e.layout_json else {} for e in room_entities}
+                elif entity_type == 'room':
+                    room_entity = StoredEntityRepository.get_entity(session, owner_id, 'room', entity_id_str)
+                    if room_entity:
+                        layout = json.loads(room_entity.layout_json) if room_entity.layout_json else {}
+                elif entity_type == 'collection':
+                    coll_entity = StoredEntityRepository.get_entity(session, owner_id, 'collection', entity_id_str)
+                    if coll_entity:
+                        layout = json.loads(coll_entity.layout_json) if coll_entity.layout_json else {}
+
+            return json.dumps({
+                "accessories": filtered_accessories,
+                "serviceGroups": all_service_groups,
+                "layout": layout
+            })
 
         except Exception as e:
             logger.error(f"public_entity_accessories error: {e}")

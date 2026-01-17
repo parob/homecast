@@ -139,6 +139,38 @@ class Collection(GraphQLBaseModel, table=True):
         description='JSON settings: {"compactMode": bool, "order": ["id1", "id2", ...]}')
 
 
+class StoredEntity(BaseModel, table=True):
+    """
+    Generic entity storage for all entity types.
+
+    Stores JSON blobs for flexibility - can hold any entity data and layout config.
+
+    Entity types:
+    - 'home': HomeKit home (parent_id=null)
+    - 'room': HomeKit room (parent_id=home_id)
+    - 'collection': User-created collection (parent_id=null or home_id)
+    - 'collection_group': Group within a collection (parent_id=collection_id)
+    """
+    __tablename__ = "stored_entities"
+
+    owner_id: uuid.UUID = Field(nullable=False, foreign_key="users.id", index=True)
+    entity_type: str = Field(nullable=False, index=True,
+        description="Type: 'home', 'room', 'collection', 'collection_group'")
+    entity_id: str = Field(nullable=False, index=True,
+        description="UUID for the entity")
+    parent_id: Optional[str] = Field(default=None, index=True,
+        description="Parent entity ID (home_id for rooms, collection_id for groups)")
+
+    # JSON blob storage
+    data_json: str = Field(default="{}",
+        description="Entity data (name, items, metadata)")
+    layout_json: str = Field(default="{}",
+        description="Layout config (ordering, visibility, display settings)")
+
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc))
+
+
 class EntityAccess(GraphQLBaseModel, table=True):
     """
     Unified access control for all entity types (collections, rooms, groups, homes, accessories).
@@ -190,5 +222,6 @@ __all__ = [
     "SessionType",
     "Home",
     "Collection",
+    "StoredEntity",
     "EntityAccess",
 ]

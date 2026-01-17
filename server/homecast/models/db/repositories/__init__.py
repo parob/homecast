@@ -5,6 +5,7 @@ from homecast.models.db.repositories.session_repository import SessionRepository
 from homecast.models.db.repositories.home_repository import HomeRepository
 from homecast.models.db.repositories.collection_repository import CollectionRepository
 from homecast.models.db.repositories.entity_access_repository import EntityAccessRepository
+from homecast.models.db.repositories.stored_entity_repository import StoredEntityRepository
 
 __all__ = [
     "BaseRepository",
@@ -14,4 +15,5 @@ __all__ = [
     "HomeRepository",
     "CollectionRepository",
     "EntityAccessRepository",
+    "StoredEntityRepository",
 ]
