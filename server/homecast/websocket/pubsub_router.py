@@ -337,9 +337,15 @@ class PubSubRouter:
         logger.info(f"[{action}] Device {device_id[:8]} is on REMOTE instance: {device_instance_id} (we are {my_instance_id})")
 
         # Look up which slot the target instance has claimed
-        with get_session() as session:
-            target_slot_record = TopicSlotRepository.get_slot_for_instance(session, device_instance_id)
+        with get_session() as db:
+            target_slot_record = TopicSlotRepository.get_slot_for_instance(db, device_instance_id)
             if not target_slot_record:
+                # Instance has no slot = it died, invalidate session and retry
+                if not is_retry:
+                    invalidated = SessionRepository.invalidate_instance_for_device(db, device_id, device_instance_id)
+                    if invalidated:
+                        logger.info(f"Instance {device_instance_id} has no slot, invalidated session, retrying...")
+                        return await self.send_request(device_id, action, payload, timeout, is_retry=True)
                 raise ValueError(f"Instance {device_instance_id} has no active slot")
             target_slot = target_slot_record.slot_name
 
@@ -370,6 +376,13 @@ class PubSubRouter:
             except NotFound:
                 logger.warning(f"Topic not found for slot {target_slot} - cleaning up")
                 self._handle_deleted_topic(target_slot)
+                # Topic deleted = dead instance, invalidate session and retry
+                if not is_retry:
+                    with get_session() as db:
+                        invalidated = SessionRepository.invalidate_instance_for_device(db, device_id, device_instance_id)
+                        if invalidated:
+                            logger.info(f"[{correlation_id[:8]}] Topic gone, invalidated session, retrying...")
+                            return await self.send_request(device_id, action, payload, timeout, is_retry=True)
                 raise ValueError(f"Target instance slot {target_slot} no longer exists")
             except Exception as e:
                 raise ValueError(f"Failed to route to slot {target_slot}: {e}")
@@ -383,6 +396,15 @@ class PubSubRouter:
             except concurrent.futures.TimeoutError:
                 pending_keys = [k[:8] for k in list(self._pending_requests.keys())]
                 logger.error(f"[{correlation_id[:8]}] TIMEOUT after {timeout}s waiting for device {device_id[:8]}. Pending requests: {pending_keys}")
+
+                # Timeout may indicate dead instance - invalidate session so retry routes elsewhere
+                if not is_retry:
+                    with get_session() as db:
+                        invalidated = SessionRepository.invalidate_instance_for_device(db, device_id, device_instance_id)
+                        if invalidated:
+                            logger.info(f"[{correlation_id[:8]}] Invalidated stale instance {device_instance_id} after timeout, retrying...")
+                            return await self.send_request(device_id, action, payload, timeout, is_retry=True)
+
                 raise TimeoutError(f"Device {device_id} did not respond within {timeout}s")
             except Exception as e:
                 raise ValueError(f"Request failed: {type(e).__name__}: {e}")
@@ -588,6 +610,11 @@ class PubSubRouter:
         # This happens when session.instance_id is stale (device moved or instance died)
         if not is_local:
             logger.warning(f"[{correlation_id[:8]}] Device {device_id[:8]} routed here but NOT in local connections!")
+
+            # Invalidate the stale session so retry can find the device's actual location
+            with get_session() as db:
+                SessionRepository.invalidate_instance_for_device(db, device_id, _get_instance_id())
+
             response = {
                 "type": "response",
                 "correlation_id": correlation_id,

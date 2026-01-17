@@ -97,6 +97,29 @@ class SessionRepository(BaseRepository):
             session.instance_id = instance_id
         return cls.update(db, session)
 
+    @classmethod
+    def invalidate_instance_for_device(cls, db: DBSession, device_id: str, stale_instance_id: str) -> bool:
+        """
+        Clear instance_id for a device session if it matches the stale value.
+
+        Called when a remote instance reports DEVICE_NOT_HERE - the session's
+        instance_id is stale and should be cleared so routing can find the
+        device's actual location.
+
+        Returns True if the session was invalidated, False otherwise.
+        """
+        statement = select(Session).where(Session.device_id == device_id)
+        session = db.exec(statement).first()
+        if not session:
+            return False
+        # Only clear if it matches the stale instance (avoid race with device reconnecting)
+        if session.instance_id == stale_instance_id:
+            logger.info(f"Invalidating stale instance_id {stale_instance_id} for device {device_id}")
+            session.instance_id = None
+            cls.update(db, session)
+            return True
+        return False
+
     # --- Queries ---
 
     @classmethod
