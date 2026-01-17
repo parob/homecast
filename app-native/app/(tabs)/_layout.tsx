@@ -5,16 +5,39 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery } from '@apollo/client/react';
 import { MenuView } from '@react-native-menu/menu';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { HOMES_QUERY, COLLECTIONS_QUERY } from '@/api/graphql/queries';
+import { HOMES_QUERY } from '@/api/graphql/queries';
+import { usePreferencesStore, TabItem } from '@/stores/preferencesStore';
 import HomeScreen from './index';
 import SettingsScreen from './settings';
 import type { Home } from '@/types/homekit';
-import type { Collection } from '@/types/api';
 
 const Tab = createNativeBottomTabNavigator();
 
 // Tab bar icons
 const homecastIcon = require('@/assets/images/homecast-tab-icon.png');
+
+// Icon mapping for tab types
+const getTabIcon = (type: TabItem['type']) => {
+  const icons: Record<TabItem['type'], any> = {
+    home: Platform.select({
+      ios: { type: 'image', source: { uri: 'HomecastTabIcon' } },
+      default: { type: 'image', source: homecastIcon },
+    }),
+    room: Platform.select({
+      ios: { type: 'sfSymbol', name: 'door.left.hand.closed' },
+      default: { type: 'image', source: homecastIcon },
+    }),
+    collection: Platform.select({
+      ios: { type: 'sfSymbol', name: 'folder.fill' },
+      default: { type: 'image', source: homecastIcon },
+    }),
+    serviceGroup: Platform.select({
+      ios: { type: 'sfSymbol', name: 'square.grid.2x2.fill' },
+      default: { type: 'image', source: homecastIcon },
+    }),
+  };
+  return icons[type];
+};
 
 // Header menu button
 function HeaderMenuButton() {
@@ -46,28 +69,32 @@ function HeaderMenuButton() {
   );
 }
 
-// Home screen wrapper that passes homeId
-function HomeTabScreen({ route }: { route: any }) {
-  const { homeId } = route.params || {};
-  return <HomeScreen initialHomeId={homeId} />;
-}
-
-// Collection screen wrapper
-function CollectionTabScreen({ route }: { route: any }) {
-  const { collectionId } = route.params || {};
-  return <HomeScreen initialCollectionId={collectionId} />;
+// Screen wrapper that handles all tab types
+function TabScreen({ route }: { route: any }) {
+  const { homeId, roomId, collectionId, groupId } = route.params || {};
+  return (
+    <HomeScreen
+      initialHomeId={homeId}
+      initialRoomId={roomId}
+      initialCollectionId={collectionId}
+      initialGroupId={groupId}
+    />
+  );
 }
 
 export default function TabLayout() {
   const { data: homesData } = useQuery<{ homes: Home[] }>(HOMES_QUERY);
-  const { data: collectionsData } = useQuery<{ collections: Collection[] }>(COLLECTIONS_QUERY);
+  const { tabItems, isHydrated } = usePreferencesStore();
 
   const homes = homesData?.homes || [];
-  const collections = collectionsData?.collections || [];
-  const firstCollection = collections[0];
 
-  // Loading state
-  if (homes.length === 0 && !firstCollection) {
+  // Wait for preferences to hydrate
+  if (!isHydrated) {
+    return null;
+  }
+
+  // Loading state - no data yet
+  if (homes.length === 0 && !tabItems) {
     return (
       <Tab.Navigator
         screenOptions={{
@@ -84,12 +111,15 @@ export default function TabLayout() {
           component={HomeScreen}
           options={{
             title: 'Home',
-            tabBarIcon: { type: 'image', source: homecastIcon },
+            tabBarIcon: getTabIcon('home'),
           }}
         />
       </Tab.Navigator>
     );
   }
+
+  // Determine which tabs to show
+  const hasCustomTabs = tabItems && tabItems.length > 0;
 
   return (
     <Tab.Navigator
@@ -102,37 +132,42 @@ export default function TabLayout() {
         tabBarMinimizeBehavior: 'onScrollDown',
       }}
     >
-      {/* Home tabs */}
-      {homes.map((home) => (
-        <Tab.Screen
-          key={`home-${home.id}`}
-          name={`HomeTab-${home.id}`}
-          component={HomeTabScreen}
-          initialParams={{ homeId: home.id }}
-          options={{
-            title: home.name,
-            tabBarIcon: { type: 'image', source: homecastIcon },
-          }}
-        />
-      ))}
-
-      {/* Collection tab */}
-      {firstCollection && (
-        <Tab.Screen
-          name={`CollectionTab-${firstCollection.id}`}
-          component={CollectionTabScreen}
-          initialParams={{ collectionId: firstCollection.id }}
-          options={{
-            title: firstCollection.name,
-            tabBarIcon: Platform.select({
-              ios: { type: 'sfSymbol', name: 'folder.fill' },
-              default: { type: 'image', source: homecastIcon },
-            }),
-          }}
-        />
+      {hasCustomTabs ? (
+        // Custom configured tabs
+        tabItems.map((item) => (
+          <Tab.Screen
+            key={`${item.type}-${item.id}`}
+            name={`Tab-${item.type}-${item.id}`}
+            component={TabScreen}
+            initialParams={{
+              homeId: item.type === 'home' ? item.id : item.homeId,
+              roomId: item.type === 'room' ? item.id : undefined,
+              collectionId: item.type === 'collection' ? item.id : undefined,
+              groupId: item.type === 'serviceGroup' ? item.id : undefined,
+            }}
+            options={{
+              title: item.name,
+              tabBarIcon: getTabIcon(item.type),
+            }}
+          />
+        ))
+      ) : (
+        // Default: show all homes
+        homes.map((home) => (
+          <Tab.Screen
+            key={`home-${home.id}`}
+            name={`HomeTab-${home.id}`}
+            component={TabScreen}
+            initialParams={{ homeId: home.id }}
+            options={{
+              title: home.name,
+              tabBarIcon: getTabIcon('home'),
+            }}
+          />
+        ))
       )}
 
-      {/* Settings tab - hidden */}
+      {/* Settings tab - always hidden in tab bar, accessible via menu */}
       <Tab.Screen
         name="SettingsTab"
         component={SettingsScreen}

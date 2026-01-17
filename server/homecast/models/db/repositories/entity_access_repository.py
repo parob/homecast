@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 # Valid entity types
-VALID_ENTITY_TYPES = {"collection", "collection_group", "room", "group", "home", "accessory"}
+VALID_ENTITY_TYPES = {"collection", "collection_group", "room", "accessory_group", "home", "accessory", "room_group"}
 
 # Valid access types
 VALID_ACCESS_TYPES = {"public", "passcode", "user"}

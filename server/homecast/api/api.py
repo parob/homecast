@@ -1332,7 +1332,7 @@ class HomecastAPI:
         Get all access configs for an entity. Requires authentication and ownership.
 
         Args:
-            entity_type: Type of entity (collection, room, group, home, accessory)
+            entity_type: Type of entity (collection, room, accessory_group, home, accessory, room_group)
             entity_id: Entity UUID
 
         Returns:
@@ -1440,11 +1440,11 @@ class HomecastAPI:
         Create a new access config for an entity. Requires authentication.
 
         Args:
-            entity_type: Type of entity (collection, room, group, home, accessory)
+            entity_type: Type of entity (collection, room, accessory_group, home, accessory, room_group)
             entity_id: Entity UUID
             access_type: Type of access (public, passcode, user)
             role: Permission level (view, control)
-            home_id: Required for room/group/accessory
+            home_id: Required for room/accessory_group/accessory
             user_email: Email of user to grant access (for access_type="user")
             passcode: Passcode (for access_type="passcode")
             name: Label for passcode
@@ -1461,8 +1461,8 @@ class HomecastAPI:
         except ValueError:
             return CreateEntityAccessResult(success=False, error="Invalid UUID")
 
-        # Require home_id for room/group/accessory (needed for fetching accessories)
-        if entity_type in ("room", "group", "accessory") and not hid:
+        # Require home_id for room/accessory_group/accessory (needed for fetching accessories)
+        if entity_type in ("room", "accessory_group", "accessory") and not hid:
             return CreateEntityAccessResult(success=False, error=f"home_id is required for {entity_type}")
 
         # For collection_group, home_id stores the collection_id
@@ -1689,7 +1689,22 @@ class HomecastAPI:
                         except json.JSONDecodeError:
                             pass
 
-            # For other types (room, home, accessory, group), we'd fetch from HomeKit
+            elif entity_type == "room_group":
+                # Room group: a subset of rooms from a home
+                group_entity = StoredEntityRepository.get_entity(
+                    session, access.owner_id, 'room_group', str(entity_id)
+                )
+                if group_entity:
+                    data = json.loads(group_entity.data_json) if group_entity.data_json else {}
+                    entity_name = data.get("name", "Room Group")
+                    # Include roomIds in the data for the frontend
+                    entity_data = json.dumps({
+                        "name": entity_name,
+                        "roomIds": data.get("roomIds", []),
+                        "homeId": group_entity.parent_id
+                    })
+
+            # For other types (room, home, accessory, accessory_group), we'd fetch from HomeKit
             # via the owner's device. For now, return the basic info.
 
             # Check if user can upgrade to control with a passcode
@@ -1755,6 +1770,7 @@ class HomecastAPI:
             accessory_ids = None  # None means fetch all, set() means filter
             service_group_ids = None  # None means fetch all, set() means filter to specific groups
             home_ids = set()
+            room_group_room_ids = None  # For room_group: filter to only accessories in these rooms
 
             if entity_type == "collection":
                 # Get collection from StoredEntity and parse items
@@ -1855,12 +1871,32 @@ class HomecastAPI:
                 home_ids.add(str(home_id))
                 accessory_ids = {str(entity_id)}
 
-            elif entity_type == "group":
-                # Service groups (HomeKit native groups)
+            elif entity_type == "accessory_group":
+                # Service groups (HomeKit native accessory groups)
                 if not home_id:
-                    logger.warning(f"Group share {entity_id} missing home_id on EntityAccess")
+                    logger.warning(f"Accessory group share {entity_id} missing home_id on EntityAccess")
                     return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
                 home_ids.add(str(home_id))
+
+            elif entity_type == "room_group":
+                # Room group: a subset of rooms from a home
+                group_entity = StoredEntityRepository.get_entity(
+                    session, owner_id, 'room_group', str(entity_id)
+                )
+                if not group_entity:
+                    logger.warning(f"Room group {entity_id} not found")
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
+
+                data = json.loads(group_entity.data_json) if group_entity.data_json else {}
+                room_group_room_ids = set(data.get("roomIds", []))
+                parent_home_id = group_entity.parent_id
+
+                if not parent_home_id:
+                    logger.warning(f"Room group {entity_id} has no parent home")
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
+
+                home_ids.add(parent_home_id)
+                # room_group_room_ids will be used to filter accessories after fetching
 
             else:
                 # Unsupported entity type
@@ -1952,10 +1988,10 @@ class HomecastAPI:
                     # Debug: log sample room IDs to help diagnose
                     sample_room_ids = [a.get("roomId") for a in all_accessories[:3]]
                     logger.warning(f"Room filter returned empty. Sample roomIds: {sample_room_ids}")
-            elif entity_type == "group":
-                # Filter to accessories in the service group
+            elif entity_type == "accessory_group":
+                # Filter to accessories in the service group (accessory group)
                 # Fetch the service group to get its accessory IDs
-                logger.info(f"Group share: entity_id={entity_id}, home_id={home_id}")
+                logger.info(f"Accessory group share: entity_id={entity_id}, home_id={home_id}")
                 groups_result = await route_request(
                     device_id=device_id,
                     action="serviceGroups.list",
@@ -1975,12 +2011,12 @@ class HomecastAPI:
                         # Capture group name
                         if not resolved_entity_name:
                             resolved_entity_name = group.get("name", "")
-                        logger.info(f"Group filter: found group with {len(group_accessory_ids)} accessory IDs")
+                        logger.info(f"Accessory group filter: found group with {len(group_accessory_ids)} accessory IDs")
                         break
 
                 if not found_group:
                     available_ids = [str(g.get("id", ""))[:8] for g in groups_result.get("serviceGroups", [])]
-                    logger.warning(f"Group filter: group {entity_id_normalized[:8]} not found in {len(groups_result.get('serviceGroups', []))} groups. Available: {available_ids}")
+                    logger.warning(f"Accessory group filter: group {entity_id_normalized[:8]} not found in {len(groups_result.get('serviceGroups', []))} groups. Available: {available_ids}")
                 else:
                     # Add the matching group to all_service_groups so it's included in the response
                     for group in groups_result.get("serviceGroups", []):
@@ -1992,7 +2028,17 @@ class HomecastAPI:
                     a for a in all_accessories
                     if a.get("id", "").replace("-", "").lower() in group_accessory_ids
                 ]
-                logger.info(f"Group filter: total={len(all_accessories)}, filtered={len(filtered_accessories)}")
+                logger.info(f"Accessory group filter: total={len(all_accessories)}, filtered={len(filtered_accessories)}")
+            elif entity_type == "room_group" and room_group_room_ids is not None:
+                # Filter to accessories in the allowed rooms
+                # Normalize room IDs for comparison (remove hyphens and lowercase)
+                normalized_room_ids = {rid.replace("-", "").lower() for rid in room_group_room_ids}
+                filtered_accessories = [
+                    a for a in all_accessories
+                    if str(a.get("roomId", "")).replace("-", "").lower() in normalized_room_ids
+                ]
+                logger.info(f"Room group filter: allowed_rooms={len(room_group_room_ids)}, "
+                           f"total={len(all_accessories)}, filtered={len(filtered_accessories)}")
             elif accessory_ids is not None:
                 # Filter to specific accessory IDs (collection or single accessory)
                 # Normalize IDs for comparison (remove hyphens and lowercase)
@@ -2009,7 +2055,7 @@ class HomecastAPI:
                 filtered_accessories = all_accessories
 
             # Fetch service groups for the relevant homes (if not already fetched for collections)
-            if not all_service_groups and entity_type in ('room', 'home'):
+            if not all_service_groups and entity_type in ('room', 'home', 'room_group'):
                 for hid in home_ids:
                     try:
                         groups_result = await route_request(
@@ -2185,6 +2231,13 @@ class HomecastAPI:
                         characteristic_type=characteristic_type
                     )
 
+            elif entity_type == "room_group":
+                # For room_group, we rely on the fact that public_entity_accessories
+                # only returns accessories in the allowed rooms, so the frontend
+                # can only show/control those accessories.
+                # The device will reject if the accessory doesn't exist.
+                pass
+
             # For room and home entity types, we'll verify the accessory belongs
             # to the room/home when routing the request (the device will reject
             # if the accessory doesn't exist in the requested home)
@@ -2222,3 +2275,173 @@ class HomecastAPI:
         except Exception as e:
             logger.error(f"public_entity_set_characteristic error: {e}")
             raise
+
+    # --- Room Group CRUD Endpoints ---
+
+    @field
+    async def room_groups(self, home_id: str) -> List[StoredEntityInfo]:
+        """
+        Get all room groups for a home. Requires authentication.
+
+        Args:
+            home_id: The home ID to get room groups for
+
+        Returns:
+            List of StoredEntityInfo records for room_group entities
+        """
+        auth = require_auth()
+
+        with get_session() as session:
+            # Get all room_group entities where parent_id matches the home_id
+            entities = StoredEntityRepository.get_entities_by_parent(
+                session, auth.user_id, home_id
+            )
+            # Filter to only room_group type
+            room_groups = [e for e in entities if e.entity_type == 'room_group']
+            return [StoredEntityInfo(
+                id=str(e.id),
+                entity_type=e.entity_type,
+                entity_id=e.entity_id,
+                parent_id=e.parent_id,
+                data_json=e.data_json,
+                layout_json=e.layout_json,
+                updated_at=e.updated_at.isoformat()
+            ) for e in room_groups]
+
+    @field(mutable=True)
+    async def create_room_group(
+        self,
+        name: str,
+        home_id: str,
+        room_ids: List[str]
+    ) -> Optional[StoredEntityInfo]:
+        """
+        Create a new room group. Requires authentication.
+
+        Args:
+            name: Name of the room group
+            home_id: Parent home ID
+            room_ids: List of room IDs to include in the group
+
+        Returns:
+            Created StoredEntityInfo or None on failure
+        """
+        auth = require_auth()
+
+        if not name or not name.strip():
+            raise ValueError("Name is required")
+        if not home_id:
+            raise ValueError("home_id is required")
+        if not room_ids:
+            raise ValueError("At least one room_id is required")
+
+        import uuid as uuid_module
+        group_id = str(uuid_module.uuid4())
+
+        with get_session() as session:
+            # Create room_group in StoredEntity
+            entity = StoredEntityRepository.upsert_entity(
+                session, auth.user_id, 'room_group', group_id,
+                parent_id=home_id,
+                data_json=json.dumps({'name': name.strip(), 'roomIds': room_ids}),
+                layout_json='{}'
+            )
+
+            return StoredEntityInfo(
+                id=str(entity.id),
+                entity_type=entity.entity_type,
+                entity_id=entity.entity_id,
+                parent_id=entity.parent_id,
+                data_json=entity.data_json,
+                layout_json=entity.layout_json,
+                updated_at=entity.updated_at.isoformat()
+            )
+
+    @field(mutable=True)
+    async def update_room_group(
+        self,
+        group_id: str,
+        name: Optional[str] = None,
+        room_ids: Optional[List[str]] = None
+    ) -> Optional[StoredEntityInfo]:
+        """
+        Update a room group. Requires authentication.
+
+        Args:
+            group_id: The room group entity_id
+            name: New name (optional)
+            room_ids: New list of room IDs (optional)
+
+        Returns:
+            Updated StoredEntityInfo or None if not found
+        """
+        auth = require_auth()
+
+        with get_session() as session:
+            # Get existing entity
+            entity = StoredEntityRepository.get_entity(
+                session, auth.user_id, 'room_group', group_id
+            )
+            if not entity:
+                return None
+
+            # Parse existing data and update
+            data = json.loads(entity.data_json) if entity.data_json else {}
+
+            if name is not None:
+                data['name'] = name.strip()
+
+            if room_ids is not None:
+                data['roomIds'] = room_ids
+
+            # Update entity
+            entity = StoredEntityRepository.upsert_entity(
+                session, auth.user_id, 'room_group', group_id,
+                parent_id=entity.parent_id,
+                data_json=json.dumps(data)
+            )
+
+            return StoredEntityInfo(
+                id=str(entity.id),
+                entity_type=entity.entity_type,
+                entity_id=entity.entity_id,
+                parent_id=entity.parent_id,
+                data_json=entity.data_json,
+                layout_json=entity.layout_json,
+                updated_at=entity.updated_at.isoformat()
+            )
+
+    @field(mutable=True)
+    async def delete_room_group(self, group_id: str) -> bool:
+        """
+        Delete a room group. Requires authentication.
+
+        Args:
+            group_id: The room group entity_id
+
+        Returns:
+            True if deleted, False if not found
+        """
+        auth = require_auth()
+        import uuid as uuid_module
+
+        with get_session() as session:
+            # Delete all EntityAccess records for this room_group first
+            try:
+                gid = uuid_module.UUID(group_id)
+                from sqlmodel import select
+                access_records = session.exec(
+                    select(EntityAccess)
+                    .where(EntityAccess.entity_type == "room_group")
+                    .where(EntityAccess.entity_id == gid)
+                ).all()
+                for record in access_records:
+                    session.delete(record)
+                session.flush()
+            except ValueError:
+                pass  # Invalid UUID, skip entity access cleanup
+
+            # Delete the stored entity
+            return StoredEntityRepository.delete_entity(
+                session, auth.user_id, 'room_group', group_id
+            )
