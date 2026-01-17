@@ -1766,6 +1766,9 @@ class HomecastAPI:
             logger.warning(f"Owner's device not connected for share {share_hash}")
             return None
 
+        # Track entity name for response
+        resolved_entity_name = ""
+
         try:
             # First, fetch homes to build a home name mapping
             homes_result = await route_request(
@@ -1776,6 +1779,9 @@ class HomecastAPI:
             home_name_map = {}
             for home in homes_result.get("homes", []):
                 home_name_map[home.get("id")] = home.get("name", "")
+                # If this is a home share, capture the home name
+                if entity_type == "home" and home.get("id") == str(entity_id):
+                    resolved_entity_name = home.get("name", "")
 
             # Fetch accessories from each home
             all_accessories = []
@@ -1792,6 +1798,36 @@ class HomecastAPI:
                         accessory["homeName"] = home_name_map[accessory_home_id]
                 all_accessories.extend(result.get("accessories", []))
 
+            # For collections with service groups, fetch service groups first
+            # and expand accessory_ids to include service group member accessories
+            all_service_groups = []
+            if entity_type in ('collection', 'collection_group') and service_group_ids:
+                for hid in home_ids:
+                    try:
+                        groups_result = await route_request(
+                            device_id=device_id,
+                            action="serviceGroups.list",
+                            payload={"homeId": hid}
+                        )
+                        all_service_groups.extend(groups_result.get("serviceGroups", []))
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch service groups for home {hid}: {e}")
+
+                # Filter to only service groups in the collection
+                normalized_sg_ids = {sgid.replace("-", "").lower() for sgid in service_group_ids}
+                all_service_groups = [
+                    sg for sg in all_service_groups
+                    if sg.get("id", "").replace("-", "").lower() in normalized_sg_ids
+                ]
+
+                # Expand accessory_ids to include service group member accessories
+                if accessory_ids is None:
+                    accessory_ids = set()
+                for sg in all_service_groups:
+                    for aid in sg.get("accessoryIds", []):
+                        accessory_ids.add(aid)
+                logger.info(f"Collection: expanded accessory_ids to {len(accessory_ids)} after including service group members")
+
             # Filter based on entity type
             if entity_type == "room":
                 # Filter to only accessories in this room
@@ -1801,6 +1837,9 @@ class HomecastAPI:
                     a for a in all_accessories
                     if str(a.get("roomId", "")).replace("-", "").lower() == entity_id_normalized
                 ]
+                # Get room name from first matching accessory
+                if filtered_accessories and not resolved_entity_name:
+                    resolved_entity_name = filtered_accessories[0].get("roomName", "")
                 logger.info(f"Room filter: entity_id={entity_id}, normalized={entity_id_normalized}, "
                            f"total={len(all_accessories)}, filtered={len(filtered_accessories)}")
                 if len(filtered_accessories) == 0 and len(all_accessories) > 0:
@@ -1827,12 +1866,21 @@ class HomecastAPI:
                             aid.replace("-", "").lower()
                             for aid in group.get("accessoryIds", [])
                         }
+                        # Capture group name
+                        if not resolved_entity_name:
+                            resolved_entity_name = group.get("name", "")
                         logger.info(f"Group filter: found group with {len(group_accessory_ids)} accessory IDs")
                         break
 
                 if not found_group:
                     available_ids = [str(g.get("id", ""))[:8] for g in groups_result.get("serviceGroups", [])]
                     logger.warning(f"Group filter: group {entity_id_normalized[:8]} not found in {len(groups_result.get('serviceGroups', []))} groups. Available: {available_ids}")
+                else:
+                    # Add the matching group to all_service_groups so it's included in the response
+                    for group in groups_result.get("serviceGroups", []):
+                        if str(group.get("id", "")).replace("-", "").lower() == entity_id_normalized:
+                            all_service_groups.append(group)
+                            break
 
                 filtered_accessories = [
                     a for a in all_accessories
@@ -1851,9 +1899,8 @@ class HomecastAPI:
                 # Return all (home entity type)
                 filtered_accessories = all_accessories
 
-            # Fetch service groups for the relevant homes
-            all_service_groups = []
-            if entity_type in ('room', 'home', 'collection', 'collection_group'):
+            # Fetch service groups for the relevant homes (if not already fetched for collections)
+            if not all_service_groups and entity_type in ('room', 'home'):
                 for hid in home_ids:
                     try:
                         groups_result = await route_request(
@@ -1864,15 +1911,6 @@ class HomecastAPI:
                         all_service_groups.extend(groups_result.get("serviceGroups", []))
                     except Exception as e:
                         logger.warning(f"Failed to fetch service groups for home {hid}: {e}")
-
-                # Filter service groups if specific IDs were requested (collections)
-                if service_group_ids is not None and len(service_group_ids) > 0:
-                    normalized_sg_ids = {sgid.replace("-", "").lower() for sgid in service_group_ids}
-                    all_service_groups = [
-                        sg for sg in all_service_groups
-                        if sg.get("id", "").replace("-", "").lower() in normalized_sg_ids
-                    ]
-                    logger.info(f"Filtered service groups to {len(all_service_groups)} matching collection items")
 
             # Get layout from StoredEntity table
             layout = None
