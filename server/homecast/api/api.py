@@ -1602,6 +1602,7 @@ class HomecastAPI:
                 if not home_id:
                     logger.warning(f"Room share {entity_id} missing home_id on EntityAccess")
                     return "[]"
+                logger.info(f"Room share: entity_id={entity_id}, home_id={home_id}")
                 home_ids.add(str(home_id))
 
             elif entity_type == "home":
@@ -1662,10 +1663,18 @@ class HomecastAPI:
             # Filter based on entity type
             if entity_type == "room":
                 # Filter to only accessories in this room
+                # Normalize IDs for comparison (remove hyphens and lowercase)
+                entity_id_normalized = str(entity_id).replace("-", "").lower()
                 filtered_accessories = [
                     a for a in all_accessories
-                    if a.get("roomId") == str(entity_id)
+                    if str(a.get("roomId", "")).replace("-", "").lower() == entity_id_normalized
                 ]
+                logger.info(f"Room filter: entity_id={entity_id}, normalized={entity_id_normalized}, "
+                           f"total={len(all_accessories)}, filtered={len(filtered_accessories)}")
+                if len(filtered_accessories) == 0 and len(all_accessories) > 0:
+                    # Debug: log sample room IDs to help diagnose
+                    sample_room_ids = [a.get("roomId") for a in all_accessories[:3]]
+                    logger.warning(f"Room filter returned empty. Sample roomIds: {sample_room_ids}")
             elif entity_type == "group":
                 # Filter to accessories in the service group
                 # Fetch the service group to get its accessory IDs
