@@ -125,20 +125,6 @@ class Home(SQLModel, table=True):
         description="Last time this home was reported by device")
 
 
-class Collection(GraphQLBaseModel, table=True):
-    """
-    A collection of HomeKit accessories that can be shared.
-    """
-    __tablename__ = "collections"
-
-    name: str = Field(nullable=False,
-        description="Display name for the collection")
-    payload: str = Field(default="[]",
-        description='JSON array: [{"home_id": "uuid", "accessory_id": "uuid"}, ...]')
-    settings_json: Optional[str] = Field(default=None,
-        description='JSON settings: {"compactMode": bool, "order": ["id1", "id2", ...]}')
-
-
 class StoredEntity(BaseModel, table=True):
     """
     Generic entity storage for all entity types.
@@ -221,7 +207,6 @@ __all__ = [
     "Session",
     "SessionType",
     "Home",
-    "Collection",
     "StoredEntity",
     "EntityAccess",
 ]

@@ -15,7 +15,7 @@ from uuid import UUID
 
 from sqlmodel import Session, select, or_, and_
 
-from homecast.models.db.models import EntityAccess, Collection
+from homecast.models.db.models import EntityAccess
 from homecast.models.db.repositories.base_repository import BaseRepository
 from homecast.utils.share_hash import encode_share_hash, decode_share_hash, verify_share_hash
 

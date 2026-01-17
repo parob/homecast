@@ -19,8 +19,8 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from homecast.auth import verify_token, extract_token_from_header
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType, Collection
-from homecast.models.db.repositories import SessionRepository, EntityAccessRepository
+from homecast.models.db.models import SessionType
+from homecast.models.db.repositories import SessionRepository, EntityAccessRepository, StoredEntityRepository
 from homecast.websocket.pubsub_router import router as pubsub_router
 
 logger = logging.getLogger(__name__)
@@ -283,15 +283,13 @@ class WebClientManager:
             # Get accessory IDs from collection payload (for filtering updates)
             accessory_ids: List[str] = []
             if entity_type == "collection":
-                collection = session.get(Collection, entity_id)
-                if collection:
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, access.owner_id, 'collection', str(entity_id)
+                )
+                if collection_entity:
                     try:
-                        payload_data = json.loads(collection.payload)
-                        # Handle both old array format and new object format
-                        if isinstance(payload_data, list):
-                            items = payload_data
-                        else:
-                            items = payload_data.get("items", [])
+                        data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                        items = data.get("items", [])
                         accessory_ids = [
                             item["accessory_id"] for item in items
                             if item.get("accessory_id")

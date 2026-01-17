@@ -13,8 +13,8 @@ from graphql import GraphQLError
 from graphql_api import field
 
 from homecast.models.db.database import get_session
-from homecast.models.db.models import SessionType, Collection, EntityAccess, StoredEntity
-from homecast.models.db.repositories import UserRepository, SessionRepository, CollectionRepository, EntityAccessRepository, StoredEntityRepository
+from homecast.models.db.models import SessionType, EntityAccess, StoredEntity
+from homecast.models.db.repositories import UserRepository, SessionRepository, EntityAccessRepository, StoredEntityRepository
 from homecast.auth import generate_token, AuthContext
 from homecast.middleware import get_auth_context
 from homecast.utils.share_hash import encode_share_hash, decode_share_hash
@@ -237,8 +237,19 @@ class UpdateEntityLayoutResult:
 
 
 # --- Collection Types ---
-# Collection model is imported from homecast.models.db.models
-# The GraphQLSQLAlchemyMixin on these models enables direct GraphQL responses
+
+@dataclass
+class Collection:
+    """Collection information for GraphQL responses.
+
+    Collections are now stored in StoredEntity table with entity_type='collection'.
+    This dataclass provides backward-compatible API responses.
+    """
+    id: str
+    name: str
+    payload: str  # JSON string: {"groups": [...], "items": [...]}
+    created_at: str
+    settings_json: Optional[str] = None  # JSON string for display settings
 
 
 # --- Entity Access Types ---
@@ -1133,26 +1144,46 @@ class HomecastAPI:
             raise
 
     # --- Collection Endpoints ---
+    # Collections are stored in StoredEntity table with entity_type='collection'
+
+    def _stored_entity_to_collection(self, entity: StoredEntity) -> Collection:
+        """Convert StoredEntity to Collection format for API compatibility."""
+        data = json.loads(entity.data_json) if entity.data_json else {}
+        layout = json.loads(entity.layout_json) if entity.layout_json else {}
+
+        # Reconstruct payload from data_json (contains groups and items)
+        payload = json.dumps({
+            "groups": data.get("groups", []),
+            "items": data.get("items", [])
+        })
+
+        return Collection(
+            id=entity.entity_id,
+            name=data.get("name", ""),
+            payload=payload,
+            created_at=entity.created_at.isoformat(),
+            settings_json=json.dumps(layout) if layout else None
+        )
 
     @field
     async def collections(self) -> List[Collection]:
         """Get all collections for the current user. Requires authentication."""
         auth = require_auth()
         with get_session() as session:
-            results = CollectionRepository.get_user_collections(session, auth.user_id)
-            return [collection for collection, _ in results]
+            entities = StoredEntityRepository.get_entities_by_type(
+                session, auth.user_id, 'collection'
+            )
+            return [self._stored_entity_to_collection(e) for e in entities]
 
     @field
     async def collection(self, collection_id: str) -> Optional[Collection]:
         """Get a specific collection. Requires authentication."""
         auth = require_auth()
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return None
         with get_session() as session:
-            result = CollectionRepository.get_collection_with_access(session, cid, auth.user_id)
-            return result[0] if result else None
+            entity = StoredEntityRepository.get_entity(
+                session, auth.user_id, 'collection', collection_id
+            )
+            return self._stored_entity_to_collection(entity) if entity else None
 
     @field(mutable=True)
     async def create_collection(self, name: str) -> Optional[Collection]:
@@ -1160,8 +1191,31 @@ class HomecastAPI:
         auth = require_auth()
         if not name or not name.strip():
             raise ValueError("Name is required")
+
+        import uuid as uuid_module
+        collection_id = str(uuid_module.uuid4())
+
         with get_session() as session:
-            return CollectionRepository.create_collection(session, name.strip(), auth.user_id)
+            # Create collection in StoredEntity
+            entity = StoredEntityRepository.upsert_entity(
+                session, auth.user_id, 'collection', collection_id,
+                data_json=json.dumps({'name': name.strip(), 'items': [], 'groups': []}),
+                layout_json='{}'
+            )
+
+            # Create owner access via EntityAccess (for sharing system)
+            access = EntityAccess(
+                entity_type="collection",
+                entity_id=uuid_module.UUID(collection_id),
+                owner_id=auth.user_id,
+                access_type="user",
+                user_id=auth.user_id,
+                role="owner"
+            )
+            session.add(access)
+            session.commit()
+
+            return self._stored_entity_to_collection(entity)
 
     @field(mutable=True)
     async def update_collection(
@@ -1173,10 +1227,6 @@ class HomecastAPI:
     ) -> Optional[Collection]:
         """Update a collection. Requires authentication and owner role."""
         auth = require_auth()
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return None
 
         # Validate payload format - each item must have home_id for sharing to work
         if payload:
@@ -1193,23 +1243,70 @@ class HomecastAPI:
                 return None
 
         with get_session() as session:
-            return CollectionRepository.update_collection(
-                session, cid, auth.user_id,
-                name=name.strip() if name else None,
-                payload=payload,
-                settings_json=settings_json
+            # Get existing entity
+            entity = StoredEntityRepository.get_entity(
+                session, auth.user_id, 'collection', collection_id
             )
+            if not entity:
+                return None
+
+            # Parse existing data and update
+            data = json.loads(entity.data_json) if entity.data_json else {}
+
+            if name is not None:
+                data['name'] = name.strip()
+
+            if payload is not None:
+                payload_data = json.loads(payload)
+                if isinstance(payload_data, list):
+                    # Old array format - convert to new format
+                    data['items'] = payload_data
+                    data['groups'] = []
+                else:
+                    # New object format
+                    data['items'] = payload_data.get('items', [])
+                    data['groups'] = payload_data.get('groups', [])
+
+            # Update data_json
+            entity = StoredEntityRepository.upsert_entity(
+                session, auth.user_id, 'collection', collection_id,
+                data_json=json.dumps(data)
+            )
+
+            # Update layout_json if settings provided
+            if settings_json is not None:
+                entity = StoredEntityRepository.update_layout(
+                    session, auth.user_id, 'collection', collection_id, settings_json
+                )
+
+            return self._stored_entity_to_collection(entity) if entity else None
 
     @field(mutable=True)
     async def delete_collection(self, collection_id: str) -> bool:
         """Delete a collection. Requires authentication and owner role."""
         auth = require_auth()
-        try:
-            cid = __import__('uuid').UUID(collection_id)
-        except ValueError:
-            return False
+        import uuid as uuid_module
+
         with get_session() as session:
-            return CollectionRepository.delete_collection(session, cid, auth.user_id)
+            # Delete all EntityAccess records for this collection first
+            try:
+                cid = uuid_module.UUID(collection_id)
+                from sqlmodel import select
+                access_records = session.exec(
+                    select(EntityAccess)
+                    .where(EntityAccess.entity_type == "collection")
+                    .where(EntityAccess.entity_id == cid)
+                ).all()
+                for record in access_records:
+                    session.delete(record)
+                session.flush()
+            except ValueError:
+                pass  # Invalid UUID, skip entity access cleanup
+
+            # Delete the stored entity
+            return StoredEntityRepository.delete_entity(
+                session, auth.user_id, 'collection', collection_id
+            )
 
     # --- Entity Access Endpoints (Unified Sharing) ---
 
@@ -1385,10 +1482,12 @@ class HomecastAPI:
 
         try:
             with get_session() as session:
-                # For collections, verify ownership via CollectionRepository
+                # For collections, verify ownership via StoredEntityRepository
                 if entity_type == "collection":
-                    result = CollectionRepository.get_collection_with_access(session, eid, auth.user_id)
-                    if not result or result[1].role != "owner":
+                    entity = StoredEntityRepository.get_entity(
+                        session, auth.user_id, 'collection', str(eid)
+                    )
+                    if not entity:
                         return CreateEntityAccessResult(success=False, error="Not authorized")
 
                 access = EntityAccessRepository.create_access(
@@ -1554,24 +1653,34 @@ class HomecastAPI:
             entity_data = None
 
             if entity_type == "collection":
-                collection = session.get(Collection, entity_id)
-                if collection:
-                    entity_name = collection.name
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, access.owner_id, 'collection', str(entity_id)
+                )
+                if collection_entity:
+                    data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                    layout = json.loads(collection_entity.layout_json) if collection_entity.layout_json else {}
+                    entity_name = data.get("name", "")
+                    # Reconstruct payload format for backward compatibility
                     entity_data = json.dumps({
-                        "payload": collection.payload,
-                        "settings_json": collection.settings_json
+                        "payload": json.dumps({
+                            "groups": data.get("groups", []),
+                            "items": data.get("items", [])
+                        }),
+                        "settings_json": json.dumps(layout) if layout else None
                     })
 
             elif entity_type == "collection_group":
                 # For collection_group, home_id stores the collection_id
                 collection_id = access.home_id
                 if collection_id:
-                    collection = session.get(Collection, collection_id)
-                    if collection:
-                        # Find the group name from the collection's payload
+                    collection_entity = StoredEntityRepository.get_entity(
+                        session, access.owner_id, 'collection', str(collection_id)
+                    )
+                    if collection_entity:
+                        # Find the group name from the collection's data
                         try:
-                            payload_data = json.loads(collection.payload)
-                            groups = payload_data.get("groups", []) if isinstance(payload_data, dict) else []
+                            data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                            groups = data.get("groups", [])
                             group_id_str = str(entity_id)
                             for group in groups:
                                 if group.get("id") == group_id_str:
@@ -1648,18 +1757,16 @@ class HomecastAPI:
             home_ids = set()
 
             if entity_type == "collection":
-                # Get collection and parse items
-                collection = session.get(Collection, entity_id)
-                if not collection:
+                # Get collection from StoredEntity and parse items
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, owner_id, 'collection', str(entity_id)
+                )
+                if not collection_entity:
                     return None
 
                 try:
-                    payload_data = json.loads(collection.payload)
-                    # Handle both old array format and new object format
-                    if isinstance(payload_data, list):
-                        items = payload_data
-                    else:
-                        items = payload_data.get("items", [])
+                    data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                    items = data.get("items", [])
                 except json.JSONDecodeError:
                     return None
 
@@ -1691,19 +1798,18 @@ class HomecastAPI:
                     logger.warning(f"Collection group share missing collection_id")
                     return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
-                collection = session.get(Collection, collection_id)
-                if not collection:
+                # Get collection from StoredEntity
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, owner_id, 'collection', str(collection_id)
+                )
+                if not collection_entity:
                     logger.warning(f"Collection {collection_id} not found for group share")
                     return None
 
                 try:
-                    payload_data = json.loads(collection.payload)
-                    if isinstance(payload_data, list):
-                        items = payload_data
-                        groups = []
-                    else:
-                        items = payload_data.get("items", [])
-                        groups = payload_data.get("groups", [])
+                    data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                    items = data.get("items", [])
+                    groups = data.get("groups", [])
                 except json.JSONDecodeError:
                     return None
 
@@ -1997,8 +2103,10 @@ class HomecastAPI:
             # Verify accessory is within the shared entity scope
             if entity_type == "collection":
                 # For collections, verify accessory is in collection
-                collection = session.get(Collection, entity_id)
-                if not collection:
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, access.owner_id, 'collection', str(entity_id)
+                )
+                if not collection_entity:
                     return SetCharacteristicResult(
                         success=False,
                         accessory_id=accessory_id,
@@ -2006,22 +2114,15 @@ class HomecastAPI:
                     )
 
                 try:
-                    payload = json.loads(collection.payload)
-                    # Handle both old array format and new object format
-                    if isinstance(payload, list):
-                        # Old format: array of items
-                        items = payload
-                    else:
-                        # New format: {"groups": [...], "items": [...]}
-                        items = payload.get("items", [])
+                    data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                    items = data.get("items", [])
                 except json.JSONDecodeError:
                     items = []
 
-                # Extract accessory IDs from items (handle both old and new field names)
+                # Extract accessory IDs from items
                 accessory_ids = []
                 for item in items:
                     if isinstance(item, dict):
-                        # New format uses accessory_id
                         aid = item.get("accessory_id") or item.get("item_id")
                         if aid:
                             accessory_ids.append(aid)
@@ -2043,8 +2144,10 @@ class HomecastAPI:
                         characteristic_type=characteristic_type
                     )
 
-                collection = session.get(Collection, collection_id)
-                if not collection:
+                collection_entity = StoredEntityRepository.get_entity(
+                    session, access.owner_id, 'collection', str(collection_id)
+                )
+                if not collection_entity:
                     return SetCharacteristicResult(
                         success=False,
                         accessory_id=accessory_id,
@@ -2052,8 +2155,8 @@ class HomecastAPI:
                     )
 
                 try:
-                    payload = json.loads(collection.payload)
-                    items = payload.get("items", []) if isinstance(payload, dict) else payload
+                    data = json.loads(collection_entity.data_json) if collection_entity.data_json else {}
+                    items = data.get("items", [])
                 except json.JSONDecodeError:
                     items = []
 
