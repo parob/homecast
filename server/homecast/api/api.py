@@ -1644,6 +1644,7 @@ class HomecastAPI:
 
             # Determine what to fetch based on entity type
             accessory_ids = None  # None means fetch all, set() means filter
+            service_group_ids = None  # None means fetch all, set() means filter to specific groups
             home_ids = set()
 
             if entity_type == "collection":
@@ -1662,27 +1663,33 @@ class HomecastAPI:
                 except json.JSONDecodeError:
                     return None
 
-                # Extract accessory IDs and home IDs from collection
+                # Extract accessory IDs, service group IDs, and home IDs from collection
                 accessory_ids = set()
+                service_group_ids = set()  # Will filter to only these service groups
                 for item in items:
+                    item_home_id = item.get("home_id")
+                    if item_home_id:
+                        home_ids.add(item_home_id)
                     if item.get("accessory_id"):
                         accessory_ids.add(item["accessory_id"])
-                        if item.get("home_id"):
-                            home_ids.add(item["home_id"])
+                    if item.get("service_group_id"):
+                        service_group_ids.add(item["service_group_id"])
 
-                if not accessory_ids:
-                    return "[]"
+                # If no accessories AND no service groups, collection is empty
+                if not accessory_ids and not service_group_ids:
+                    logger.info(f"Collection {entity_id} has no accessories or service groups")
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
                 if not home_ids:
-                    logger.warning(f"Collection {entity_id} has accessories but no home_ids in payload")
-                    return "[]"
+                    logger.warning(f"Collection {entity_id} has items but no home_ids in payload")
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
             elif entity_type == "collection_group":
                 # Get collection (stored in home_id field) and filter by group_id (entity_id)
                 collection_id = home_id  # For collection_group, home_id stores collection_id
                 if not collection_id:
                     logger.warning(f"Collection group share missing collection_id")
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
                 collection = session.get(Collection, collection_id)
                 if not collection:
@@ -1716,17 +1723,17 @@ class HomecastAPI:
                                 home_ids.add(item["home_id"])
 
                 if not accessory_ids and not service_group_ids:
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
                 if not home_ids:
                     logger.warning(f"Collection group {entity_id} has items but no home_ids in payload")
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
 
             elif entity_type == "room":
                 # Fetch all accessories in the room
                 if not home_id:
                     logger.warning(f"Room share {entity_id} missing home_id on EntityAccess")
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
                 logger.info(f"Room share: entity_id={entity_id}, home_id={home_id}")
                 home_ids.add(str(home_id))
 
@@ -1738,15 +1745,15 @@ class HomecastAPI:
                 # Fetch single accessory
                 if not home_id:
                     logger.warning(f"Accessory share {entity_id} missing home_id on EntityAccess")
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
                 home_ids.add(str(home_id))
                 accessory_ids = {str(entity_id)}
 
             elif entity_type == "group":
-                # Service groups
+                # Service groups (HomeKit native groups)
                 if not home_id:
                     logger.warning(f"Group share {entity_id} missing home_id on EntityAccess")
-                    return "[]"
+                    return json.dumps({"accessories": [], "serviceGroups": [], "layout": None})
                 home_ids.add(str(home_id))
 
             else:
@@ -1846,7 +1853,7 @@ class HomecastAPI:
 
             # Fetch service groups for the relevant homes
             all_service_groups = []
-            if entity_type in ('room', 'home', 'collection'):
+            if entity_type in ('room', 'home', 'collection', 'collection_group'):
                 for hid in home_ids:
                     try:
                         groups_result = await route_request(
@@ -1857,6 +1864,15 @@ class HomecastAPI:
                         all_service_groups.extend(groups_result.get("serviceGroups", []))
                     except Exception as e:
                         logger.warning(f"Failed to fetch service groups for home {hid}: {e}")
+
+                # Filter service groups if specific IDs were requested (collections)
+                if service_group_ids is not None and len(service_group_ids) > 0:
+                    normalized_sg_ids = {sgid.replace("-", "").lower() for sgid in service_group_ids}
+                    all_service_groups = [
+                        sg for sg in all_service_groups
+                        if sg.get("id", "").replace("-", "").lower() in normalized_sg_ids
+                    ]
+                    logger.info(f"Filtered service groups to {len(all_service_groups)} matching collection items")
 
             # Get layout from StoredEntity table
             layout = None
