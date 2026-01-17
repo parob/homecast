@@ -66,6 +66,15 @@ class PendingRequest:
     error: Optional[Dict[str, str]] = None
 
 
+@dataclass
+class PendingPing:
+    """A ping waiting for a pong response."""
+    device_id: str
+    sent_at: float
+    # Use thread-safe queue - asyncio primitives don't work across different async contexts
+    queue: "queue.Queue[float]" = field(default_factory=lambda: queue.Queue(maxsize=1))
+
+
 # --- Connection Manager ---
 
 class ConnectionManager:
@@ -76,6 +85,8 @@ class ConnectionManager:
         self.connections: Dict[str, ConnectedDevice] = {}
         # request_id -> PendingRequest
         self.pending_requests: Dict[str, PendingRequest] = {}
+        # device_id -> PendingPing (for admin ping tracking)
+        self.pending_pings: Dict[str, PendingPing] = {}
         # Lock for thread-safe operations (created per event loop)
         self._lock: Optional[asyncio.Lock] = None
         self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -305,6 +316,60 @@ class ConnectionManager:
             async with self.lock:
                 self.pending_requests.pop(request_id, None)
 
+    async def ping_device(self, device_id: str, timeout: float = 10.0) -> Dict[str, Any]:
+        """
+        Send a ping to a device and wait for pong response.
+
+        Args:
+            device_id: Target device ID
+            timeout: Timeout in seconds
+
+        Returns:
+            Dict with 'success', 'latency_ms', and optionally 'error'
+        """
+        import time
+
+        if device_id not in self.connections:
+            return {"success": False, "error": "Device not connected locally"}
+
+        conn = self.connections[device_id]
+        sent_at = time.time()
+
+        # Create pending ping tracker
+        pending = PendingPing(device_id=device_id, sent_at=sent_at)
+        self.pending_pings[device_id] = pending
+
+        try:
+            # Check if user has web clients (for ping payload)
+            has_listeners = web_client_manager.has_listeners(conn.user_id)
+
+            # Send ping message
+            await conn.websocket.send_json({
+                "type": "ping",
+                "payload": {"webClientsListening": has_listeners}
+            })
+
+            logger.info(f"Admin ping sent to device {device_id}")
+
+            # Wait for pong response via thread-safe queue
+            loop = asyncio.get_event_loop()
+            try:
+                pong_time = await loop.run_in_executor(
+                    None,
+                    lambda: pending.queue.get(timeout=timeout)
+                )
+                latency_ms = int((pong_time - sent_at) * 1000)
+                logger.info(f"Admin ping response from {device_id}: {latency_ms}ms")
+                return {"success": True, "latency_ms": latency_ms}
+            except queue.Empty:
+                return {"success": False, "error": "Ping timeout - device did not respond"}
+
+        except Exception as e:
+            logger.error(f"Admin ping error for {device_id}: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            self.pending_pings.pop(device_id, None)
+
     async def handle_message(self, device_id: str, message: Dict[str, Any]):
         """
         Handle an incoming message from a device.
@@ -358,11 +423,22 @@ class ConnectionManager:
             logger.debug(f"Device {device_id} status: {payload}")
 
         elif msg_type == "pong":
+            import time
+            pong_time = time.time()
+
             # Heartbeat response - update last seen time and instance_id in database
             # Updating instance_id on every heartbeat ensures session always reflects
             # the current location of the device, preventing stale routing
             with get_session() as db:
                 SessionRepository.update_heartbeat_by_device(db, device_id, instance_id=pubsub_router.instance_id)
+
+            # Signal any pending admin ping for this device
+            if device_id in self.pending_pings:
+                pending = self.pending_pings[device_id]
+                try:
+                    pending.queue.put_nowait(pong_time)
+                except queue.Full:
+                    pass  # Already got a response
 
         elif msg_type == "event":
             # Event from Mac app (e.g., characteristic update)
@@ -665,3 +741,32 @@ async def route_request(
         result = await connection_manager.send_request(device_id, action, payload, timeout)
         logger.info(f"route_request: response={result}")
         return result
+
+
+async def route_ping(
+    device_id: str,
+    timeout: float = 10.0
+) -> Dict[str, Any]:
+    """
+    Route a ping to a device, using Pub/Sub if needed for cross-instance routing.
+
+    This is the main entry point for pinging devices - it handles
+    both local and remote devices transparently.
+
+    Returns:
+        Dict with 'success', 'latency_ms', and optionally 'error'
+    """
+    logger.info(f"route_ping: device={device_id}")
+
+    # Check if device is locally connected first (fast path)
+    if connection_manager.is_connected(device_id):
+        logger.info(f"route_ping: device is local, pinging directly")
+        return await connection_manager.ping_device(device_id, timeout)
+
+    # If pubsub is enabled, try to route via pubsub
+    if pubsub_router.enabled:
+        logger.info(f"route_ping: device not local, routing via Pub/Sub")
+        return await pubsub_router.send_ping(device_id, timeout)
+    else:
+        # Local-only mode and device not connected locally
+        return {"success": False, "error": "Device not connected locally"}

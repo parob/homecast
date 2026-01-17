@@ -425,6 +425,91 @@ class PubSubRouter:
         finally:
             self._pending_requests.pop(correlation_id, None)
 
+    async def send_ping(
+        self,
+        device_id: str,
+        timeout: float = 10.0
+    ) -> Dict[str, Any]:
+        """
+        Send a ping to a device, routing via Pub/Sub if needed.
+
+        Returns:
+            Dict with 'success', 'latency_ms', and optionally 'error'
+        """
+        if not self._enabled:
+            return {"success": False, "error": "Pub/Sub not enabled"}
+
+        # Check local connections first (fast path)
+        if self._local_device_checker and self._local_device_checker(device_id):
+            logger.info(f"[ping] Device {device_id[:8]} is LOCAL, pinging directly")
+            from homecast.websocket.handler import connection_manager
+            return await connection_manager.ping_device(device_id, timeout)
+
+        # Look up device session from database
+        logger.info(f"[ping] Device {device_id[:8]} not local, looking up session...")
+        with get_session() as db:
+            session_record = SessionRepository.get_device_session(db, device_id, include_stale=False)
+            if not session_record:
+                return {"success": False, "error": "Device not connected"}
+
+            device_instance_id = session_record.instance_id
+
+        if not device_instance_id:
+            return {"success": False, "error": "Device has no instance_id"}
+
+        # If device is on this instance but not in local connections, it may have just disconnected
+        my_instance_id = _get_instance_id()
+        if device_instance_id == my_instance_id:
+            return {"success": False, "error": "Device session stale - not actually connected"}
+
+        # Look up which slot the target instance has claimed
+        with get_session() as db:
+            target_slot_record = TopicSlotRepository.get_slot_for_instance(db, device_instance_id)
+            if not target_slot_record:
+                return {"success": False, "error": f"Instance {device_instance_id} has no active slot"}
+            target_slot = target_slot_record.slot_name
+
+        # Route to remote instance via Pub/Sub
+        correlation_id = str(uuid.uuid4())
+        future: ThreadFuture = ThreadFuture()
+        self._pending_requests[correlation_id] = future
+
+        logger.info(f"Routing ping {correlation_id[:8]}: {self._slot_name} -> {target_slot} (device: {device_id})")
+
+        try:
+            target_topic = self._get_topic_path(target_slot)
+
+            message_data = json.dumps({
+                "type": "ping_request",
+                "correlation_id": correlation_id,
+                "source_slot": self._slot_name,
+                "device_id": device_id
+            }).encode("utf-8")
+
+            try:
+                self._publisher.publish(target_topic, message_data).result(timeout=5)
+                logger.info(f"Published ping request {correlation_id[:8]} to topic {target_topic}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {target_slot}")
+                self._handle_deleted_topic(target_slot)
+                return {"success": False, "error": "Target instance no longer exists"}
+            except Exception as e:
+                return {"success": False, "error": f"Failed to route ping: {e}"}
+
+            # Wait for result
+            loop = asyncio.get_running_loop()
+            try:
+                result = await loop.run_in_executor(None, future.result, timeout)
+            except concurrent.futures.TimeoutError:
+                return {"success": False, "error": f"Ping timeout - no response within {timeout}s"}
+            except Exception as e:
+                return {"success": False, "error": f"Ping failed: {e}"}
+
+            return result
+
+        finally:
+            self._pending_requests.pop(correlation_id, None)
+
     async def _add_to_buffer(self, user_id: str, update: dict):
         """Add an update to the buffer for a user, scheduling a flush."""
         if user_id not in self._update_buffers:
@@ -590,6 +675,9 @@ class PubSubRouter:
 
         elif msg_type == "batch":
             await self._handle_batch_update(data)
+
+        elif msg_type == "ping_request":
+            await self._handle_remote_ping_request(data)
 
         else:
             logger.warning(f"Unknown message type: {msg_type}")
@@ -778,6 +866,55 @@ class PubSubRouter:
 
             else:
                 logger.warning(f"Unknown update type in batch: {update_type}")
+
+    async def _handle_remote_ping_request(self, data: Dict[str, Any]):
+        """Handle a ping request routed from another instance."""
+        from homecast.websocket.handler import connection_manager
+
+        correlation_id = data.get("correlation_id")
+        source_slot = data.get("source_slot")
+        device_id = data.get("device_id")
+
+        if not all([correlation_id, source_slot, device_id]):
+            logger.warning("Invalid ping_request message - missing fields")
+            return
+
+        logger.info(f"Handling remote ping request {correlation_id[:8]}: device={device_id[:8]}, reply_to={source_slot}")
+
+        # Check if device is actually connected to this instance
+        is_local = connection_manager.is_connected(device_id)
+
+        if not is_local:
+            logger.warning(f"[{correlation_id[:8]}] Device {device_id[:8]} not connected to this instance for ping")
+            response = {
+                "type": "response",
+                "correlation_id": correlation_id,
+                "success": False,
+                "error": "Device not connected to this instance"
+            }
+        else:
+            # Ping the device locally
+            ping_result = await connection_manager.ping_device(device_id, timeout=10.0)
+            response = {
+                "type": "response",
+                "correlation_id": correlation_id,
+                "success": ping_result.get("success", False),
+                "latency_ms": ping_result.get("latency_ms"),
+                "error": ping_result.get("error")
+            }
+
+        # Send response back to source slot's topic
+        source_topic = self._get_topic_path(source_slot)
+        message_data = json.dumps(response).encode("utf-8")
+
+        try:
+            self._publisher.publish(source_topic, message_data).result(timeout=5)
+            logger.info(f"Sent ping response {correlation_id[:8]} to slot {source_slot}: success={response.get('success')}")
+        except NotFound:
+            logger.warning(f"Topic not found for slot {source_slot} - cleaning up")
+            self._handle_deleted_topic(source_slot)
+        except Exception as e:
+            logger.error(f"Failed to publish ping response to slot {source_slot}: {e}")
 
 
 # Global router instance

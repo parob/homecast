@@ -461,6 +461,14 @@ class AdminUserDiagnostics:
     connection_history: List[AdminConnectionEvent]
 
 
+@dataclass
+class AdminPingResult:
+    """Result of pinging a user's device."""
+    success: bool
+    latency_ms: Optional[int] = None
+    error: Optional[str] = None
+
+
 # --- Helper Functions ---
 
 def parse_characteristic(data: dict) -> HomeKitCharacteristic:
@@ -3134,3 +3142,37 @@ class HomecastAPI:
 
         with get_session() as session:
             return AdminRepository.clear_logs(session, before_dt)
+
+    @field(mutable=True)
+    async def admin_ping_device(self, user_id: str) -> AdminPingResult:
+        """
+        Ping a user's connected device to measure connectivity. Requires admin role.
+
+        Args:
+            user_id: User ID whose device to ping
+
+        Returns:
+            AdminPingResult with success, latency_ms, and error
+        """
+        from homecast.websocket.handler import get_user_device_id, route_ping
+        import uuid as uuid_module
+
+        require_admin()
+
+        try:
+            uid = uuid_module.UUID(user_id)
+        except ValueError:
+            return AdminPingResult(success=False, error="Invalid user ID")
+
+        # Get the device ID for this user
+        device_id = await get_user_device_id(uid)
+        if not device_id:
+            return AdminPingResult(success=False, error="No device connected for this user")
+
+        # Route ping (handles local vs remote automatically)
+        result = await route_ping(device_id)
+        return AdminPingResult(
+            success=result.get("success", False),
+            latency_ms=result.get("latency_ms"),
+            error=result.get("error")
+        )
