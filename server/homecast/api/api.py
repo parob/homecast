@@ -1678,26 +1678,35 @@ class HomecastAPI:
             elif entity_type == "group":
                 # Filter to accessories in the service group
                 # Fetch the service group to get its accessory IDs
+                logger.info(f"Group share: entity_id={entity_id}, home_id={home_id}")
                 groups_result = await route_request(
                     device_id=device_id,
                     action="serviceGroups.list",
                     payload={"homeId": str(home_id)}
                 )
                 group_accessory_ids = set()
+                entity_id_normalized = str(entity_id).replace("-", "").lower()
+                found_group = False
                 for group in groups_result.get("serviceGroups", []):
                     group_id_normalized = str(group.get("id", "")).replace("-", "").lower()
-                    entity_id_normalized = str(entity_id).replace("-", "").lower()
                     if group_id_normalized == entity_id_normalized:
+                        found_group = True
                         group_accessory_ids = {
                             aid.replace("-", "").lower()
                             for aid in group.get("accessoryIds", [])
                         }
+                        logger.info(f"Group filter: found group with {len(group_accessory_ids)} accessory IDs")
                         break
+
+                if not found_group:
+                    available_ids = [str(g.get("id", ""))[:8] for g in groups_result.get("serviceGroups", [])]
+                    logger.warning(f"Group filter: group {entity_id_normalized[:8]} not found in {len(groups_result.get('serviceGroups', []))} groups. Available: {available_ids}")
 
                 filtered_accessories = [
                     a for a in all_accessories
                     if a.get("id", "").replace("-", "").lower() in group_accessory_ids
                 ]
+                logger.info(f"Group filter: total={len(all_accessories)}, filtered={len(filtered_accessories)}")
             elif accessory_ids is not None:
                 # Filter to specific accessory IDs (collection or single accessory)
                 # Normalize IDs for comparison (remove hyphens and lowercase)
