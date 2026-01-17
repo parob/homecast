@@ -21,6 +21,7 @@ TYPE_TO_CODE = {
     "collection": "c",
     "collection_group": "G",  # Capital G for collection groups
     "room": "r",
+    "room_group": "R",  # Capital R for room groups
     "group": "g",
     "home": "h",
     "accessory": "a",

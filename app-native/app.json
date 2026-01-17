@@ -16,6 +16,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "cloud.homecast.app",
+      "associatedDomains": [
+        "webcredentials:homecast.cloud"
+      ],
       "infoPlist": {
         "NSHomeKitUsageDescription": "Homecast needs access to your HomeKit devices to control your smart home."
       }

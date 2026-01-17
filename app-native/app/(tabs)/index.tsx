@@ -8,19 +8,20 @@ import {
   View,
   Dimensions,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { useQuery, useMutation } from '@apollo/client/react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Haptics from 'expo-haptics';
 
 import { Text } from '@/components/Themed';
 import { HOMES_QUERY, ACCESSORIES_QUERY, ROOMS_QUERY, SERVICE_GROUPS_QUERY, COLLECTIONS_QUERY } from '@/api/graphql/queries';
 import { SET_CHARACTERISTIC_MUTATION, SET_SERVICE_GROUP_MUTATION } from '@/api/graphql/mutations';
-import { useWebSocket, markLocalChange, clearLocalChange } from '@/providers/WebSocketProvider';
+import { useWebSocket } from '@/providers/WebSocketProvider';
 import { useAccessoryStore } from '@/stores/accessoryStore';
 import { useHomeStore } from '@/stores/homeStore';
 import { stringifyCharacteristicValue } from '@/types/homekit';
 import { AccessoryWidget, ServiceGroupWidget, getPrimaryServiceType, getCharacteristic, DeviceControlModal } from '@/components/widgets';
-import { CategoryChips } from '@/components/home/CategoryChips';
 import { SectionHeader } from '@/components/home/SectionHeader';
 import { AppleHomeColors } from '@/constants/Colors';
 import type { Home, Accessory, Room, ServiceGroup } from '@/types/homekit';
@@ -61,9 +62,11 @@ interface HomeScreenProps {
   initialCollectionId?: string;
   initialRoomId?: string;
   initialGroupId?: string;
+  onRoomPress?: (roomId: string, roomName: string) => void;
 }
 
-export default function HomeScreen({ initialHomeId, initialCollectionId, initialRoomId, initialGroupId }: HomeScreenProps = {}) {
+export default function HomeScreen({ initialHomeId, initialCollectionId, initialRoomId, initialGroupId, onRoomPress }: HomeScreenProps = {}) {
+  const navigation = useNavigation<any>();
   const { isConnected } = useWebSocket();
   const { selectedHomeId: globalSelectedHomeId, setSelectedHomeId } = useHomeStore();
 
@@ -164,6 +167,32 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
   const selectedHome = homes.find(h => h.id === selectedHomeId);
   const selectedRoom = rooms.find(r => r.id === selectedRoomId);
   const selectedCollection = collections.find(c => c.id === selectedCollectionId);
+
+  // Set header back button and title when viewing a room (only when not using stack navigation)
+  useEffect(() => {
+    // When onRoomPress is provided or initialRoomId is set, the header is managed externally
+    if (onRoomPress || initialRoomId) return;
+
+    if (selectedRoomId && selectedRoom) {
+      navigation.setOptions({
+        headerTitle: selectedRoom.name,
+        headerLeft: () => (
+          <TouchableOpacity
+            onPress={() => setSelectedRoomId(null)}
+            style={{ padding: 8 }}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="chevron-back" size={28} color="#007AFF" />
+          </TouchableOpacity>
+        ),
+      });
+    } else {
+      navigation.setOptions({
+        headerTitle: selectedHome?.name || selectedCollection?.name || 'Home',
+        headerLeft: undefined,
+      });
+    }
+  }, [navigation, selectedRoomId, selectedRoom, selectedHome, selectedCollection, onRoomPress]);
 
   // Parse selected collection payload
   const collectionPayload = useMemo(() => {
@@ -278,16 +307,21 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
       }
     }
 
-    // Convert to section data
-    const sections: Array<{ title: string; data: RenderItem[][] }> = [];
+    // Convert to section data with room IDs for navigation
+    const sections: Array<{ title: string; roomId?: string; data: RenderItem[][] }> = [];
 
     // Add room sections
     const roomSections = Object.entries(roomGroups)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([title, data]) => ({
-        title,
-        data: chunkArray(data, 2),
-      }));
+      .map(([title, data]) => {
+        // Find room ID by name
+        const room = rooms.find(r => r.name === title);
+        return {
+          title,
+          roomId: room?.id,
+          data: chunkArray(data, 2),
+        };
+      });
     sections.push(...roomSections);
 
     if (noRoom.length > 0) {
@@ -298,7 +332,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
     }
 
     return sections;
-  }, [accessories, serviceGroups, groupedAccessoryIds, getGroupRoom, selectedRoomId, selectedRoom, selectedCollectionId, collectionPayload, selectedGroupId]);
+  }, [accessories, serviceGroups, groupedAccessoryIds, getGroupRoom, selectedRoomId, selectedRoom, selectedCollectionId, collectionPayload, selectedGroupId, rooms]);
 
   const onRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -317,8 +351,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
   const handleToggle = async (accessoryId: string, characteristicType: string, currentValue: boolean) => {
     const newValue = !currentValue;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    markLocalChange(accessoryId, characteristicType);
-    updateCharacteristic(accessoryId, characteristicType, newValue, true);
+        updateCharacteristic(accessoryId, characteristicType, newValue, true);
 
     try {
       const { data } = await setCharacteristic({
@@ -331,30 +364,25 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
       if (data?.setCharacteristic?.success) {
         // Clear pending state - mutation succeeded
         confirmOptimistic(accessoryId, characteristicType);
-        clearLocalChange(accessoryId, characteristicType);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
         revertOptimistic(accessoryId, characteristicType);
-        clearLocalChange(accessoryId, characteristicType);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
     } catch {
       revertOptimistic(accessoryId, characteristicType);
-      clearLocalChange(accessoryId, characteristicType);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
 
   // Handle slider live update (optimistic only, no mutation)
   const handleSliderLive = (accessoryId: string, characteristicType: string, value: number) => {
-    markLocalChange(accessoryId, characteristicType);
-    updateCharacteristic(accessoryId, characteristicType, value, true);
+        updateCharacteristic(accessoryId, characteristicType, value, true);
   };
 
   // Handle slider final value (fire mutation)
   const handleSlider = async (accessoryId: string, characteristicType: string, value: number) => {
-    markLocalChange(accessoryId, characteristicType);
-    updateCharacteristic(accessoryId, characteristicType, value, true);
+        updateCharacteristic(accessoryId, characteristicType, value, true);
 
     try {
       const { data } = await setCharacteristic({
@@ -366,16 +394,13 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
       });
       if (data?.setCharacteristic?.success) {
         confirmOptimistic(accessoryId, characteristicType);
-        clearLocalChange(accessoryId, characteristicType);
-      } else {
+              } else {
         revertOptimistic(accessoryId, characteristicType);
-        clearLocalChange(accessoryId, characteristicType);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
     } catch {
       revertOptimistic(accessoryId, characteristicType);
-      clearLocalChange(accessoryId, characteristicType);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
 
@@ -394,8 +419,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
     const group = serviceGroups.find(g => g.id === groupId);
     if (group) {
       for (const accId of group.accessoryIds) {
-        markLocalChange(accId, characteristicType);
-        updateCharacteristic(accId, characteristicType, newValue, true);
+                updateCharacteristic(accId, characteristicType, newValue, true);
       }
     }
 
@@ -413,8 +437,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
         if (group) {
           for (const accId of group.accessoryIds) {
             confirmOptimistic(accId, characteristicType);
-            clearLocalChange(accId, characteristicType);
-          }
+                      }
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
@@ -422,8 +445,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
         if (group) {
           for (const accId of group.accessoryIds) {
             revertOptimistic(accId, characteristicType);
-            clearLocalChange(accId, characteristicType);
-          }
+                      }
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
@@ -431,8 +453,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
       if (group) {
         for (const accId of group.accessoryIds) {
           revertOptimistic(accId, characteristicType);
-          clearLocalChange(accId, characteristicType);
-        }
+                  }
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
@@ -440,27 +461,6 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
 
   const isLoading = homesLoading || accessoriesLoading;
 
-  // Get accessories for category chips (filtered to current view)
-  const displayedAccessories = useMemo(() => {
-    if (selectedCollectionId && collectionPayload) {
-      const collectionAccessoryIds = new Set(
-        collectionPayload.items
-          .filter(item => {
-            if (!item.accessory_id) return false;
-            if (selectedGroupId) {
-              return item.group_id === selectedGroupId;
-            }
-            return true;
-          })
-          .map(item => item.accessory_id!)
-      );
-      return accessories.filter(acc => collectionAccessoryIds.has(acc.id));
-    }
-    if (selectedRoomId) {
-      return accessories.filter(acc => acc.roomId === selectedRoomId);
-    }
-    return accessories;
-  }, [accessories, selectedCollectionId, collectionPayload, selectedGroupId, selectedRoomId]);
 
   // Loading state
   if (homesLoading && homes.length === 0) {
@@ -496,13 +496,6 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
     );
   }
 
-  // List header component (scrolls with content)
-  const ListHeader = () => (
-    <View style={styles.listHeader}>
-      {/* Category chips */}
-      <CategoryChips accessories={displayedAccessories} />
-    </View>
-  );
 
   return (
     <>
@@ -531,10 +524,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           </View>
         ) : (
           <>
-            <ListHeader />
             {groupedAccessories.map((section, sectionIndex) => (
               <View key={`section-${sectionIndex}`}>
-                <SectionHeader title={section.title} />
+                {section.title ? (
+                  <SectionHeader
+                    title={section.title}
+                    onPress={section.roomId ? () => {
+                      if (onRoomPress) {
+                        onRoomPress(section.roomId!, section.title);
+                      } else {
+                        setSelectedRoomId(section.roomId!);
+                      }
+                    } : undefined}
+                  />
+                ) : null}
                 {section.data.map((row, rowIndex) => (
                   <View key={`row-${sectionIndex}-${rowIndex}`} style={styles.row}>
                     {row.map((item) => {
@@ -749,8 +752,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           for (const acc of groupAccessories) {
             const brightnessChar = getCharacteristic(acc, 'brightness');
             if (brightnessChar) {
-              markLocalChange(acc.id, 'brightness');
-              updateCharacteristic(acc.id, 'brightness', value, true);
+                            updateCharacteristic(acc.id, 'brightness', value, true);
             }
           }
         };
@@ -761,8 +763,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           for (const acc of groupAccessories) {
             const brightnessChar = getCharacteristic(acc, 'brightness');
             if (brightnessChar) {
-              markLocalChange(acc.id, 'brightness');
-              updateCharacteristic(acc.id, 'brightness', value, true);
+                            updateCharacteristic(acc.id, 'brightness', value, true);
             }
           }
 
@@ -775,17 +776,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
                 value: stringifyCharacteristicValue(value),
               },
             });
-            if (!data?.setServiceGroup?.success) {
-              // Revert all on failure
+            if (data?.setServiceGroup?.success) {
+              for (const acc of groupAccessories) {
+                confirmOptimistic(acc.id, 'brightness');
+                              }
+            } else {
               for (const acc of groupAccessories) {
                 revertOptimistic(acc.id, 'brightness');
-              }
+                              }
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             }
           } catch {
             for (const acc of groupAccessories) {
               revertOptimistic(acc.id, 'brightness');
-            }
+                          }
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           }
         };
@@ -795,8 +799,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           for (const acc of groupAccessories) {
             const hueChar = getCharacteristic(acc, 'hue');
             if (hueChar) {
-              markLocalChange(acc.id, 'hue');
-              updateCharacteristic(acc.id, 'hue', value, true);
+                            updateCharacteristic(acc.id, 'hue', value, true);
             }
           }
           try {
@@ -808,16 +811,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
                 value: stringifyCharacteristicValue(value),
               },
             });
-            if (!data?.setServiceGroup?.success) {
+            if (data?.setServiceGroup?.success) {
+              for (const acc of groupAccessories) {
+                confirmOptimistic(acc.id, 'hue');
+                              }
+            } else {
               for (const acc of groupAccessories) {
                 revertOptimistic(acc.id, 'hue');
-              }
+                              }
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             }
           } catch {
             for (const acc of groupAccessories) {
               revertOptimistic(acc.id, 'hue');
-            }
+                          }
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           }
         };
@@ -827,8 +834,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           for (const acc of groupAccessories) {
             const satChar = getCharacteristic(acc, 'saturation');
             if (satChar) {
-              markLocalChange(acc.id, 'saturation');
-              updateCharacteristic(acc.id, 'saturation', value, true);
+                            updateCharacteristic(acc.id, 'saturation', value, true);
             }
           }
           try {
@@ -840,16 +846,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
                 value: stringifyCharacteristicValue(value),
               },
             });
-            if (!data?.setServiceGroup?.success) {
+            if (data?.setServiceGroup?.success) {
+              for (const acc of groupAccessories) {
+                confirmOptimistic(acc.id, 'saturation');
+                              }
+            } else {
               for (const acc of groupAccessories) {
                 revertOptimistic(acc.id, 'saturation');
-              }
+                              }
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             }
           } catch {
             for (const acc of groupAccessories) {
               revertOptimistic(acc.id, 'saturation');
-            }
+                          }
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           }
         };
@@ -859,8 +869,7 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
           for (const acc of groupAccessories) {
             const colorTempChar = getCharacteristic(acc, 'color_temperature');
             if (colorTempChar) {
-              markLocalChange(acc.id, 'color_temperature');
-              updateCharacteristic(acc.id, 'color_temperature', value, true);
+                            updateCharacteristic(acc.id, 'color_temperature', value, true);
             }
           }
           try {
@@ -872,16 +881,20 @@ export default function HomeScreen({ initialHomeId, initialCollectionId, initial
                 value: stringifyCharacteristicValue(value),
               },
             });
-            if (!data?.setServiceGroup?.success) {
+            if (data?.setServiceGroup?.success) {
+              for (const acc of groupAccessories) {
+                confirmOptimistic(acc.id, 'color_temperature');
+                              }
+            } else {
               for (const acc of groupAccessories) {
                 revertOptimistic(acc.id, 'color_temperature');
-              }
+                              }
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             }
           } catch {
             for (const acc of groupAccessories) {
               revertOptimistic(acc.id, 'color_temperature');
-            }
+                          }
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           }
         };
@@ -947,9 +960,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  listHeader: {
-    paddingBottom: 8,
-  },
   row: {
     flexDirection: 'row',
     paddingHorizontal: 16,
@@ -1000,6 +1010,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   listContent: {
-    paddingTop: 8,
+    paddingTop: 0,
   },
 });

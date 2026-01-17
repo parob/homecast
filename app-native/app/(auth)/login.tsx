@@ -64,8 +64,10 @@ export default function LoginScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
-            textContentType="emailAddress"
-            autoComplete="email"
+            textContentType="username"
+            autoComplete="username"
+            importantForAutofill="yes"
+            returnKeyType="next"
           />
 
           <TextInput
@@ -77,6 +79,9 @@ export default function LoginScreen() {
             secureTextEntry
             textContentType="password"
             autoComplete="password"
+            importantForAutofill="yes"
+            returnKeyType="done"
+            onSubmitEditing={handleLogin}
           />
 
           <TouchableOpacity

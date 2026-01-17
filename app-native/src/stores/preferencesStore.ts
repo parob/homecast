@@ -15,6 +15,7 @@ interface PreferencesState {
   setTabItems: (items: TabItem[]) => void;
   addTabItem: (item: TabItem) => void;
   removeTabItem: (id: string) => void;
+  reorderTabItems: (fromIndex: number, toIndex: number) => void;
   resetToDefault: () => void;
 }
 
@@ -61,6 +62,14 @@ export const usePreferencesStore = create<PreferencesState>()(
         const current = get().tabItems || [];
         const filtered = current.filter((t) => t.id !== id);
         set({ tabItems: filtered.length > 0 ? filtered : null });
+      },
+      reorderTabItems: (fromIndex, toIndex) => {
+        const current = get().tabItems || [];
+        if (fromIndex === toIndex || current.length === 0) return;
+        const newItems = [...current];
+        const [removed] = newItems.splice(fromIndex, 1);
+        newItems.splice(toIndex, 0, removed);
+        set({ tabItems: newItems });
       },
       resetToDefault: () => set({ tabItems: null }),
     }),

@@ -19,7 +19,7 @@ import os
 import uuid
 import concurrent.futures
 from concurrent.futures import Future as ThreadFuture
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from homecast import config
 from homecast.models.db.database import get_session
@@ -65,6 +65,10 @@ class PubSubRouter:
     Uses pooled topic slots from the database instead of per-revision topics.
     """
 
+    # Buffer configuration
+    BUFFER_FLUSH_DELAY_MS = 200
+    MAX_BUFFER_SIZE = 50
+
     def __init__(self):
         self._publisher = None
         self._subscriber = None
@@ -79,6 +83,10 @@ class PubSubRouter:
         self._project_id = None
         self._slot_name: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+
+        # Buffering for batched updates
+        self._update_buffers: Dict[str, List[dict]] = {}  # user_id -> list of updates
+        self._flush_tasks: Dict[str, asyncio.Task] = {}  # user_id -> scheduled flush task
 
     @property
     def enabled(self) -> bool:
@@ -360,6 +368,86 @@ class PubSubRouter:
         finally:
             self._pending_requests.pop(correlation_id, None)
 
+    async def _add_to_buffer(self, user_id: str, update: dict):
+        """Add an update to the buffer for a user, scheduling a flush."""
+        if user_id not in self._update_buffers:
+            self._update_buffers[user_id] = []
+
+        self._update_buffers[user_id].append(update)
+
+        # Cancel existing timer and reschedule
+        if user_id in self._flush_tasks:
+            self._flush_tasks[user_id].cancel()
+
+        # Force flush if buffer too large
+        if len(self._update_buffers[user_id]) >= self.MAX_BUFFER_SIZE:
+            await self._flush_buffer(user_id)
+        else:
+            # Schedule flush after delay
+            self._flush_tasks[user_id] = asyncio.create_task(
+                self._delayed_flush(user_id)
+            )
+
+    async def _delayed_flush(self, user_id: str):
+        """Wait for buffer delay then flush."""
+        try:
+            await asyncio.sleep(self.BUFFER_FLUSH_DELAY_MS / 1000.0)
+            await self._flush_buffer(user_id)
+        except asyncio.CancelledError:
+            pass  # Timer was cancelled, new update came in
+
+    async def _flush_buffer(self, user_id: str):
+        """Flush all buffered updates for a user as a single batch message."""
+        if user_id not in self._update_buffers or not self._update_buffers[user_id]:
+            return
+
+        updates = self._update_buffers.pop(user_id, [])
+        self._flush_tasks.pop(user_id, None)
+
+        if not updates:
+            return
+
+        # Get all instance_ids that have web clients for this user
+        with get_session() as db:
+            instance_ids = SessionRepository.get_web_client_instance_ids(db, uuid.UUID(user_id))
+
+            if not instance_ids:
+                logger.debug(f"No web client instances for user {user_id}")
+                return
+
+            # Get slot names for each instance (excluding our own - we handle locally)
+            my_instance_id = _get_instance_id()
+            target_slots = []
+
+            for instance_id in instance_ids:
+                if instance_id == my_instance_id:
+                    continue  # Skip our own instance - handled locally
+                slot = TopicSlotRepository.get_slot_for_instance(db, instance_id)
+                if slot:
+                    target_slots.append(slot.slot_name)
+
+        if not target_slots:
+            logger.debug(f"No remote instances to broadcast batch to for user {user_id}")
+            return
+
+        # Send batched updates to each target instance's topic
+        message_data = json.dumps({
+            "type": "batch",
+            "user_id": user_id,
+            "updates": updates
+        }).encode("utf-8")
+
+        for slot_name in target_slots:
+            try:
+                target_topic = self._get_topic_path(slot_name)
+                self._publisher.publish(target_topic, message_data).result(timeout=5)
+                logger.info(f"Broadcast batch of {len(updates)} updates to slot {slot_name}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {slot_name} - cleaning up")
+                self._handle_deleted_topic(slot_name)
+            except Exception as e:
+                logger.error(f"Failed to broadcast batch to slot {slot_name}: {e}")
+
     async def broadcast_characteristic_update(
         self,
         user_id: uuid.UUID,
@@ -370,54 +458,20 @@ class PubSubRouter:
         """
         Broadcast a characteristic update to all instances with web clients for this user.
 
-        Looks up which instances have web clients and sends directly to their topics.
+        Updates are buffered and sent as batches to reduce Pub/Sub message count.
         """
         if not self._enabled:
             # Local-only mode - web_client_manager handles it directly
             return
 
-        # Get all instance_ids that have web clients for this user
-        with get_session() as db:
-            instance_ids = SessionRepository.get_web_client_instance_ids(db, user_id)
-
-            if not instance_ids:
-                logger.debug(f"No web client instances for user {user_id}")
-                return
-
-            # Get slot names for each instance (excluding our own - we handle locally)
-            my_instance_id = _get_instance_id()
-            target_slots = []
-
-            for instance_id in instance_ids:
-                if instance_id == my_instance_id:
-                    continue  # Skip our own instance - handled locally
-                slot = TopicSlotRepository.get_slot_for_instance(db, instance_id)
-                if slot:
-                    target_slots.append(slot.slot_name)
-
-        if not target_slots:
-            logger.debug(f"No remote instances to broadcast to for user {user_id}")
-            return
-
-        # Send to each target instance's topic
-        message_data = json.dumps({
+        # Add to buffer for batched sending
+        update = {
             "type": "characteristic_update",
-            "user_id": str(user_id),
             "accessory_id": accessory_id,
             "characteristic_type": characteristic_type,
             "value": value
-        }).encode("utf-8")
-
-        for slot_name in target_slots:
-            try:
-                target_topic = self._get_topic_path(slot_name)
-                self._publisher.publish(target_topic, message_data).result(timeout=5)
-                logger.debug(f"Broadcast characteristic update to slot {slot_name}")
-            except NotFound:
-                logger.warning(f"Topic not found for slot {slot_name} - cleaning up")
-                self._handle_deleted_topic(slot_name)
-            except Exception as e:
-                logger.error(f"Failed to broadcast to slot {slot_name}: {e}")
+        }
+        await self._add_to_buffer(str(user_id), update)
 
     async def broadcast_reachability_update(
         self,
@@ -428,53 +482,19 @@ class PubSubRouter:
         """
         Broadcast a reachability update to all instances with web clients for this user.
 
-        Looks up which instances have web clients and sends directly to their topics.
+        Updates are buffered and sent as batches to reduce Pub/Sub message count.
         """
         if not self._enabled:
             # Local-only mode - web_client_manager handles it directly
             return
 
-        # Get all instance_ids that have web clients for this user
-        with get_session() as db:
-            instance_ids = SessionRepository.get_web_client_instance_ids(db, user_id)
-
-            if not instance_ids:
-                logger.debug(f"No web client instances for user {user_id}")
-                return
-
-            # Get slot names for each instance (excluding our own - we handle locally)
-            my_instance_id = _get_instance_id()
-            target_slots = []
-
-            for instance_id in instance_ids:
-                if instance_id == my_instance_id:
-                    continue  # Skip our own instance - handled locally
-                slot = TopicSlotRepository.get_slot_for_instance(db, instance_id)
-                if slot:
-                    target_slots.append(slot.slot_name)
-
-        if not target_slots:
-            logger.debug(f"No remote instances to broadcast to for user {user_id}")
-            return
-
-        # Send to each target instance's topic
-        message_data = json.dumps({
+        # Add to buffer for batched sending
+        update = {
             "type": "reachability_update",
-            "user_id": str(user_id),
             "accessory_id": accessory_id,
             "is_reachable": is_reachable
-        }).encode("utf-8")
-
-        for slot_name in target_slots:
-            try:
-                target_topic = self._get_topic_path(slot_name)
-                self._publisher.publish(target_topic, message_data).result(timeout=5)
-                logger.debug(f"Broadcast reachability update to slot {slot_name}")
-            except NotFound:
-                logger.warning(f"Topic not found for slot {slot_name} - cleaning up")
-                self._handle_deleted_topic(slot_name)
-            except Exception as e:
-                logger.error(f"Failed to broadcast to slot {slot_name}: {e}")
+        }
+        await self._add_to_buffer(str(user_id), update)
 
     def _resolve_future(self, correlation_id: str, data: Dict[str, Any]):
         """Thread-safe resolution of a pending future."""
@@ -510,6 +530,9 @@ class PubSubRouter:
 
         elif msg_type == "reachability_update":
             await self._handle_reachability_update(data)
+
+        elif msg_type == "batch":
+            await self._handle_batch_update(data)
 
         else:
             logger.warning(f"Unknown message type: {msg_type}")
@@ -602,6 +625,51 @@ class PubSubRouter:
             accessory_id=accessory_id,
             is_reachable=is_reachable
         )
+
+    async def _handle_batch_update(self, data: Dict[str, Any]):
+        """Handle a batch of updates broadcast from another instance."""
+        from homecast.websocket.web_clients import web_client_manager
+
+        user_id_str = data.get("user_id")
+        updates = data.get("updates", [])
+
+        if not user_id_str or not updates:
+            logger.warning("Invalid batch message - missing fields")
+            return
+
+        user_id = uuid.UUID(user_id_str)
+        logger.info(f"Received batch of {len(updates)} updates for user {user_id}")
+
+        # Process each update in the batch
+        for update in updates:
+            update_type = update.get("type")
+
+            if update_type == "characteristic_update":
+                accessory_id = update.get("accessory_id")
+                characteristic_type = update.get("characteristic_type")
+                value = update.get("value")
+
+                if accessory_id and characteristic_type:
+                    await web_client_manager.broadcast_characteristic_update(
+                        user_id=user_id,
+                        accessory_id=accessory_id,
+                        characteristic_type=characteristic_type,
+                        value=value
+                    )
+
+            elif update_type == "reachability_update":
+                accessory_id = update.get("accessory_id")
+                is_reachable = update.get("is_reachable")
+
+                if accessory_id is not None and is_reachable is not None:
+                    await web_client_manager.broadcast_reachability_update(
+                        user_id=user_id,
+                        accessory_id=accessory_id,
+                        is_reachable=is_reachable
+                    )
+
+            else:
+                logger.warning(f"Unknown update type in batch: {update_type}")
 
 
 # Global router instance

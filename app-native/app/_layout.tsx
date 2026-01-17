@@ -69,10 +69,13 @@ function RootLayoutNav() {
           name="(tabs)"
           options={{
             headerShown: false,
+            headerBackTitle: '',
             contentStyle: { backgroundColor: '#FFFFFF' },
           }}
         />
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+        <Stack.Screen name="appearance" options={{ title: 'Appearance' }} />
       </Stack>
     </ThemeProvider>
   );
