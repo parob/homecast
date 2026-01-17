@@ -56,6 +56,7 @@ class User(BaseModel, table=True):
 
     # Status
     is_active: bool = Field(default=True)
+    is_admin: bool = Field(default=False, index=True)
     last_login_at: Optional[datetime] = Field(default=None)
 
 
@@ -199,6 +200,44 @@ class EntityAccess(GraphQLBaseModel, table=True):
         description="JSON schedule config with expires_at, time_windows, timezone")
 
 
+class SystemLog(BaseModel, table=True):
+    """
+    Unified system logs with distributed tracing support.
+
+    Used for admin panel debugging, command tracking, and connectivity analysis.
+    Logs can be grouped by trace_id to reconstruct the full request flow.
+    """
+    __tablename__ = "system_logs"
+
+    # Log classification
+    level: str = Field(nullable=False, index=True)  # debug, info, warning, error
+    source: str = Field(nullable=False, index=True)  # api, websocket, pubsub, relay, homekit, auth
+
+    # Message
+    message: str = Field(nullable=False)
+
+    # Context (optional)
+    user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id", index=True)
+    device_id: Optional[str] = Field(default=None, index=True)
+
+    # Tracing (optional - links logs into traces)
+    trace_id: Optional[str] = Field(default=None, index=True)  # Groups logs for same request
+    span_name: Optional[str] = Field(default=None)  # Hop identifier: 'client', 'server', 'pubsub', 'relay', 'homekit'
+
+    # For command logs
+    action: Optional[str] = Field(default=None, index=True)  # 'set_characteristic', 'execute_scene'
+    accessory_id: Optional[str] = Field(default=None, index=True)
+    accessory_name: Optional[str] = Field(default=None)
+    characteristic_type: Optional[str] = Field(default=None)
+    value: Optional[str] = Field(default=None)
+    success: Optional[bool] = Field(default=None, index=True)
+    error: Optional[str] = Field(default=None)
+    latency_ms: Optional[int] = Field(default=None)  # Time since trace started
+
+    # Extended metadata
+    metadata_json: Optional[str] = Field(default=None)  # JSON for extra data
+
+
 __all__ = [
     "BaseModel",
     "GraphQLBaseModel",
@@ -209,4 +248,5 @@ __all__ = [
     "Home",
     "StoredEntity",
     "EntityAccess",
+    "SystemLog",
 ]

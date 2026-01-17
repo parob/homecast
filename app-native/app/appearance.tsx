@@ -8,20 +8,13 @@ import {
   Modal,
 } from 'react-native';
 import { useQuery } from '@apollo/client/react';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack } from 'expo-router';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  runOnJS,
-  SharedValue,
-} from 'react-native-reanimated';
-import {
-  GestureDetector,
-  Gesture,
-  GestureHandlerRootView,
-} from 'react-native-gesture-handler';
+import DraggableFlatList, {
+  ScaleDecorator,
+  RenderItemParams,
+} from 'react-native-draggable-flatlist';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { Text } from '@/components/Themed';
 import { HOMES_QUERY, ROOMS_QUERY, COLLECTIONS_QUERY, SERVICE_GROUPS_QUERY } from '@/api/graphql/queries';
@@ -29,137 +22,44 @@ import { usePreferencesStore, TabItem } from '@/stores/preferencesStore';
 import type { Collection } from '@/types/api';
 import type { Home, Room, ServiceGroup } from '@/types/homekit';
 
-const TAB_PREVIEW_HEIGHT = 80;
-const TAB_ITEM_SIZE = 60;
-const TAB_ITEM_MARGIN = 4;
-const ITEM_WIDTH = TAB_ITEM_SIZE + TAB_ITEM_MARGIN * 2;
-
-const tabTypeIcons: Record<TabItem['type'], string> = {
+const tabTypeIcons: Record<TabItem['type'], keyof typeof Ionicons.glyphMap> = {
   home: 'home',
-  room: 'cube',
+  room: 'enter-outline',
   collection: 'folder',
-  serviceGroup: 'th-large',
+  serviceGroup: 'grid',
 };
 
-function DraggableTabItem({
+function SortableTabItem({
   item,
-  index,
-  totalItems,
+  drag,
+  isActive,
   onRemove,
-  onReorder,
-  draggedIndex,
-  draggedTranslateX,
-}: {
-  item: TabItem;
-  index: number;
-  totalItems: number;
-  onRemove: (id: string) => void;
-  onReorder: (from: number, to: number) => void;
-  draggedIndex: SharedValue<number>;
-  draggedTranslateX: SharedValue<number>;
-}) {
-  const translateX = useSharedValue(0);
-  const scale = useSharedValue(1);
-  const isDragging = useSharedValue(false);
-
-  const gesture = Gesture.Pan()
-    .onStart(() => {
-      isDragging.value = true;
-      draggedIndex.value = index;
-      scale.value = 1.05;
-    })
-    .onUpdate((event) => {
-      translateX.value = event.translationX;
-      draggedTranslateX.value = event.translationX;
-    })
-    .onEnd((event) => {
-      const offset = Math.round(event.translationX / ITEM_WIDTH);
-      const newIndex = Math.max(0, Math.min(totalItems - 1, index + offset));
-      const didMove = newIndex !== index;
-
-      // Reset all animation state immediately
-      scale.value = 1;
-      isDragging.value = false;
-      draggedIndex.value = -1;
-      draggedTranslateX.value = 0;
-      translateX.value = 0;
-
-      if (didMove) {
-        runOnJS(onReorder)(index, newIndex);
-      }
-    });
-
-  const animatedStyle = useAnimatedStyle(() => {
-    // When this item is being dragged
-    if (isDragging.value) {
-      return {
-        transform: [
-          { translateX: translateX.value },
-          { scale: scale.value },
-        ],
-        zIndex: 100,
-      };
-    }
-
-    // When another item is being dragged, maybe shift this one
-    if (draggedIndex.value !== -1 && draggedIndex.value !== index) {
-      const draggedTo = draggedIndex.value + Math.round(draggedTranslateX.value / ITEM_WIDTH);
-      const clampedDraggedTo = Math.max(0, Math.min(totalItems - 1, draggedTo));
-
-      let shift = 0;
-      if (draggedIndex.value < index && clampedDraggedTo >= index) {
-        shift = -ITEM_WIDTH;
-      } else if (draggedIndex.value > index && clampedDraggedTo <= index) {
-        shift = ITEM_WIDTH;
-      }
-
-      return {
-        transform: [
-          { translateX: shift },
-          { scale: 1 },
-        ],
-        zIndex: 1,
-      };
-    }
-
-    // Default state
-    return {
-      transform: [
-        { translateX: 0 },
-        { scale: 1 },
-      ],
-      zIndex: 1,
-    };
-  });
-
+}: RenderItemParams<TabItem> & { onRemove: (id: string) => void }) {
   return (
-    <GestureDetector gesture={gesture}>
-      <Animated.View style={[styles.tabPreviewItem, animatedStyle]}>
-        <TouchableOpacity
-          style={styles.removeButton}
-          onPress={() => onRemove(item.id)}
-          hitSlop={{ top: 5, bottom: 5, left: 5, right: 5 }}
-        >
-          <View style={styles.removeButtonCircle}>
-            <FontAwesome name="times" size={10} color="#fff" />
-          </View>
-        </TouchableOpacity>
-        <View style={styles.tabIconContainer}>
-          <FontAwesome
-            name={tabTypeIcons[item.type] as any}
-            size={22}
-            color="#007AFF"
-          />
-        </View>
-        <Text style={styles.tabPreviewLabel} numberOfLines={1}>
+    <ScaleDecorator>
+      <TouchableOpacity
+        onLongPress={drag}
+        disabled={isActive}
+        style={[styles.sortableRow, isActive && styles.sortableRowActive]}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="menu" size={20} color="#C7C7CC" style={styles.dragHandle} />
+        <Ionicons name={tabTypeIcons[item.type]} size={20} color="#007AFF" />
+        <Text style={styles.sortableLabel} numberOfLines={1}>
           {item.name}
         </Text>
-      </Animated.View>
-    </GestureDetector>
+        <TouchableOpacity
+          onPress={() => onRemove(item.id)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="close-circle" size={22} color="#C7C7CC" />
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </ScaleDecorator>
   );
 }
 
-function TabBarPreview({
+function TabBarConfig({
   items,
   homes,
   onRemove,
@@ -170,88 +70,57 @@ function TabBarPreview({
   items: TabItem[] | null;
   homes: Home[];
   onRemove: (id: string) => void;
-  onReorder: (from: number, to: number) => void;
+  onReorder: (data: TabItem[]) => void;
   onAddTab: () => void;
   onReset: () => void;
 }) {
-  const draggedIndex = useSharedValue(-1);
-  const draggedTranslateX = useSharedValue(0);
-
-  const handleReorder = useCallback((from: number, to: number) => {
-    onReorder(from, to);
-  }, [onReorder]);
-
-  const displayItems = items && items.length > 0
-    ? items
-    : homes.map((h) => ({ type: 'home' as const, id: h.id, name: h.name }));
-
   const hasCustomTabs = items && items.length > 0;
 
+  const renderItem = useCallback(
+    (params: RenderItemParams<TabItem>) => (
+      <SortableTabItem {...params} onRemove={onRemove} />
+    ),
+    [onRemove]
+  );
+
   return (
-    <View style={styles.tabPreviewContainer}>
+    <View style={styles.section}>
       <Text style={styles.sectionTitle}>TAB BAR</Text>
-      <View style={styles.tabBarMockup}>
+      <View style={styles.card}>
         {hasCustomTabs ? (
-          <View style={styles.tabPreviewScroll}>
-            {displayItems.map((item, index) => (
-              <DraggableTabItem
-                key={`${index}-${item.type}-${item.id}`}
-                item={item}
-                index={index}
-                totalItems={displayItems.length}
-                onRemove={onRemove}
-                onReorder={handleReorder}
-                draggedIndex={draggedIndex}
-                draggedTranslateX={draggedTranslateX}
-              />
-            ))}
-          </View>
+          <DraggableFlatList
+            data={items}
+            keyExtractor={(item) => `${item.type}-${item.id}`}
+            renderItem={renderItem}
+            onDragEnd={({ data }) => onReorder(data)}
+            scrollEnabled={false}
+          />
         ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.tabPreviewScroll}
-          >
-            {displayItems.map((item) => (
-              <View key={`${item.type}-${item.id}`} style={styles.tabPreviewItem}>
-                <View style={styles.tabIconContainer}>
-                  <FontAwesome
-                    name={tabTypeIcons[item.type] as any}
-                    size={22}
-                    color="#8E8E93"
-                  />
-                </View>
-                <Text style={[styles.tabPreviewLabel, styles.defaultLabel]} numberOfLines={1}>
-                  {item.name}
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyText}>
+              Showing all homes by default
+            </Text>
+          </View>
         )}
       </View>
 
-      {hasCustomTabs ? (
-        <Text style={styles.dragHint}>
-          Drag tabs to reorder • Tap × to remove
-        </Text>
-      ) : (
-        <Text style={styles.defaultHint}>
-          Default view showing all homes
-        </Text>
-      )}
-
-      <View style={styles.previewActions}>
-        <TouchableOpacity style={styles.actionButton} onPress={onAddTab}>
-          <FontAwesome name="plus" size={14} color="#34C759" />
-          <Text style={[styles.actionButtonText, { color: '#34C759' }]}>Add Tab</Text>
+      <View style={styles.buttonRow}>
+        <TouchableOpacity style={styles.addButton} onPress={onAddTab}>
+          <Ionicons name="add" size={18} color="#007AFF" />
+          <Text style={styles.addButtonText}>Add Tab</Text>
         </TouchableOpacity>
         {hasCustomTabs && (
-          <TouchableOpacity style={styles.actionButton} onPress={onReset}>
-            <FontAwesome name="refresh" size={14} color="#FF3B30" />
-            <Text style={[styles.actionButtonText, { color: '#FF3B30' }]}>Reset</Text>
+          <TouchableOpacity style={styles.resetButton} onPress={onReset}>
+            <Text style={styles.resetButtonText}>Reset to Default</Text>
           </TouchableOpacity>
         )}
       </View>
+
+      <Text style={styles.footerHint}>
+        {hasCustomTabs
+          ? 'Drag to reorder. Maximum 5 tabs.'
+          : 'Add tabs to customize your navigation.'}
+      </Text>
     </View>
   );
 }
@@ -260,7 +129,7 @@ export default function AppearanceScreen() {
   const { data: homesData } = useQuery<{ homes: Home[] }>(HOMES_QUERY);
   const { data: collectionsData } = useQuery<{ collections: Collection[] }>(COLLECTIONS_QUERY);
 
-  const { tabItems, addTabItem, removeTabItem, reorderTabItems, resetToDefault } = usePreferencesStore();
+  const { tabItems, addTabItem, removeTabItem, setTabItems, resetToDefault } = usePreferencesStore();
   const [showAddModal, setShowAddModal] = useState(false);
 
   const homes = homesData?.homes || [];
@@ -276,9 +145,9 @@ export default function AppearanceScreen() {
     }
   }, [tabItems, removeTabItem]);
 
-  const handleReorder = useCallback((fromIndex: number, toIndex: number) => {
-    reorderTabItems(fromIndex, toIndex);
-  }, [reorderTabItems]);
+  const handleReorder = useCallback((data: TabItem[]) => {
+    setTabItems(data);
+  }, [setTabItems]);
 
   const handleResetToDefault = () => {
     Alert.alert('Reset Tab Bar', 'Reset to show all homes?', [
@@ -313,23 +182,14 @@ export default function AppearanceScreen() {
         style={styles.scrollView}
         contentContainerStyle={styles.content}
       >
-        <View style={styles.centeredContent}>
-          <TabBarPreview
-            items={tabItems}
-            homes={homes}
-            onRemove={handleRemove}
-            onReorder={handleReorder}
-            onAddTab={() => setShowAddModal(true)}
-            onReset={handleResetToDefault}
-          />
-
-          <View style={styles.infoCard}>
-            <FontAwesome name="info-circle" size={16} color="#8E8E93" />
-            <Text style={styles.infoText}>
-              Maximum of 5 tabs in the navigation bar.
-            </Text>
-          </View>
-        </View>
+        <TabBarConfig
+          items={tabItems}
+          homes={homes}
+          onRemove={handleRemove}
+          onReorder={handleReorder}
+          onAddTab={() => setShowAddModal(true)}
+          onReset={handleResetToDefault}
+        />
       </ScrollView>
 
       <AddTabModal
@@ -388,7 +248,7 @@ function AddTabModal({
         <View style={modalStyles.header}>
           {selectedHome ? (
             <TouchableOpacity onPress={handleBack} style={modalStyles.backButton}>
-              <FontAwesome name="chevron-left" size={16} color="#007AFF" />
+              <Ionicons name="chevron-back" size={20} color="#007AFF" />
               <Text style={modalStyles.backText}>Back</Text>
             </TouchableOpacity>
           ) : (
@@ -427,11 +287,11 @@ function AddTabModal({
                         }
                         disabled={added}
                       >
-                        <FontAwesome name="cube" size={20} color={added ? '#ccc' : '#007AFF'} />
+                        <Ionicons name="enter-outline" size={20} color={added ? '#ccc' : '#007AFF'} />
                         <Text style={[modalStyles.rowTitle, added && modalStyles.disabledText]}>
                           {room.name}
                         </Text>
-                        {added && <FontAwesome name="check" size={16} color="#34C759" />}
+                        {added && <Ionicons name="checkmark" size={18} color="#34C759" />}
                       </TouchableOpacity>
                     );
                   })
@@ -459,11 +319,11 @@ function AddTabModal({
                           }
                           disabled={added}
                         >
-                          <FontAwesome name="th-large" size={20} color={added ? '#ccc' : '#007AFF'} />
+                          <Ionicons name="grid" size={20} color={added ? '#ccc' : '#007AFF'} />
                           <Text style={[modalStyles.rowTitle, added && modalStyles.disabledText]}>
                             {group.name}
                           </Text>
-                          {added && <FontAwesome name="check" size={16} color="#34C759" />}
+                          {added && <Ionicons name="checkmark" size={18} color="#34C759" />}
                         </TouchableOpacity>
                       );
                     })}
@@ -484,14 +344,14 @@ function AddTabModal({
                         onPress={() => !added && onSelect({ type: 'home', id: home.id, name: home.name })}
                         disabled={added}
                       >
-                        <FontAwesome name="home" size={20} color={added ? '#ccc' : '#007AFF'} />
+                        <Ionicons name="home" size={20} color={added ? '#ccc' : '#007AFF'} />
                         <Text style={[modalStyles.rowTitle, added && modalStyles.disabledText]}>
                           {home.name}
                         </Text>
-                        {added && <FontAwesome name="check" size={16} color="#34C759" />}
+                        {added && <Ionicons name="checkmark" size={18} color="#34C759" />}
                       </TouchableOpacity>
                       <TouchableOpacity onPress={() => setSelectedHome(home)} style={modalStyles.chevronButton}>
-                        <FontAwesome name="chevron-right" size={14} color="#999" />
+                        <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
                       </TouchableOpacity>
                     </View>
                   );
@@ -518,11 +378,11 @@ function AddTabModal({
                           }
                           disabled={added}
                         >
-                          <FontAwesome name="folder" size={20} color={added ? '#ccc' : '#007AFF'} />
+                          <Ionicons name="folder" size={20} color={added ? '#ccc' : '#007AFF'} />
                           <Text style={[modalStyles.rowTitle, added && modalStyles.disabledText]}>
                             {collection.name}
                           </Text>
-                          {added && <FontAwesome name="check" size={16} color="#34C759" />}
+                          {added && <Ionicons name="checkmark" size={18} color="#34C759" />}
                         </TouchableOpacity>
                       );
                     })}
@@ -546,131 +406,84 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flexGrow: 1,
-    justifyContent: 'center',
     padding: 16,
   },
-  centeredContent: {
-    width: '100%',
+  section: {
+    marginBottom: 24,
   },
   sectionTitle: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#888',
-    marginBottom: 12,
+    color: '#6D6D72',
+    marginBottom: 8,
+    marginLeft: 16,
+    textTransform: 'uppercase',
   },
-  tabPreviewContainer: {
+  card: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
+    overflow: 'hidden',
   },
-  tabBarMockup: {
-    backgroundColor: '#f8f8f8',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e5e5ea',
-    minHeight: TAB_PREVIEW_HEIGHT,
-    justifyContent: 'center',
-  },
-  tabPreviewScroll: {
-    flexDirection: 'row',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    alignItems: 'center',
-    minHeight: TAB_PREVIEW_HEIGHT,
-  },
-  tabPreviewItem: {
-    alignItems: 'center',
-    width: TAB_ITEM_SIZE,
-    marginHorizontal: TAB_ITEM_MARGIN,
-  },
-  tabIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  tabPreviewLabel: {
-    fontSize: 10,
-    color: '#007AFF',
-    marginTop: 4,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  defaultLabel: {
-    color: '#8E8E93',
-  },
-  removeButton: {
-    position: 'absolute',
-    top: -4,
-    right: 2,
-    zIndex: 10,
-  },
-  removeButtonCircle: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#FF3B30',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  defaultHint: {
-    fontSize: 12,
-    color: '#8E8E93',
-    textAlign: 'center',
-    marginTop: 12,
-  },
-  dragHint: {
-    fontSize: 12,
-    color: '#8E8E93',
-    textAlign: 'center',
-    marginTop: 12,
-  },
-  previewActions: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 16,
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#e5e5ea',
-  },
-  actionButton: {
+  sortableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: '#f8f8f8',
+    backgroundColor: '#fff',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#C6C6C8',
+    gap: 12,
   },
-  actionButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+  sortableRowActive: {
+    backgroundColor: '#f0f0f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4,
   },
-  infoCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 12,
-    gap: 8,
-    backgroundColor: '#f8f8f8',
-    borderRadius: 8,
+  dragHandle: {
+    marginRight: 4,
   },
-  infoText: {
+  sortableLabel: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 17,
+    color: '#000',
+  },
+  emptyState: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 15,
     color: '#8E8E93',
-    lineHeight: 18,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingHorizontal: 4,
+  },
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  addButtonText: {
+    fontSize: 17,
+    color: '#007AFF',
+  },
+  resetButton: {},
+  resetButtonText: {
+    fontSize: 17,
+    color: '#FF3B30',
+  },
+  footerHint: {
+    fontSize: 13,
+    color: '#6D6D72',
+    marginTop: 8,
+    marginLeft: 4,
   },
 });
 

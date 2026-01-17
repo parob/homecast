@@ -231,14 +231,25 @@ class PubSubRouter:
             data = json.loads(message.data.decode("utf-8"))
             msg_type = data.get("type", "unknown")
             correlation_id = data.get("correlation_id", "")[:8]
-            logger.info(f"Received Pub/Sub message: type={msg_type}, correlation={correlation_id}")
+            source_slot = data.get("source_slot", "?")
+            device_id = data.get("device_id", "")[:8] if data.get("device_id") else "?"
+            action = data.get("action", "?")
+
+            if msg_type == "request":
+                logger.info(f"Received Pub/Sub REQUEST: action={action}, device={device_id}, from={source_slot}, correlation={correlation_id}")
+            elif msg_type == "response":
+                logger.info(f"Received Pub/Sub RESPONSE: correlation={correlation_id}")
+            else:
+                logger.info(f"Received Pub/Sub message: type={msg_type}, correlation={correlation_id}")
 
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._handle_message(data), self._loop)
+            else:
+                logger.error(f"Event loop not available! loop={self._loop}, running={self._loop.is_running() if self._loop else 'N/A'}")
 
             message.ack()
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error processing Pub/Sub message: {e}", exc_info=True)
             message.nack()
 
     async def disconnect(self):
@@ -280,10 +291,14 @@ class PubSubRouter:
         device_id: str,
         action: str,
         payload: Dict[str, Any],
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        is_retry: bool = False
     ) -> Dict[str, Any]:
         """
         Send a request to a device, routing via Pub/Sub if needed.
+
+        If the target instance reports DEVICE_NOT_HERE (stale routing), this
+        will refresh the session and retry once.
         """
         if not self._enabled:
             if self._local_handler:
@@ -292,27 +307,34 @@ class PubSubRouter:
 
         # Check local connections first (fast path - avoids DB lookup)
         if self._local_device_checker and self._local_device_checker(device_id):
-            logger.debug(f"Device {device_id} is local, bypassing Pub/Sub")
+            logger.info(f"[{action}] Device {device_id[:8]} is LOCAL, handling directly")
             if self._local_handler:
                 return await self._local_handler(device_id, action, payload, timeout)
             raise ValueError("No local handler configured")
 
         # Look up device session from database
+        logger.info(f"[{action}] Device {device_id[:8]} not local, looking up session...")
         with get_session() as db:
             session_record = SessionRepository.get_device_session(db, device_id, include_stale=False)
             if not session_record:
+                logger.warning(f"[{action}] Device {device_id[:8]} session not found (stale or doesn't exist)")
                 raise ValueError(f"Device {device_id} not connected")
 
             device_instance_id = session_record.instance_id
+            logger.info(f"[{action}] Device {device_id[:8]} session found: instance_id={device_instance_id}, last_heartbeat={session_record.last_heartbeat}")
 
         if not device_instance_id:
             raise ValueError(f"Device {device_id} has no instance_id")
 
+        my_instance_id = _get_instance_id()
         # Double-check: if device is on this instance, handle locally
-        if device_instance_id == _get_instance_id():
+        if device_instance_id == my_instance_id:
+            logger.info(f"[{action}] Device {device_id[:8]} is on THIS instance ({my_instance_id}), but not in local connections - handling locally anyway")
             if self._local_handler:
                 return await self._local_handler(device_id, action, payload, timeout)
             raise ValueError("No local handler configured")
+
+        logger.info(f"[{action}] Device {device_id[:8]} is on REMOTE instance: {device_instance_id} (we are {my_instance_id})")
 
         # Look up which slot the target instance has claimed
         with get_session() as session:
@@ -354,15 +376,28 @@ class PubSubRouter:
 
             # Wait for result using run_in_executor (ThreadFuture.result blocks)
             loop = asyncio.get_running_loop()
+            logger.info(f"[{correlation_id[:8]}] Waiting for response (timeout={timeout}s)...")
             try:
                 result = await loop.run_in_executor(None, future.result, timeout)
+                logger.info(f"[{correlation_id[:8]}] Response received!")
             except concurrent.futures.TimeoutError:
+                pending_keys = [k[:8] for k in list(self._pending_requests.keys())]
+                logger.error(f"[{correlation_id[:8]}] TIMEOUT after {timeout}s waiting for device {device_id[:8]}. Pending requests: {pending_keys}")
                 raise TimeoutError(f"Device {device_id} did not respond within {timeout}s")
             except Exception as e:
                 raise ValueError(f"Request failed: {type(e).__name__}: {e}")
 
             if "error" in result:
-                raise ValueError(result["error"].get("message", "Unknown error"))
+                error_code = result["error"].get("code")
+                error_message = result["error"].get("message", "Unknown error")
+
+                # If device moved to a different instance, retry once with fresh session lookup
+                if error_code == "DEVICE_NOT_HERE" and not is_retry:
+                    logger.info(f"[{correlation_id[:8]}] Device not at expected instance, refreshing session and retrying...")
+                    # Retry will do a fresh session lookup from the database
+                    return await self.send_request(device_id, action, payload, timeout, is_retry=True)
+
+                raise ValueError(error_message)
 
             return result.get("payload", {})
         finally:
@@ -545,19 +580,65 @@ class PubSubRouter:
         action = data["action"]
         payload = data.get("payload", {})
 
-        logger.info(f"Handling remote request {correlation_id[:8]}: device={device_id}, action={action}, reply_to={source_slot}")
+        # Check if device is actually connected to this instance
+        is_local = self._local_device_checker(device_id) if self._local_device_checker else False
+        logger.info(f"Handling remote request {correlation_id[:8]}: device={device_id[:8]}, action={action}, reply_to={source_slot}, device_is_local={is_local}")
+
+        # Fail fast: if device isn't actually connected here, return error immediately
+        # This happens when session.instance_id is stale (device moved or instance died)
+        if not is_local:
+            logger.warning(f"[{correlation_id[:8]}] Device {device_id[:8]} routed here but NOT in local connections!")
+            response = {
+                "type": "response",
+                "correlation_id": correlation_id,
+                "error": {"code": "DEVICE_NOT_HERE", "message": f"Device {device_id} not connected to this instance"}
+            }
+            # Send error response back to source slot
+            source_topic = self._get_topic_path(source_slot)
+            message_data = json.dumps(response).encode("utf-8")
+            try:
+                self._publisher.publish(source_topic, message_data).result(timeout=5)
+                logger.info(f"Sent DEVICE_NOT_HERE error response {correlation_id[:8]} to slot {source_slot}")
+            except NotFound:
+                logger.warning(f"Topic not found for slot {source_slot} - cleaning up")
+                self._handle_deleted_topic(source_slot)
+            except Exception as e:
+                logger.error(f"Failed to publish error response to slot {source_slot}: {e}")
+            return
+
+        # Add routing metadata for the Mac app to see the journey
+        # source_slot tells us which Pub/Sub slot the request came from
+        # We look up the instance that owns that slot to get the source instance ID
+        source_instance = None
+        with get_session() as db:
+            from homecast.models.db.models import TopicSlot
+            slot_record = db.get(TopicSlot, source_slot)
+            if slot_record:
+                source_instance = slot_record.instance_id
+
+        routing_metadata = {
+            "sourceInstance": source_instance or source_slot,  # Instance where web client is
+            "sourceSlot": source_slot,
+            "targetInstance": _get_instance_id(),  # Instance where Mac app is (this one)
+            "routedViaPubsub": True,
+            "directConnection": False
+        }
 
         try:
             if self._local_handler:
-                result = await self._local_handler(device_id, action, payload, 30.0)
+                logger.info(f"[{correlation_id[:8]}] Calling local_handler for device {device_id[:8]}, action={action}")
+                result = await self._local_handler(device_id, action, payload, 30.0, routing_metadata)
+                logger.info(f"[{correlation_id[:8]}] local_handler succeeded for {action}")
                 response = {"type": "response", "correlation_id": correlation_id, "payload": result}
             else:
+                logger.error(f"[{correlation_id[:8]}] No local handler configured!")
                 response = {
                     "type": "response",
                     "correlation_id": correlation_id,
                     "error": {"code": "NO_HANDLER", "message": "No local handler"}
                 }
         except Exception as e:
+            logger.error(f"[{correlation_id[:8]}] local_handler failed for {action}: {type(e).__name__}: {e}")
             response = {
                 "type": "response",
                 "correlation_id": correlation_id,

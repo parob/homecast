@@ -1,8 +1,9 @@
-import { ApolloClient, InMemoryCache, createHttpLink, from } from '@apollo/client/core';
+import { ApolloClient, InMemoryCache, createHttpLink, from, ApolloLink } from '@apollo/client/core';
 import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
 import { GRAPHQL_URL } from '@/constants/api';
 import { useAuthStore } from '@/stores/authStore';
+import { generateTraceId } from '@/utils/tracing';
 
 // HTTP link for GraphQL requests
 const httpLink = createHttpLink({
@@ -18,6 +19,27 @@ const authLink = setContext(async (_, { headers }) => {
       authorization: token ? `Bearer ${token}` : '',
     },
   };
+});
+
+// Trace link to add trace headers for mutations (for distributed tracing)
+const traceLink = new ApolloLink((operation, forward) => {
+  // Check if this is a mutation
+  const definition = operation.query.definitions[0];
+  const isMutation = definition && 'operation' in definition && definition.operation === 'mutation';
+
+  if (isMutation) {
+    const traceId = generateTraceId();
+    operation.setContext(({ headers = {} }: { headers?: Record<string, string> }) => ({
+      headers: {
+        ...headers,
+        'X-Trace-ID': traceId,
+        'X-Client-Timestamp': new Date().toISOString(),
+        'X-Client-Type': 'native',
+      },
+    }));
+  }
+
+  return forward(operation);
 });
 
 // Error handling link - using any to avoid Apollo v4 type issues
@@ -92,7 +114,7 @@ const cache = new InMemoryCache({
 
 // Create Apollo Client
 export const apolloClient = new ApolloClient({
-  link: from([errorLink, authLink, httpLink]),
+  link: from([errorLink, authLink, traceLink, httpLink]),
   cache,
   defaultOptions: {
     watchQuery: {

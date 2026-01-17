@@ -152,6 +152,17 @@ class ConnectionManager:
 
         logger.info(f"Device connected: {device_id} (user: {auth.user_id}, instance: {instance_id})")
 
+        # Log device connection to system logs
+        try:
+            from homecast.utils.system_logger import SystemLogger
+            SystemLogger.info(
+                "websocket", "Device connected",
+                user_id=auth.user_id, device_id=device_id,
+                metadata={"instance_id": instance_id, "device_name": name}
+            )
+        except Exception:
+            pass  # Don't let logging errors affect connection
+
         # Proactively fetch and cache homes for MCP routing
         asyncio.create_task(self._fetch_and_cache_homes(device_id))
 
@@ -174,8 +185,11 @@ class ConnectionManager:
 
     async def disconnect(self, device_id: str):
         """Handle device disconnection."""
+        # Get user_id before removing connection (for logging)
+        user_id = None
         async with self.lock:
             if device_id in self.connections:
+                user_id = self.connections[device_id].user_id
                 del self.connections[device_id]
 
         # Delete session from database
@@ -184,12 +198,23 @@ class ConnectionManager:
 
         logger.info(f"Device disconnected: {device_id}")
 
+        # Log device disconnection to system logs
+        try:
+            from homecast.utils.system_logger import SystemLogger
+            SystemLogger.info(
+                "websocket", "Device disconnected",
+                user_id=user_id, device_id=device_id
+            )
+        except Exception:
+            pass  # Don't let logging errors affect disconnection
+
     async def send_request(
         self,
         device_id: str,
         action: str,
         payload: Dict[str, Any],
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        routing_metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Send a request to a device and wait for response.
@@ -201,6 +226,7 @@ class ConnectionManager:
             action: Action name (e.g., "homes.list", "characteristic.set")
             payload: Action payload
             timeout: Timeout in seconds
+            routing_metadata: Optional routing info for debugging (from Pub/Sub router)
 
         Returns:
             Response payload from the device
@@ -227,11 +253,25 @@ class ConnectionManager:
         try:
             # Send request to device (PROTOCOL.md format)
             conn = self.connections[device_id]
+            instance_id = pubsub_router.instance_id if pubsub_router.enabled else "local"
+
+            # Use provided routing metadata (from Pub/Sub) or create default (direct connection)
+            if routing_metadata:
+                ws_routing = routing_metadata
+            else:
+                ws_routing = {
+                    "sourceInstance": instance_id,  # Web client connected here
+                    "targetInstance": instance_id,  # Mac app connected here (same for direct)
+                    "routedViaPubsub": False,
+                    "directConnection": True
+                }
+
             ws_message = {
                 "id": request_id,
                 "type": "request",
                 "action": action,
-                "payload": payload
+                "payload": payload,
+                "_routing": ws_routing
             }
             logger.info(f"[{request_id[:8]}] WS SEND to {device_id}: {ws_message}")
             t3 = time.time()
@@ -318,9 +358,11 @@ class ConnectionManager:
             logger.debug(f"Device {device_id} status: {payload}")
 
         elif msg_type == "pong":
-            # Heartbeat response - update last seen time in database
+            # Heartbeat response - update last seen time and instance_id in database
+            # Updating instance_id on every heartbeat ensures session always reflects
+            # the current location of the device, preventing stale routing
             with get_session() as db:
-                SessionRepository.update_heartbeat_by_device(db, device_id)
+                SessionRepository.update_heartbeat_by_device(db, device_id, instance_id=pubsub_router.instance_id)
 
         elif msg_type == "event":
             # Event from Mac app (e.g., characteristic update)

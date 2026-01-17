@@ -35,6 +35,17 @@ def require_auth() -> AuthContext:
     return auth
 
 
+def require_admin() -> AuthContext:
+    """Get auth context or raise GraphQLError if not admin."""
+    from homecast.models.db.models import User
+    auth = require_auth()
+    with get_session() as session:
+        user = session.get(User, auth.user_id)
+        if not user or not user.is_admin:
+            raise GraphQLError("Admin access required")
+    return auth
+
+
 # --- Response Types ---
 
 @dataclass
@@ -55,6 +66,7 @@ class UserInfo:
     name: Optional[str]
     created_at: str
     last_login_at: Optional[str]
+    is_admin: bool = False
 
 
 @dataclass
@@ -310,6 +322,145 @@ class DeleteEntityAccessResult:
     error: Optional[str] = None
 
 
+# --- Admin Types ---
+
+@dataclass
+class AdminUserSummary:
+    """Summary of a user for admin user list."""
+    id: str
+    email: str
+    name: Optional[str]
+    created_at: str
+    last_login_at: Optional[str]
+    is_active: bool
+    is_admin: bool
+    device_count: int
+    home_count: int
+
+
+@dataclass
+class AdminUsersResult:
+    """Result of admin user list query."""
+    users: List[AdminUserSummary]
+    total_count: int
+    has_more: bool
+
+
+@dataclass
+class AdminDeviceInfo:
+    """Device info for admin panel."""
+    id: str
+    device_id: Optional[str]
+    name: Optional[str]
+    session_type: str
+    last_seen_at: Optional[str]
+
+
+@dataclass
+class AdminHomeInfo:
+    """Home info for admin panel."""
+    id: str
+    name: str
+
+
+@dataclass
+class AdminUserDetail:
+    """Detailed user information for admin panel."""
+    id: str
+    email: str
+    name: Optional[str]
+    created_at: str
+    last_login_at: Optional[str]
+    is_active: bool
+    is_admin: bool
+    devices: List[AdminDeviceInfo]
+    homes: List[AdminHomeInfo]
+    settings_json: Optional[str]
+
+
+@dataclass
+class AdminLogEntry:
+    """System log entry for admin panel."""
+    id: str
+    timestamp: str
+    level: str
+    source: str
+    message: str
+    user_id: Optional[str]
+    user_email: Optional[str]
+    device_id: Optional[str]
+    trace_id: Optional[str]
+    span_name: Optional[str]
+    action: Optional[str]
+    accessory_id: Optional[str]
+    accessory_name: Optional[str]
+    success: Optional[bool]
+    error: Optional[str]
+    latency_ms: Optional[int]
+    metadata: Optional[str]
+
+
+@dataclass
+class AdminLogsResult:
+    """Result of admin logs query."""
+    logs: List[AdminLogEntry]
+    total_count: int
+
+
+@dataclass
+class AdminServerInstance:
+    """Server instance info for admin panel."""
+    instance_id: str
+    slot_name: Optional[str]
+    last_heartbeat: Optional[str]
+
+
+@dataclass
+class AdminSystemDiagnostics:
+    """System-wide diagnostics for admin panel."""
+    server_instances: List[AdminServerInstance]
+    pubsub_enabled: bool
+    pubsub_active_slots: int
+    total_websocket_connections: int
+    web_connections: int
+    device_connections: int
+    recent_errors: List[AdminLogEntry]
+
+
+@dataclass
+class AdminCommandHistory:
+    """Command history entry for user diagnostics."""
+    timestamp: str
+    action: Optional[str]
+    accessory_id: Optional[str]
+    accessory_name: Optional[str]
+    success: Optional[bool]
+    latency_ms: Optional[int]
+    error: Optional[str]
+
+
+@dataclass
+class AdminConnectionEvent:
+    """Connection event for user diagnostics."""
+    timestamp: str
+    event: str
+    details: Optional[str]
+
+
+@dataclass
+class AdminUserDiagnostics:
+    """Per-user diagnostics for admin panel."""
+    user_id: str
+    user_email: str
+    websocket_connected: bool
+    device_connected: bool
+    routing_mode: str
+    device_name: Optional[str]
+    device_last_seen: Optional[str]
+    recent_commands: List[AdminCommandHistory]
+    connection_history: List[AdminConnectionEvent]
+
+
 # --- Helper Functions ---
 
 def parse_characteristic(data: dict) -> HomeKitCharacteristic:
@@ -558,7 +709,8 @@ class HomecastAPI:
                 email=user.email,
                 name=user.name,
                 created_at=user.created_at.isoformat(),
-                last_login_at=user.last_login_at.isoformat() if user.last_login_at else None
+                last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+                is_admin=user.is_admin
             )
 
     @field
@@ -1084,12 +1236,27 @@ class HomecastAPI:
         Returns:
             Result with success status
         """
+        import time
         from homecast.websocket.handler import route_request, get_user_device_id
+        from homecast.utils.system_logger import SystemLogger, get_trace_context_from_request, generate_trace_id
 
+        start_time = time.time()
         auth = require_auth()
+
+        # Get trace context from request headers or generate new one
+        trace_ctx = get_trace_context_from_request()
+        trace_id = trace_ctx['trace_id'] if trace_ctx else generate_trace_id()
+
         device_id = await get_user_device_id(auth.user_id)
 
         if not device_id:
+            SystemLogger.warning(
+                "api", "set_characteristic failed - no connected device",
+                user_id=auth.user_id, trace_id=trace_id, span_name="server_received",
+                action="set_characteristic", accessory_id=accessory_id,
+                characteristic_type=characteristic_type, success=False,
+                error="No connected device"
+            )
             raise ValueError("No connected device")
 
         # Parse the JSON value
@@ -1097,6 +1264,15 @@ class HomecastAPI:
             parsed_value = json.loads(value)
         except json.JSONDecodeError:
             raise ValueError(f"Invalid JSON value: {value}")
+
+        # Log: server received
+        SystemLogger.info(
+            "api", "set_characteristic received",
+            user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+            span_name="server_received", action="set_characteristic",
+            accessory_id=accessory_id, characteristic_type=characteristic_type,
+            value=value
+        )
 
         try:
             result = await route_request(
@@ -1108,26 +1284,73 @@ class HomecastAPI:
                     "value": parsed_value
                 }
             )
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            success = result.get("success", True)
+
+            # Log: response sent
+            SystemLogger.info(
+                "api", "set_characteristic completed",
+                user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+                span_name="response_sent", action="set_characteristic",
+                accessory_id=accessory_id, characteristic_type=characteristic_type,
+                value=json.dumps(result.get("value", parsed_value)),
+                success=success, latency_ms=latency_ms
+            )
+
             return SetCharacteristicResult(
-                success=result.get("success", True),
+                success=success,
                 accessory_id=accessory_id,
                 characteristic_type=characteristic_type,
                 value=json.dumps(result.get("value", parsed_value))
             )
         except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Log: error
+            SystemLogger.error(
+                "api", f"set_characteristic failed: {e}",
+                user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+                span_name="response_sent", action="set_characteristic",
+                accessory_id=accessory_id, characteristic_type=characteristic_type,
+                success=False, error=str(e), latency_ms=latency_ms
+            )
+
             logger.error(f"characteristic.set error: {e}")
             raise
 
     @field(mutable=True)
     async def execute_scene(self, scene_id: str) -> ExecuteSceneResult:
         """Execute a scene."""
+        import time
         from homecast.websocket.handler import route_request, get_user_device_id
+        from homecast.utils.system_logger import SystemLogger, get_trace_context_from_request, generate_trace_id
 
+        start_time = time.time()
         auth = require_auth()
+
+        # Get trace context from request headers or generate new one
+        trace_ctx = get_trace_context_from_request()
+        trace_id = trace_ctx['trace_id'] if trace_ctx else generate_trace_id()
+
         device_id = await get_user_device_id(auth.user_id)
 
         if not device_id:
+            SystemLogger.warning(
+                "api", "execute_scene failed - no connected device",
+                user_id=auth.user_id, trace_id=trace_id, span_name="server_received",
+                action="execute_scene", success=False, error="No connected device",
+                metadata={"scene_id": scene_id}
+            )
             raise ValueError("No connected device")
+
+        # Log: server received
+        SystemLogger.info(
+            "api", "execute_scene received",
+            user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+            span_name="server_received", action="execute_scene",
+            metadata={"scene_id": scene_id}
+        )
 
         try:
             result = await route_request(
@@ -1135,11 +1358,35 @@ class HomecastAPI:
                 action="scene.execute",
                 payload={"sceneId": scene_id}
             )
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            success = result.get("success", True)
+
+            # Log: response sent
+            SystemLogger.info(
+                "api", "execute_scene completed",
+                user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+                span_name="response_sent", action="execute_scene",
+                success=success, latency_ms=latency_ms,
+                metadata={"scene_id": scene_id}
+            )
+
             return ExecuteSceneResult(
-                success=result.get("success", True),
+                success=success,
                 scene_id=scene_id
             )
         except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Log: error
+            SystemLogger.error(
+                "api", f"execute_scene failed: {e}",
+                user_id=auth.user_id, device_id=device_id, trace_id=trace_id,
+                span_name="response_sent", action="execute_scene",
+                success=False, error=str(e), latency_ms=latency_ms,
+                metadata={"scene_id": scene_id}
+            )
+
             logger.error(f"scene.execute error: {e}")
             raise
 
@@ -2445,3 +2692,445 @@ class HomecastAPI:
             return StoredEntityRepository.delete_entity(
                 session, auth.user_id, 'room_group', group_id
             )
+
+    # --- Admin Endpoints (require admin role) ---
+
+    @field
+    async def admin_users(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None
+    ) -> AdminUsersResult:
+        """
+        Get all users with pagination. Requires admin role.
+
+        Args:
+            limit: Max number of users to return (default 50)
+            offset: Number of users to skip (for pagination)
+            search: Optional search query (email or name)
+
+        Returns:
+            AdminUsersResult with users and pagination info
+        """
+        from homecast.models.db.repositories import AdminRepository
+
+        require_admin()
+
+        with get_session() as session:
+            users_data, total_count = AdminRepository.get_all_users(
+                session, limit=limit, offset=offset, search=search
+            )
+
+            users = [
+                AdminUserSummary(
+                    id=u["id"],
+                    email=u["email"],
+                    name=u["name"],
+                    created_at=u["created_at"],
+                    last_login_at=u["last_login_at"],
+                    is_active=u["is_active"],
+                    is_admin=u["is_admin"],
+                    device_count=u["device_count"],
+                    home_count=u["home_count"],
+                )
+                for u in users_data
+            ]
+
+            return AdminUsersResult(
+                users=users,
+                total_count=total_count,
+                has_more=(offset + limit) < total_count
+            )
+
+    @field
+    async def admin_user_detail(self, user_id: str) -> Optional[AdminUserDetail]:
+        """
+        Get detailed information about a user. Requires admin role.
+
+        Args:
+            user_id: User UUID
+
+        Returns:
+            AdminUserDetail or None if not found
+        """
+        from homecast.models.db.repositories import AdminRepository
+        import uuid as uuid_module
+
+        require_admin()
+
+        try:
+            uid = uuid_module.UUID(user_id)
+        except ValueError:
+            return None
+
+        with get_session() as session:
+            user_data = AdminRepository.get_user_with_details(session, uid)
+            if not user_data:
+                return None
+
+            return AdminUserDetail(
+                id=user_data["id"],
+                email=user_data["email"],
+                name=user_data["name"],
+                created_at=user_data["created_at"],
+                last_login_at=user_data["last_login_at"],
+                is_active=user_data["is_active"],
+                is_admin=user_data["is_admin"],
+                devices=[
+                    AdminDeviceInfo(
+                        id=d["id"],
+                        device_id=d["device_id"],
+                        name=d["name"],
+                        session_type=d["session_type"],
+                        last_seen_at=d["last_seen_at"],
+                    )
+                    for d in user_data["devices"]
+                ],
+                homes=[
+                    AdminHomeInfo(id=h["id"], name=h["name"])
+                    for h in user_data["homes"]
+                ],
+                settings_json=user_data["settings_json"],
+            )
+
+    @field
+    async def admin_logs(
+        self,
+        level: Optional[str] = None,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        success: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> AdminLogsResult:
+        """
+        Get system logs with filtering. Requires admin role.
+
+        Args:
+            level: Filter by log level (debug, info, warning, error)
+            source: Filter by log source (api, websocket, pubsub, etc.)
+            user_id: Filter by user UUID
+            trace_id: Filter by trace ID
+            start_time: Filter by start time (ISO 8601)
+            end_time: Filter by end time (ISO 8601)
+            success: Filter by success status
+            limit: Max number of logs to return (default 100)
+            offset: Number of logs to skip (for pagination)
+
+        Returns:
+            AdminLogsResult with logs and total count
+        """
+        from homecast.models.db.repositories import AdminRepository
+        from datetime import datetime
+        import uuid as uuid_module
+
+        require_admin()
+
+        # Parse optional parameters
+        uid = None
+        if user_id:
+            try:
+                uid = uuid_module.UUID(user_id)
+            except ValueError:
+                pass
+
+        start_dt = None
+        if start_time:
+            try:
+                start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+
+        end_dt = None
+        if end_time:
+            try:
+                end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+
+        with get_session() as session:
+            logs_data, total_count = AdminRepository.get_logs(
+                session,
+                level=level,
+                source=source,
+                user_id=uid,
+                trace_id=trace_id,
+                start_time=start_dt,
+                end_time=end_dt,
+                success=success,
+                limit=limit,
+                offset=offset
+            )
+
+            logs = [
+                AdminLogEntry(
+                    id=log["id"],
+                    timestamp=log["timestamp"],
+                    level=log["level"],
+                    source=log["source"],
+                    message=log["message"],
+                    user_id=log["user_id"],
+                    user_email=log["user_email"],
+                    device_id=log["device_id"],
+                    trace_id=log["trace_id"],
+                    span_name=log["span_name"],
+                    action=log["action"],
+                    accessory_id=log["accessory_id"],
+                    accessory_name=log["accessory_name"],
+                    success=log["success"],
+                    error=log["error"],
+                    latency_ms=log["latency_ms"],
+                    metadata=log["metadata"],
+                )
+                for log in logs_data
+            ]
+
+            return AdminLogsResult(logs=logs, total_count=total_count)
+
+    @field
+    async def admin_trace(self, trace_id: str) -> List[AdminLogEntry]:
+        """
+        Get all log entries for a trace. Requires admin role.
+
+        Args:
+            trace_id: The trace ID to look up
+
+        Returns:
+            List of AdminLogEntry ordered by timestamp
+        """
+        from homecast.models.db.repositories import AdminRepository
+
+        require_admin()
+
+        with get_session() as session:
+            logs_data = AdminRepository.get_trace(session, trace_id)
+
+            return [
+                AdminLogEntry(
+                    id=log["id"],
+                    timestamp=log["timestamp"],
+                    level=log["level"],
+                    source=log["source"],
+                    message=log["message"],
+                    user_id=log["user_id"],
+                    user_email=log["user_email"],
+                    device_id=log["device_id"],
+                    trace_id=log["trace_id"],
+                    span_name=log["span_name"],
+                    action=log["action"],
+                    accessory_id=log["accessory_id"],
+                    accessory_name=log["accessory_name"],
+                    success=log["success"],
+                    error=log["error"],
+                    latency_ms=log["latency_ms"],
+                    metadata=log["metadata"],
+                )
+                for log in logs_data
+            ]
+
+    @field
+    async def admin_diagnostics(self) -> AdminSystemDiagnostics:
+        """
+        Get system-wide diagnostics. Requires admin role.
+
+        Returns:
+            AdminSystemDiagnostics with server instances and connection info
+        """
+        from homecast.models.db.repositories import AdminRepository
+
+        require_admin()
+
+        with get_session() as session:
+            diag = AdminRepository.get_system_diagnostics(session)
+
+            return AdminSystemDiagnostics(
+                server_instances=[
+                    AdminServerInstance(
+                        instance_id=s["instance_id"],
+                        slot_name=s.get("slot_name"),
+                        last_heartbeat=s.get("last_heartbeat"),
+                    )
+                    for s in diag["server_instances"]
+                ],
+                pubsub_enabled=diag["pubsub_enabled"],
+                pubsub_active_slots=diag["pubsub_active_slots"],
+                total_websocket_connections=diag["total_websocket_connections"],
+                web_connections=diag["web_connections"],
+                device_connections=diag["device_connections"],
+                recent_errors=[
+                    AdminLogEntry(
+                        id=log["id"],
+                        timestamp=log["timestamp"],
+                        level=log["level"],
+                        source=log["source"],
+                        message=log["message"],
+                        user_id=log["user_id"],
+                        user_email=log["user_email"],
+                        device_id=log["device_id"],
+                        trace_id=log.get("trace_id"),
+                        span_name=log.get("span_name"),
+                        action=log.get("action"),
+                        accessory_id=log.get("accessory_id"),
+                        accessory_name=log.get("accessory_name"),
+                        success=log.get("success"),
+                        error=log.get("error"),
+                        latency_ms=log.get("latency_ms"),
+                        metadata=log.get("metadata"),
+                    )
+                    for log in diag["recent_errors"]
+                ],
+            )
+
+    @field
+    async def admin_user_diagnostics(self, user_id: str) -> Optional[AdminUserDiagnostics]:
+        """
+        Get diagnostics for a specific user. Requires admin role.
+
+        Args:
+            user_id: User UUID
+
+        Returns:
+            AdminUserDiagnostics or None if user not found
+        """
+        from homecast.models.db.repositories import AdminRepository
+        import uuid as uuid_module
+
+        require_admin()
+
+        try:
+            uid = uuid_module.UUID(user_id)
+        except ValueError:
+            return None
+
+        with get_session() as session:
+            diag = AdminRepository.get_user_diagnostics(session, uid)
+            if not diag:
+                return None
+
+            return AdminUserDiagnostics(
+                user_id=diag["user_id"],
+                user_email=diag["user_email"],
+                websocket_connected=diag["websocket_connected"],
+                device_connected=diag["device_connected"],
+                routing_mode=diag["routing_mode"],
+                device_name=diag["device_name"],
+                device_last_seen=diag["device_last_seen"],
+                recent_commands=[
+                    AdminCommandHistory(
+                        timestamp=cmd["timestamp"],
+                        action=cmd["action"],
+                        accessory_id=cmd["accessory_id"],
+                        accessory_name=cmd["accessory_name"],
+                        success=cmd["success"],
+                        latency_ms=cmd["latency_ms"],
+                        error=cmd["error"],
+                    )
+                    for cmd in diag["recent_commands"]
+                ],
+                connection_history=[
+                    AdminConnectionEvent(
+                        timestamp=evt["timestamp"],
+                        event=evt["event"],
+                        details=evt["details"],
+                    )
+                    for evt in diag["connection_history"]
+                ],
+            )
+
+    @field(mutable=True)
+    async def admin_toggle_user_active(self, user_id: str, is_active: bool) -> bool:
+        """
+        Enable or disable a user account. Requires admin role.
+
+        Args:
+            user_id: User UUID
+            is_active: New active status
+
+        Returns:
+            True if successful, False if user not found
+        """
+        from homecast.models.db.repositories import AdminRepository
+        import uuid as uuid_module
+
+        require_admin()
+
+        try:
+            uid = uuid_module.UUID(user_id)
+        except ValueError:
+            return False
+
+        with get_session() as session:
+            return AdminRepository.toggle_user_active(session, uid, is_active)
+
+    @field(mutable=True)
+    async def admin_set_user_admin(self, user_id: str, is_admin: bool) -> bool:
+        """
+        Promote or demote a user to/from admin. Requires admin role.
+
+        Args:
+            user_id: User UUID
+            is_admin: New admin status
+
+        Returns:
+            True if successful, False if user not found
+        """
+        from homecast.models.db.repositories import AdminRepository
+        import uuid as uuid_module
+
+        require_admin()
+
+        try:
+            uid = uuid_module.UUID(user_id)
+        except ValueError:
+            return False
+
+        with get_session() as session:
+            return AdminRepository.set_user_admin(session, uid, is_admin)
+
+    @field(mutable=True)
+    async def admin_force_disconnect(self, device_id: str) -> bool:
+        """
+        Force disconnect a device by removing its session. Requires admin role.
+
+        Args:
+            device_id: Device ID to disconnect
+
+        Returns:
+            True if successful, False if device not found
+        """
+        from homecast.models.db.repositories import AdminRepository
+
+        require_admin()
+
+        with get_session() as session:
+            return AdminRepository.force_disconnect_device(session, device_id)
+
+    @field(mutable=True)
+    async def admin_clear_logs(self, before_date: Optional[str] = None) -> int:
+        """
+        Delete logs, optionally before a certain date. Requires admin role.
+
+        Args:
+            before_date: Delete logs before this date (ISO 8601)
+
+        Returns:
+            Number of logs deleted
+        """
+        from homecast.models.db.repositories import AdminRepository
+        from datetime import datetime
+
+        require_admin()
+
+        before_dt = None
+        if before_date:
+            try:
+                before_dt = datetime.fromisoformat(before_date.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+
+        with get_session() as session:
+            return AdminRepository.clear_logs(session, before_dt)

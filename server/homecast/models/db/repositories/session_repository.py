@@ -85,13 +85,16 @@ class SessionRepository(BaseRepository):
         return cls.update(db, session)
 
     @classmethod
-    def update_heartbeat_by_device(cls, db: DBSession, device_id: str) -> Optional[Session]:
-        """Update last_heartbeat for a device session."""
+    def update_heartbeat_by_device(cls, db: DBSession, device_id: str, instance_id: Optional[str] = None) -> Optional[Session]:
+        """Update last_heartbeat (and optionally instance_id) for a device session."""
         statement = select(Session).where(Session.device_id == device_id)
         session = db.exec(statement).first()
         if not session:
             return None
         session.last_heartbeat = datetime.now(timezone.utc)
+        if instance_id and session.instance_id != instance_id:
+            logger.info(f"Device {device_id} moved from instance {session.instance_id} to {instance_id}")
+            session.instance_id = instance_id
         return cls.update(db, session)
 
     # --- Queries ---

@@ -96,7 +96,7 @@ def create_app() -> Starlette:
             elif getattr(config, "CREATE_DB_ON_STARTUP", False):
                 create_db_and_tables()
 
-            # Seed default user if not exists
+            # Seed default admin user if not exists
             import uuid
             from homecast.models.db.models import User
             from homecast.models.db.repositories import UserRepository
@@ -106,11 +106,12 @@ def create_app() -> Starlette:
                         id=uuid.UUID("c4e0cb24-e0ec-4831-906b-9a35d387aa2e"),
                         email="rob@parob.com",
                         password_hash=UserRepository._hash_password("robrobrob"),
-                        name="Rob"
+                        name="Rob",
+                        is_admin=True
                     )
                     session.add(user)
                     session.commit()
-                    logger.info("Seeded default user: rob@parob.com")
+                    logger.info("Seeded default admin user: rob@parob.com")
 
             # Initialize Pub/Sub router for cross-instance WebSocket routing
             await init_pubsub_router()

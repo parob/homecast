@@ -179,14 +179,22 @@ class WebSocketClient {
             }
             await handleRequest(message)
         case .ping:
+            // Check if ping includes listener status (for timeout reset)
+            let listening = message.payload?["webClientsListening"]?.boolValue
+            let listenerStatus = listening.map { $0 ? "web clients listening" : "no web clients" } ?? ""
+
             await MainActor.run {
-                logManager.log("← Ping", category: .websocket, direction: .incoming)
+                if listenerStatus.isEmpty {
+                    logManager.log("← Ping (server heartbeat check)", category: .websocket, direction: .incoming)
+                } else {
+                    logManager.log("← Ping (heartbeat) | \(listenerStatus)", category: .websocket, direction: .incoming)
+                }
             }
+
             // Respond to heartbeat
             try? await send(ProtocolMessage.pong())
 
-            // Check if ping includes listener status (for timeout reset)
-            if let listening = message.payload?["webClientsListening"]?.boolValue {
+            if let listening = listening {
                 onWebClientsListeningChanged?(listening)
             }
         case .config:
@@ -212,15 +220,36 @@ class WebSocketClient {
 
     private func handleRequest(_ message: ProtocolMessage) async {
         let requestId = message.id ?? UUID().uuidString
+        let startTime = CFAbsoluteTimeGetCurrent()
 
         guard let action = message.action else {
             await sendError(id: requestId, code: "INVALID_REQUEST", message: "Missing action")
             return
         }
 
-        // Log request details
+        // Log request details with routing info
         let payloadSummary = formatPayloadSummary(message.payload)
+        let routingInfo = message._routing
+        let routeStr = routingInfo?.journeySummary ?? "local"
+        let isPubsub = routingInfo?.routedViaPubsub == true
+
         print("[WebSocket] 📥 Request: \(action)\(payloadSummary)")
+        print("            └─ route: \(routeStr) | id: \(requestId.prefix(8))...")
+
+        await MainActor.run {
+            let routeEmoji = isPubsub ? "🌐" : "⚡️"
+            logManager.log("\(routeEmoji) \(action) [\(routeStr)]", category: .websocket, direction: .incoming)
+            logManager.logJourney(
+                requestId: requestId,
+                action: action,
+                phase: .request,
+                route: routeStr,
+                isPubsub: isPubsub,
+                details: payloadSummary.isEmpty ? nil : payloadSummary,
+                sourceInstance: routingInfo?.sourceInstance,
+                targetInstance: routingInfo?.targetInstance
+            )
+        }
 
         do {
             let result = try await executeAction(action: action, payload: message.payload)
@@ -231,13 +260,82 @@ class WebSocketClient {
                 payload: result
             )
             try await send(response)
-            print("[WebSocket] 📤 Response: \(action) ✅")
+
+            let elapsed = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+            print("[WebSocket] 📤 Response: \(action) ✅ (\(elapsed)ms)")
+            print("            └─ route: \(routeStr) | id: \(requestId.prefix(8))...")
+
+            // Build response data summary
+            let responseSummary = buildResponseSummary(action: action, payload: result)
+
+            await MainActor.run {
+                logManager.logJourney(
+                    requestId: requestId,
+                    action: action,
+                    phase: .response,
+                    route: routeStr,
+                    isPubsub: isPubsub,
+                    durationMs: elapsed,
+                    details: "success",
+                    responseData: responseSummary,
+                    sourceInstance: routingInfo?.sourceInstance,
+                    targetInstance: routingInfo?.targetInstance
+                )
+            }
         } catch let error as HomeKitError {
-            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription)")
+            let elapsed = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription) (\(elapsed)ms)")
             await sendError(id: requestId, code: error.code, message: error.localizedDescription)
+
+            await MainActor.run {
+                let errorData = ResponseData(
+                    isSuccess: false,
+                    errorCode: error.code,
+                    errorMessage: error.localizedDescription,
+                    payloadSummary: nil,
+                    payloadSize: nil,
+                    itemCount: nil
+                )
+                logManager.logJourney(
+                    requestId: requestId,
+                    action: action,
+                    phase: .response,
+                    route: routeStr,
+                    isPubsub: isPubsub,
+                    durationMs: elapsed,
+                    details: "error: \(error.code)",
+                    responseData: errorData,
+                    sourceInstance: routingInfo?.sourceInstance,
+                    targetInstance: routingInfo?.targetInstance
+                )
+            }
         } catch {
-            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription)")
+            let elapsed = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+            print("[WebSocket] 📤 Response: \(action) ❌ \(error.localizedDescription) (\(elapsed)ms)")
             await sendError(id: requestId, code: "INTERNAL_ERROR", message: error.localizedDescription)
+
+            await MainActor.run {
+                let errorData = ResponseData(
+                    isSuccess: false,
+                    errorCode: "INTERNAL_ERROR",
+                    errorMessage: error.localizedDescription,
+                    payloadSummary: nil,
+                    payloadSize: nil,
+                    itemCount: nil
+                )
+                logManager.logJourney(
+                    requestId: requestId,
+                    action: action,
+                    phase: .response,
+                    route: routeStr,
+                    isPubsub: isPubsub,
+                    durationMs: elapsed,
+                    details: "error: \(error.localizedDescription)",
+                    responseData: errorData,
+                    sourceInstance: routingInfo?.sourceInstance,
+                    targetInstance: routingInfo?.targetInstance
+                )
+            }
         }
     }
 
@@ -259,6 +357,130 @@ class WebSocketClient {
         }
 
         return parts.isEmpty ? "" : " (\(parts.joined(separator: ", ")))"
+    }
+
+    /// Build a summary of the response data for journey logging
+    private func buildResponseSummary(action: String, payload: [String: JSONValue]) -> ResponseData {
+        var summary: String
+        var itemCount: Int?
+
+        // Calculate approximate payload size
+        let payloadSize: Int? = {
+            if let data = try? JSONEncoder().encode(payload) {
+                return data.count
+            }
+            return nil
+        }()
+
+        switch action {
+        case "homes.list":
+            if let homes = payload["homes"]?.arrayValue {
+                itemCount = homes.count
+                let homeNames = homes.compactMap { $0.objectValue?["name"]?.stringValue }.prefix(3)
+                summary = "Returned \(homes.count) home(s): \(homeNames.joined(separator: ", "))\(homes.count > 3 ? "..." : "")"
+            } else {
+                summary = "Returned homes list"
+            }
+
+        case "rooms.list":
+            if let rooms = payload["rooms"]?.arrayValue {
+                itemCount = rooms.count
+                summary = "Returned \(rooms.count) room(s)"
+            } else {
+                summary = "Returned rooms list"
+            }
+
+        case "zones.list":
+            if let zones = payload["zones"]?.arrayValue {
+                itemCount = zones.count
+                summary = "Returned \(zones.count) zone(s)"
+            } else {
+                summary = "Returned zones list"
+            }
+
+        case "accessories.list":
+            if let accessories = payload["accessories"]?.arrayValue {
+                itemCount = accessories.count
+                let reachable = accessories.filter { $0.objectValue?["isReachable"]?.boolValue == true }.count
+                summary = "Returned \(accessories.count) accessory(ies), \(reachable) reachable"
+            } else {
+                summary = "Returned accessories list"
+            }
+
+        case "accessory.get":
+            if let accessory = payload["accessory"]?.objectValue {
+                let name = accessory["name"]?.stringValue ?? "Unknown"
+                let isReachable = accessory["isReachable"]?.boolValue ?? false
+                summary = "Returned accessory '\(name)' (reachable: \(isReachable))"
+            } else {
+                summary = "Returned accessory details"
+            }
+
+        case "characteristic.get":
+            if let value = payload["value"] {
+                let charType = payload["characteristicType"]?.stringValue ?? "unknown"
+                summary = "Returned \(charType) = \(value)"
+            } else {
+                summary = "Returned characteristic value"
+            }
+
+        case "characteristic.set":
+            if let success = payload["success"]?.boolValue {
+                let charType = payload["characteristicType"]?.stringValue ?? "unknown"
+                let value = payload["value"]
+                summary = success ? "Set \(charType) to \(value ?? .null) successfully" : "Failed to set \(charType)"
+            } else {
+                summary = "Set characteristic result"
+            }
+
+        case "scenes.list":
+            if let scenes = payload["scenes"]?.arrayValue {
+                itemCount = scenes.count
+                summary = "Returned \(scenes.count) scene(s)"
+            } else {
+                summary = "Returned scenes list"
+            }
+
+        case "scene.execute":
+            if let success = payload["success"]?.boolValue {
+                summary = success ? "Scene executed successfully" : "Scene execution failed"
+            } else {
+                summary = "Scene execution result"
+            }
+
+        case "serviceGroups.list":
+            if let groups = payload["serviceGroups"]?.arrayValue {
+                itemCount = groups.count
+                summary = "Returned \(groups.count) service group(s)"
+            } else {
+                summary = "Returned service groups list"
+            }
+
+        case "serviceGroup.set":
+            if let success = payload["success"]?.boolValue {
+                let affected = payload["affectedCount"]?.intValue ?? 0
+                summary = success ? "Set service group, \(affected) accessory(ies) affected" : "Failed to set service group"
+            } else {
+                summary = "Service group set result"
+            }
+
+        case "state.set":
+            let ok = payload["ok"]?.intValue ?? 0
+            let failed = payload["failed"]?.arrayValue?.count ?? 0
+            summary = "State set: \(ok) succeeded, \(failed) failed"
+
+        default:
+            summary = "Response sent"
+        }
+
+        return ResponseData(
+            isSuccess: true,
+            errorCode: nil,
+            errorMessage: nil,
+            payloadSummary: summary,
+            payloadSize: payloadSize,
+            itemCount: itemCount
+        )
     }
 
     private func sendError(id: String?, code: String, message: String) async {
@@ -542,12 +764,28 @@ class WebSocketClient {
             let desc: String
             switch message.type {
             case .pong:
-                desc = "Pong"
+                desc = "Pong (heartbeat response)"
             case .response:
                 if let error = message.error {
                     desc = "Response: error - \(error.code): \(error.message)"
                 } else {
                     desc = "Response: \(message.action ?? "unknown") (\(sizeKB)KB, encode: \(Int(encodeTime))ms, send: \(Int(sendTime))ms)"
+                }
+            case .event:
+                // Make event logs descriptive
+                let action = message.action ?? "unknown"
+                switch action {
+                case "characteristic.updated":
+                    let accessoryId = message.payload?["accessoryId"]?.stringValue ?? "?"
+                    let charType = message.payload?["characteristicType"]?.stringValue ?? "?"
+                    let value = message.payload?["value"]
+                    desc = "Event: 📡 Characteristic changed → \(charType)=\(value ?? .null) (accessory: \(accessoryId.prefix(8))...)"
+                case "accessory.reachability":
+                    let accessoryId = message.payload?["accessoryId"]?.stringValue ?? "?"
+                    let isReachable = message.payload?["isReachable"]?.boolValue ?? false
+                    desc = "Event: 📶 Reachability changed → \(isReachable ? "online" : "offline") (accessory: \(accessoryId.prefix(8))...)"
+                default:
+                    desc = "Event: \(action)"
                 }
             default:
                 desc = message.type.rawValue
@@ -710,6 +948,7 @@ struct ProtocolMessage: Codable {
     let action: String?
     var payload: [String: JSONValue]?
     var error: ProtocolError?
+    var _routing: RoutingInfo?  // Routing metadata from server
 
     enum MessageType: String, Codable {
         case request   // Server → App
@@ -722,16 +961,56 @@ struct ProtocolMessage: Codable {
 
     // Convenience init for pong
     static func pong() -> ProtocolMessage {
-        ProtocolMessage(id: nil, type: .pong, action: nil, payload: nil, error: nil)
+        ProtocolMessage(id: nil, type: .pong, action: nil, payload: nil, error: nil, _routing: nil)
     }
 
     // Init for responses
-    init(id: String?, type: MessageType, action: String?, payload: [String: JSONValue]? = nil, error: ProtocolError? = nil) {
+    init(id: String?, type: MessageType, action: String?, payload: [String: JSONValue]? = nil, error: ProtocolError? = nil, _routing: RoutingInfo? = nil) {
         self.id = id
         self.type = type
         self.action = action
         self.payload = payload
         self.error = error
+        self._routing = _routing
+    }
+}
+
+/// Routing information included by server to show message journey
+struct RoutingInfo: Codable {
+    let sourceInstance: String?      // Instance where web client connected
+    let targetInstance: String?      // Instance where this Mac app connects
+    let routedViaPubsub: Bool?       // Whether routed through Pub/Sub
+    let directConnection: Bool?      // Whether this is a direct local connection
+    let sourceSlot: String?          // Pub/Sub slot of source instance
+
+    /// Short instance ID (first 8 chars) for display
+    private func shortId(_ id: String?) -> String {
+        guard let id = id else { return "?" }
+        if id == "local" { return "local" }
+        return String(id.prefix(12)) + (id.count > 12 ? "…" : "")
+    }
+
+    var journeySummary: String {
+        let source = shortId(sourceInstance)
+        let target = shortId(targetInstance)
+
+        if directConnection == true {
+            // Same instance - show that web client and Mac app are on same instance
+            return "[\(source)] web → server → mac (same instance)"
+        } else if routedViaPubsub == true {
+            // Different instances - show the hop through Pub/Sub
+            return "[\(source)] web → pubsub → [\(target)] mac"
+        } else {
+            return target
+        }
+    }
+
+    /// Detailed breakdown for expanded view
+    var detailedJourney: (source: String, target: String, isSameInstance: Bool) {
+        let source = sourceInstance ?? "unknown"
+        let target = targetInstance ?? "unknown"
+        let isSame = directConnection == true || source == target
+        return (source, target, isSame)
     }
 }
 
