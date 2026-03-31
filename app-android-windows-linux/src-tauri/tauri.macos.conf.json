@@ -1,0 +1,10 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Homecast",
+        "titleBarStyle": "Overlay"
+      }
+    ]
+  }
+}

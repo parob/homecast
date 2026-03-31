@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.homecast" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Dark mode: light status bar icons on dark background -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

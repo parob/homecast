@@ -1,0 +1,9 @@
+{
+  "app": {
+    "windows": [
+      {
+        "fullscreen": false
+      }
+    ]
+  }
+}

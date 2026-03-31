@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "remote-homecast",
+  "description": "Allow the remote homecast.cloud domain",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://*.homecast.cloud"]
+  },
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}

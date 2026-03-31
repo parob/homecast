@@ -1,0 +1,743 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		42271B042F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */; };
+		42271B052F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */; };
+		42792F432F3386C200FFF6F0 /* ModeButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */; };
+		A1000001A /* HomecastApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001F /* HomecastApp.swift */; };
+		A1000002A /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002F /* AppDelegate.swift */; };
+		A1000003A /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000003F /* ConnectionManager.swift */; };
+		A1000004A /* HomeKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004F /* HomeKitManager.swift */; };
+		A1000005A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000005F /* Models.swift */; };
+		A1000006A /* CharacteristicMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000006F /* CharacteristicMapper.swift */; };
+		A1000010A /* HomeKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000010F /* HomeKit.framework */; };
+		A1000011A /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000011F /* UIKit.framework */; };
+		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
+		A1000021A /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000012F /* AppKit.framework */; };
+		A1000024A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000024F /* Assets.xcassets */; };
+		A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = A2000000P /* MenuBarPlugin.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B1000001A /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001F /* DesignSystem.swift */; };
+		B1000002A /* Protocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000002F /* Protocols.swift */; };
+		B1000003A /* ModernSlider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000003F /* ModernSlider.swift */; };
+		B1000004A /* ToggleSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000004F /* ToggleSwitch.swift */; };
+		B1000005A /* HighlightingMenuItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000005F /* HighlightingMenuItemView.swift */; };
+		B1000006A /* SwitchMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000006F /* SwitchMenuItem.swift */; };
+		B1000007A /* LightMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000007F /* LightMenuItem.swift */; };
+		B1000008A /* BlindMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000008F /* BlindMenuItem.swift */; };
+		B1000009A /* SensorMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000009F /* SensorMenuItem.swift */; };
+		B1000010A /* LockMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000010F /* LockMenuItem.swift */; };
+		B1000011A /* GarageDoorMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000011F /* GarageDoorMenuItem.swift */; };
+		B1000012A /* ThermostatMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000012F /* ThermostatMenuItem.swift */; };
+		B1000013A /* GroupMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000013F /* GroupMenuItem.swift */; };
+		B1000014A /* PhosphorIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000014F /* PhosphorIcon.swift */; };
+		B1000015A /* ModeButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000015F /* ModeButton.swift */; };
+		B1000016A /* ColorConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000016F /* ColorConversion.swift */; };
+		B1000017A /* ColorPickerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000017F /* ColorPickerViews.swift */; };
+		B1000018A /* SubmenuItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000018F /* SubmenuItemView.swift */; };
+		B1000019A /* SecuritySystemMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000019F /* SecuritySystemMenuItem.swift */; };
+		B1000020A /* AreaSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000020F /* AreaSummaryView.swift */; };
+		B1000021A /* SmokeAlarmMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000021F /* SmokeAlarmMenuItem.swift */; };
+		B1000022A /* RemoteMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000022F /* RemoteMenuItem.swift */; };
+		B1000023A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B1000023F /* PrivacyInfo.xcprivacy */; };
+		B1000024A /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = B1000024G /* InfoPlist.strings */; };
+		B1000025A /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B1000025F /* LaunchScreen.storyboard */; };
+		B2000001A /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001F /* BuildInfo.swift */; };
+		C1000001A /* LocalHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000001F /* LocalHTTPServer.swift */; };
+		C1000002A /* LocalNetworkBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000002F /* LocalNetworkBridge.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A1000040P /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A0000000P /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A2000000T;
+			remoteInfo = MenuBarPlugin;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1000050P /* Embed PlugIns */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */,
+			);
+			name = "Embed PlugIns";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitBridge.swift; sourceTree = "<group>"; };
+		42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButtonGroup.swift; sourceTree = "<group>"; };
+		A1000001F /* HomecastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomecastApp.swift; sourceTree = "<group>"; };
+		A1000002F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A1000003F /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
+		A1000004F /* HomeKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitManager.swift; sourceTree = "<group>"; };
+		A1000005F /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A1000006F /* CharacteristicMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacteristicMapper.swift; sourceTree = "<group>"; };
+		A1000008F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000009F /* Homecast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Homecast.entitlements; sourceTree = "<group>"; };
+		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
+		A1000011F /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		A1000012F /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
+		A1000020F /* MenuBarPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPlugin.swift; sourceTree = "<group>"; };
+		A1000021F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000024F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000P /* MenuBarPlugin.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MenuBarPlugin.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000P /* Homecast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Homecast.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000001F /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		B1000002F /* Protocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocols.swift; sourceTree = "<group>"; };
+		B1000003F /* ModernSlider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModernSlider.swift; sourceTree = "<group>"; };
+		B1000004F /* ToggleSwitch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToggleSwitch.swift; sourceTree = "<group>"; };
+		B1000005F /* HighlightingMenuItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightingMenuItemView.swift; sourceTree = "<group>"; };
+		B1000006F /* SwitchMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchMenuItem.swift; sourceTree = "<group>"; };
+		B1000007F /* LightMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightMenuItem.swift; sourceTree = "<group>"; };
+		B1000008F /* BlindMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlindMenuItem.swift; sourceTree = "<group>"; };
+		B1000009F /* SensorMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorMenuItem.swift; sourceTree = "<group>"; };
+		B1000010F /* LockMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockMenuItem.swift; sourceTree = "<group>"; };
+		B1000011F /* GarageDoorMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarageDoorMenuItem.swift; sourceTree = "<group>"; };
+		B1000012F /* ThermostatMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermostatMenuItem.swift; sourceTree = "<group>"; };
+		B1000013F /* GroupMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupMenuItem.swift; sourceTree = "<group>"; };
+		B1000014F /* PhosphorIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhosphorIcon.swift; sourceTree = "<group>"; };
+		B1000015F /* ModeButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButton.swift; sourceTree = "<group>"; };
+		B1000016F /* ColorConversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorConversion.swift; sourceTree = "<group>"; };
+		B1000017F /* ColorPickerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorPickerViews.swift; sourceTree = "<group>"; };
+		B1000018F /* SubmenuItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubmenuItemView.swift; sourceTree = "<group>"; };
+		B1000019F /* SecuritySystemMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecuritySystemMenuItem.swift; sourceTree = "<group>"; };
+		B1000020F /* AreaSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AreaSummaryView.swift; sourceTree = "<group>"; };
+		B1000021F /* SmokeAlarmMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeAlarmMenuItem.swift; sourceTree = "<group>"; };
+		B1000022F /* RemoteMenuItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMenuItem.swift; sourceTree = "<group>"; };
+		B1000023F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B1000024F /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		B1000025F /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		B2000001F /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		C1000001F /* LocalHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalHTTPServer.swift; sourceTree = "<group>"; };
+		C1000002F /* LocalNetworkBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNetworkBridge.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000060P /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000010A /* HomeKit.framework in Frameworks */,
+				A1000011A /* UIKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000061P /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000021A /* AppKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A0000001G = {
+			isa = PBXGroup;
+			children = (
+				A0000002G /* Sources */,
+				A0000003G /* Resources */,
+				A0000004G /* Frameworks */,
+				A0000005G /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A0000002G /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A0000006G /* App */,
+				A0000007G /* HomeKit */,
+				C1000000G /* Server */,
+				A0000009G /* MenuBarPlugin */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		C1000000G /* Server */ = {
+			isa = PBXGroup;
+			children = (
+				C1000001F /* LocalHTTPServer.swift */,
+				C1000002F /* LocalNetworkBridge.swift */,
+			);
+			path = Server;
+			sourceTree = "<group>";
+		};
+		A0000003G /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A1000024F /* Assets.xcassets */,
+				A1000008F /* Info.plist */,
+				A1000009F /* Homecast.entitlements */,
+				B1000023F /* PrivacyInfo.xcprivacy */,
+				B1000024G /* InfoPlist.strings */,
+				B1000025F /* LaunchScreen.storyboard */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		A0000004G /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A1000010F /* HomeKit.framework */,
+				A1000011F /* UIKit.framework */,
+				A1000012F /* AppKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A0000005G /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A3000000P /* Homecast.app */,
+				A2000000P /* MenuBarPlugin.bundle */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A0000006G /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A1000001F /* HomecastApp.swift */,
+				A1000002F /* AppDelegate.swift */,
+				A1000003F /* ConnectionManager.swift */,
+				B2000001F /* BuildInfo.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A0000007G /* HomeKit */ = {
+			isa = PBXGroup;
+			children = (
+				42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */,
+				A1000004F /* HomeKitManager.swift */,
+				A1000005F /* Models.swift */,
+				A1000006F /* CharacteristicMapper.swift */,
+			);
+			path = HomeKit;
+			sourceTree = "<group>";
+		};
+		A0000009G /* MenuBarPlugin */ = {
+			isa = PBXGroup;
+			children = (
+				A1000020F /* MenuBarPlugin.swift */,
+				B1000001F /* DesignSystem.swift */,
+				B1000002F /* Protocols.swift */,
+				B1000014F /* PhosphorIcon.swift */,
+				B0000001G /* Controls */,
+				B0000002G /* MenuItems */,
+				A1000021F /* Info.plist */,
+			);
+			path = MenuBarPlugin;
+			sourceTree = "<group>";
+		};
+		B0000001G /* Controls */ = {
+			isa = PBXGroup;
+			children = (
+				42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */,
+				B1000003F /* ModernSlider.swift */,
+				B1000004F /* ToggleSwitch.swift */,
+				B1000015F /* ModeButton.swift */,
+				B1000016F /* ColorConversion.swift */,
+				B1000017F /* ColorPickerViews.swift */,
+			);
+			path = Controls;
+			sourceTree = "<group>";
+		};
+		B0000002G /* MenuItems */ = {
+			isa = PBXGroup;
+			children = (
+				B1000005F /* HighlightingMenuItemView.swift */,
+				B1000018F /* SubmenuItemView.swift */,
+				B1000020F /* AreaSummaryView.swift */,
+				B1000006F /* SwitchMenuItem.swift */,
+				B1000007F /* LightMenuItem.swift */,
+				B1000008F /* BlindMenuItem.swift */,
+				B1000009F /* SensorMenuItem.swift */,
+				B1000010F /* LockMenuItem.swift */,
+				B1000011F /* GarageDoorMenuItem.swift */,
+				B1000012F /* ThermostatMenuItem.swift */,
+				B1000013F /* GroupMenuItem.swift */,
+				B1000019F /* SecuritySystemMenuItem.swift */,
+				B1000021F /* SmokeAlarmMenuItem.swift */,
+				B1000022F /* RemoteMenuItem.swift */,
+			);
+			path = MenuItems;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000000T /* Homecast */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000080L /* Build configuration list for PBXNativeTarget "Homecast" */;
+			buildPhases = (
+				B2000001P /* Generate BuildInfo */,
+				A1000070P /* Sources */,
+				A1000062P /* Resources */,
+				A1000060P /* Frameworks */,
+				A1000050P /* Embed PlugIns */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1000041D /* PBXTargetDependency */,
+			);
+			name = Homecast;
+			productName = Homecast;
+			productReference = A3000000P /* Homecast.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A2000000T /* MenuBarPlugin */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A2000080L /* Build configuration list for PBXNativeTarget "MenuBarPlugin" */;
+			buildPhases = (
+				A2000070P /* Sources */,
+				A1000061P /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MenuBarPlugin;
+			productName = MenuBarPlugin;
+			productReference = A2000000P /* MenuBarPlugin.bundle */;
+			productType = "com.apple.product-type.bundle";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A0000000P /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					A1000000T = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					A2000000T = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = A0000080L /* Build configuration list for PBXProject "Homecast" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A0000001G;
+			productRefGroup = A0000005G /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000000T /* Homecast */,
+				A2000000T /* MenuBarPlugin */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000062P /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000024A /* Assets.xcassets in Resources */,
+				B1000023A /* PrivacyInfo.xcprivacy in Resources */,
+				B1000024A /* InfoPlist.strings in Resources */,
+				B1000025A /* LaunchScreen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B2000001P /* Generate BuildInfo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Generate BuildInfo";
+			outputPaths = (
+				"$(SRCROOT)/Sources/App/BuildInfo.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cat > \"${SRCROOT}/Sources/App/BuildInfo.swift\" << EOF\n// Auto-generated by build phase — do not edit\nenum BuildInfo {\n    static let gitHash = \"$(git -C \"${SRCROOT}\" rev-parse --short HEAD 2>/dev/null || echo \"unknown\")\"\n}\nEOF\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000070P /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001A /* HomecastApp.swift in Sources */,
+				A1000002A /* AppDelegate.swift in Sources */,
+				A1000003A /* ConnectionManager.swift in Sources */,
+				A1000004A /* HomeKitManager.swift in Sources */,
+				42271B042F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */,
+				A1000005A /* Models.swift in Sources */,
+				A1000006A /* CharacteristicMapper.swift in Sources */,
+				B2000001A /* BuildInfo.swift in Sources */,
+				C1000001A /* LocalHTTPServer.swift in Sources */,
+				C1000002A /* LocalNetworkBridge.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000070P /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				42271B052F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */,
+				A1000020A /* MenuBarPlugin.swift in Sources */,
+				B1000001A /* DesignSystem.swift in Sources */,
+				B1000002A /* Protocols.swift in Sources */,
+				B1000014A /* PhosphorIcon.swift in Sources */,
+				42792F432F3386C200FFF6F0 /* ModeButtonGroup.swift in Sources */,
+				B1000003A /* ModernSlider.swift in Sources */,
+				B1000004A /* ToggleSwitch.swift in Sources */,
+				B1000015A /* ModeButton.swift in Sources */,
+				B1000016A /* ColorConversion.swift in Sources */,
+				B1000017A /* ColorPickerViews.swift in Sources */,
+				B1000005A /* HighlightingMenuItemView.swift in Sources */,
+				B1000006A /* SwitchMenuItem.swift in Sources */,
+				B1000007A /* LightMenuItem.swift in Sources */,
+				B1000008A /* BlindMenuItem.swift in Sources */,
+				B1000009A /* SensorMenuItem.swift in Sources */,
+				B1000010A /* LockMenuItem.swift in Sources */,
+				B1000011A /* GarageDoorMenuItem.swift in Sources */,
+				B1000012A /* ThermostatMenuItem.swift in Sources */,
+				B1000013A /* GroupMenuItem.swift in Sources */,
+				B1000018A /* SubmenuItemView.swift in Sources */,
+				B1000019A /* SecuritySystemMenuItem.swift in Sources */,
+				B1000020A /* AreaSummaryView.swift in Sources */,
+				B1000021A /* SmokeAlarmMenuItem.swift in Sources */,
+				B1000022A /* RemoteMenuItem.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1000041D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = maccatalyst;
+			target = A2000000T /* MenuBarPlugin */;
+			targetProxy = A1000040P /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		B1000024G /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				B1000024F /* en */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		A0000081C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A0000082C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A1000081C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = Resources/Homecast.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Homecast;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Debug;
+		};
+		A1000082C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = Resources/Homecast.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Homecast;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Release;
+		};
+		A2000081C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				ENABLE_MODULE_VERIFIER = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0.1;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = bundle;
+			};
+			name = Debug;
+		};
+		A2000082C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				ENABLE_MODULE_VERIFIER = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0.1;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = bundle;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A0000080L /* Build configuration list for PBXProject "Homecast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000081C /* Debug */,
+				A0000082C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000080L /* Build configuration list for PBXNativeTarget "Homecast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000081C /* Debug */,
+				A1000082C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A2000080L /* Build configuration list for PBXNativeTarget "MenuBarPlugin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A2000081C /* Debug */,
+				A2000082C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = A0000000P /* Project object */;
+}

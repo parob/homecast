@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-web:
+    name: Build Web App
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: parob/homecast-web
+          path: app-web
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app-web/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  build-mac:
+    name: Build Mac App
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Mac Catalyst
+        run: |
+          cd app-ios-macos
+          xcodebuild -project Homecast.xcodeproj \
+            -scheme Homecast \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            build

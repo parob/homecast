@@ -1,0 +1,8 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/Cargo.lock
+
+# Release signing keystore (keep this file safe, never commit)
+*.keystore
+*.jks
