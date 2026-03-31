@@ -3,6 +3,7 @@
 Control your Apple HomeKit smart home from any browser, REST API, or AI assistant — running entirely on your Mac with no cloud dependency.
 
 <p>
+  <a href="https://github.com/parob/homecast/actions/workflows/ci.yml"><img src="https://github.com/parob/homecast/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://apps.apple.com/us/app/homecast-app/id6759559232?platform=mac"><img src="https://img.shields.io/badge/Mac_App_Store-Download-blue?logo=apple&logoColor=white" alt="Mac App Store"></a>
   <a href="https://homecast.cloud"><img src="https://img.shields.io/badge/Homecast_Cloud-homecast.cloud-blue" alt="Homecast Cloud"></a>
   <a href="https://docs.homecast.cloud"><img src="https://img.shields.io/badge/Docs-docs.homecast.cloud-blue" alt="Documentation"></a>
