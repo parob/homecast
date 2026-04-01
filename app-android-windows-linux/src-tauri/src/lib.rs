@@ -37,6 +37,16 @@ fn inject_platform_globals(webview: &tauri::Webview) {
 
     let _ = webview.eval(&script);
 
+    // Community mode detection: inject flag when not on homecast.cloud
+    let _ = webview.eval(r#"
+        (function() {
+            var host = window.location.hostname;
+            if (host !== 'homecast.cloud' && host !== 'staging.homecast.cloud') {
+                window.__HOMECAST_COMMUNITY__ = true;
+            }
+        })();
+    "#);
+
     // Staging environment persistence: use a cookie with domain=.homecast.cloud
     // so the preference is shared across both origins (unlike localStorage which
     // is per-origin and caused an infinite redirect loop between the two domains).

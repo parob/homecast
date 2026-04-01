@@ -292,7 +292,17 @@ class LocalHTTPServer {
                 let requestJson = (try? JSONSerialization.data(withJSONObject: info))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 bridge.handleHTTPRequest(clientId: clientId, body: requestJson) { [weak self] response in
-                    self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
+                    // Check for _status/_headers overrides from JS (used by OAuth redirects)
+                    if let data = response.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let status = json["_status"] as? Int {
+                        let extraHeaders = json["_headers"] as? [String: String] ?? [:]
+                        let body = json["_body"] as? String ?? ""
+                        let ct = status == 302 ? "text/plain" : "application/json"
+                        self?.sendResponse(on: connection, status: status, contentType: ct, headers: extraHeaders, body: body)
+                    } else {
+                        self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
+                    }
                 }
             } else {
                 sendResponse(on: connection, status: 503, contentType: "application/json", body: "{\"error\":\"Bridge not ready\"}")
@@ -632,8 +642,11 @@ class LocalHTTPServer {
         let statusText: String
         switch status {
         case 200: statusText = "OK"
+        case 201: statusText = "Created"
         case 204: statusText = "No Content"
+        case 302: statusText = "Found"
         case 400: statusText = "Bad Request"
+        case 401: statusText = "Unauthorized"
         case 404: statusText = "Not Found"
         case 405: statusText = "Method Not Allowed"
         case 500: statusText = "Internal Server Error"

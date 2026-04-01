@@ -4,8 +4,8 @@
   "version": "1.0.1",
   "identifier": "cloud.homecast.app",
   "build": {
-    "frontendDist": "https://homecast.cloud/login",
-    "devUrl": "https://homecast.cloud/login"
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:1420"
   },
   "app": {
     "windows": [

@@ -92,13 +92,38 @@ Available tools: `list_homes`, `list_rooms`, `list_accessories`, `get_accessory`
 
 ## Remote Access
 
-Community Edition works on your local network. For remote access, use a tunnel:
+Community Edition works on your local network. For access from outside your network, use a tunnel:
 
-- **[Tailscale](https://tailscale.com)** (recommended) — zero-config VPN, valid HTTPS certs
-- **[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)** — free, requires Cloudflare account
-- **Port forwarding** — forward port 5656 on your router
+### Tailscale (Recommended)
 
-Or use [Homecast Cloud](https://homecast.cloud) for built-in remote access, cloud sync, and managed relays.
+[Tailscale](https://tailscale.com) creates a private VPN between your devices with zero configuration.
+
+1. Install Tailscale on your Mac and the remote device
+2. Sign in on both devices with the same account
+3. Find your Mac's Tailscale IP: `tailscale ip -4` (e.g., `100.x.y.z`)
+4. Access Homecast at `http://100.x.y.z:5656`
+
+Tailscale provides encrypted connections, valid HTTPS certificates via MagicDNS, and works through firewalls without port forwarding.
+
+### Cloudflare Tunnel
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) exposes your local server through a Cloudflare domain.
+
+1. Install `cloudflared`: `brew install cloudflare/cloudflare/cloudflared`
+2. Authenticate: `cloudflared tunnel login`
+3. Create a tunnel: `cloudflared tunnel create homecast`
+4. Route traffic: `cloudflared tunnel route dns homecast homecast.yourdomain.com`
+5. Run: `cloudflared tunnel --url http://localhost:5656 run homecast`
+
+The web app automatically detects Community mode regardless of hostname.
+
+### Port Forwarding
+
+Forward port 5656 on your router to your Mac's local IP. This exposes your Mac directly to the internet — use strong passwords and consider the security implications. Tailscale is recommended instead.
+
+### Homecast Cloud
+
+Or use [Homecast Cloud](https://homecast.cloud) for built-in remote access, cloud sync, and managed relays — no tunnel setup needed.
 
 ## Project Structure
 

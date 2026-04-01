@@ -4,13 +4,205 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Homecast</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #0a0a0a;
+        color: #fafafa;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .container { max-width: 400px; width: 100%; }
+      .logo {
+        text-align: center;
+        margin-bottom: 32px;
+      }
+      .logo h1 {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+      }
+      .logo p {
+        font-size: 13px;
+        color: #888;
+        margin-top: 6px;
+      }
+      .card {
+        background: #161616;
+        border: 1px solid #262626;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 12px;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .card:hover { border-color: #404040; background: #1a1a1a; }
+      .card h2 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+      .card p { font-size: 13px; color: #888; line-height: 1.5; }
+      .card .badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        margin-bottom: 8px;
+      }
+      .cloud-badge { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+      .community-badge { background: rgba(255, 255, 255, 0.1); color: #ccc; }
+
+      /* Community server form */
+      .server-form {
+        display: none;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #262626;
+      }
+      .server-form.visible { display: block; }
+      .server-form label {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        color: #888;
+        margin-bottom: 6px;
+      }
+      .input-row { display: flex; gap: 8px; }
+      .server-form input {
+        flex: 1;
+        background: #0a0a0a;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 14px;
+        color: #fafafa;
+        outline: none;
+      }
+      .server-form input:focus { border-color: #555; }
+      .server-form input::placeholder { color: #555; }
+      .btn {
+        background: #fafafa;
+        color: #0a0a0a;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .btn:hover { background: #e5e5e5; }
+      .btn:disabled { opacity: 0.5; cursor: default; }
+      .error {
+        font-size: 12px;
+        color: #f87171;
+        margin-top: 8px;
+        display: none;
+      }
+      .error.visible { display: block; }
+      .footer {
+        text-align: center;
+        margin-top: 24px;
+        font-size: 12px;
+        color: #555;
+      }
+    </style>
   </head>
   <body>
-    <p>Redirecting to Homecast...</p>
+    <div class="container">
+      <div class="logo">
+        <h1>Homecast</h1>
+        <p>Choose how to connect</p>
+      </div>
+
+      <div class="card" id="cloud-card" onclick="connectCloud()">
+        <span class="badge cloud-badge">Recommended</span>
+        <h2>Homecast Cloud</h2>
+        <p>Remote access, cloud sync, and managed relays. Sign in to your Homecast Cloud account.</p>
+      </div>
+
+      <div class="card" id="community-card" onclick="toggleCommunity()">
+        <span class="badge community-badge">Free &amp; Open Source</span>
+        <h2>Community Server</h2>
+        <p>Connect to a Homecast relay on your local network. No account needed.</p>
+        <div class="server-form" id="server-form">
+          <label for="server-url">Server URL</label>
+          <div class="input-row">
+            <input type="url" id="server-url" placeholder="http://mac.local:5656" autocapitalize="off" autocorrect="off" />
+            <button class="btn" id="connect-btn" onclick="event.stopPropagation(); connectCommunity();">Connect</button>
+          </div>
+          <div class="error" id="error"></div>
+        </div>
+      </div>
+
+      <div class="footer">
+        You can switch modes at any time by returning to this screen.
+      </div>
+    </div>
+
     <script>
-      // This page is only shown briefly during development.
-      // In production, frontendDist points to the remote URL directly.
-      window.location.href = "https://homecast.cloud/login";
+      // Check for saved preference
+      (function() {
+        var saved = localStorage.getItem('homecast-mode');
+        var url = localStorage.getItem('homecast-server-url');
+        if (saved === 'cloud') {
+          window.location.href = 'https://homecast.cloud/login';
+        } else if (saved === 'community' && url) {
+          window.location.href = url;
+        }
+      })();
+
+      function connectCloud() {
+        localStorage.setItem('homecast-mode', 'cloud');
+        window.location.href = 'https://homecast.cloud/login';
+      }
+
+      var communityExpanded = false;
+      function toggleCommunity() {
+        if (communityExpanded) return;
+        communityExpanded = true;
+        document.getElementById('server-form').classList.add('visible');
+        setTimeout(function() {
+          document.getElementById('server-url').focus();
+        }, 100);
+      }
+
+      function connectCommunity() {
+        var input = document.getElementById('server-url');
+        var url = input.value.trim();
+        var errorEl = document.getElementById('error');
+
+        if (!url) {
+          errorEl.textContent = 'Enter the URL of your Homecast relay';
+          errorEl.classList.add('visible');
+          return;
+        }
+
+        // Normalize URL
+        if (!url.match(/^https?:\/\//)) url = 'http://' + url;
+        if (!url.match(/:\d+/) && url.startsWith('http://')) url += ':5656';
+
+        try {
+          new URL(url);
+        } catch {
+          errorEl.textContent = 'Invalid URL format';
+          errorEl.classList.add('visible');
+          return;
+        }
+
+        errorEl.classList.remove('visible');
+        localStorage.setItem('homecast-mode', 'community');
+        localStorage.setItem('homecast-server-url', url);
+        window.location.href = url;
+      }
+
+      // Enter key on input
+      document.getElementById('server-url').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') connectCommunity();
+      });
     </script>
   </body>
 </html>
