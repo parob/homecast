@@ -50,6 +50,7 @@
 		B2000001A /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001F /* BuildInfo.swift */; };
 		C1000001A /* LocalHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000001F /* LocalHTTPServer.swift */; };
 		C1000002A /* LocalNetworkBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000002F /* LocalNetworkBridge.swift */; };
+		C1000003A /* web-dist in Resources */ = {isa = PBXBuildFile; fileRef = C1000003F /* web-dist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -123,6 +124,7 @@
 		B2000001F /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 		C1000001F /* LocalHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalHTTPServer.swift; sourceTree = "<group>"; };
 		C1000002F /* LocalNetworkBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNetworkBridge.swift; sourceTree = "<group>"; };
+		C1000003F /* web-dist */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "web-dist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -185,6 +187,7 @@
 				B1000023F /* PrivacyInfo.xcprivacy */,
 				B1000024G /* InfoPlist.strings */,
 				B1000025F /* LaunchScreen.storyboard */,
+				C1000003F /* web-dist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -362,6 +365,7 @@
 				B1000023A /* PrivacyInfo.xcprivacy in Resources */,
 				B1000024A /* InfoPlist.strings in Resources */,
 				B1000025A /* LaunchScreen.storyboard in Resources */,
+				C1000003A /* web-dist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

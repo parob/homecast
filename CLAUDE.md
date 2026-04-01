@@ -13,7 +13,7 @@ The Community Edition runs entirely on a Mac — no cloud server needed.
 | `app-ios-macos/` | Mac app (Swift/SwiftUI, Mac Catalyst) — HomeKit relay + local server |
 | `app-android-windows-linux/` | Tauri app wrapper (Android, Windows, Linux) |
 | `app-web/` | Web app (React 18/Vite) — runs inside Mac app's WKWebView + served to LAN clients |
-| `docs/` | Documentation (VitePress) |
+| `docs/` | Documentation build output (source in `homecast-cloud/docs/`) |
 
 ## How It Works
 
@@ -54,8 +54,10 @@ Your Mac                         LAN / Tunnel
 |----------|---------|
 | `GET /rest/homes` | List HomeKit homes |
 | `GET /rest/accessories` | List accessories (filter: `?home=X&room=X`) |
+| `GET /rest/accessories/:id` | Get single accessory |
 | `POST /rest/state` | Control devices |
 | `GET /rest/scenes` | List scenes (`?home=X`) |
+| `POST /rest/scenes/:id/execute` | Execute a scene |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
 | `POST /mcp` | MCP endpoint for AI assistants |
 | `GET /health` | Health check |
@@ -76,13 +78,28 @@ Messages use this JSON format:
 |--------|-------------|
 | `homes.list` | List all HomeKit homes |
 | `rooms.list` | List rooms in a home |
+| `zones.list` | List zones in a home |
 | `accessories.list` | List accessories |
 | `accessory.get` | Get single accessory |
+| `accessory.refresh` | Force-refresh accessory state |
+| `characteristic.get` | Read a characteristic value |
 | `characteristic.set` | Control device |
 | `scenes.list` | List scenes |
 | `scene.execute` | Execute a scene |
 | `serviceGroups.list` | List service groups |
+| `serviceGroup.set` | Update a service group |
+| `automations.list` | List automations |
+| `automation.get` | Get single automation |
+| `automation.create` | Create automation |
+| `automation.update` | Update automation |
+| `automation.delete` | Delete automation |
+| `automation.enable` | Enable automation |
+| `automation.disable` | Disable automation |
 | `state.set` | Bulk state updates |
+| `observe.start` | Start observing characteristic changes |
+| `observe.stop` | Stop observing |
+| `observe.reset` | Reset all observers |
+| `ping` | Heartbeat / keepalive |
 
 ## Key Files
 
@@ -121,8 +138,8 @@ cd app-ios-macos && xcodebuild -project Homecast.xcodeproj \
   -scheme Homecast -destination 'platform=macOS,variant=Mac Catalyst' \
   -configuration Debug build
 
-# Run docs dev server
-cd docs && npm run docs:dev
+# Run docs dev server (source lives in homecast-cloud/docs/)
+cd ../homecast-cloud/docs && npm run docs:dev
 ```
 
 ## Community Mode Architecture
@@ -139,11 +156,11 @@ When in Community mode:
 - GraphQL operations route to `local-graphql.ts` (IndexedDB-backed)
 - `communityLocalLink` in Apollo Client bypasses HTTP on the relay Mac
 
-## Cloud Features (`src/cloud/`)
+## Cloud Features (`@homecast/cloud`)
 
-The `src/cloud/` directory contains cloud-specific UI components (admin panel, billing, cloud relay management). These are loaded via the `@homecast/cloud` Vite alias.
+Cloud-specific UI components (admin panel, billing, cloud relay management) live in the `homecast-cloud` repo's `app-web/` package. The Vite alias `@homecast/cloud` resolves to `src/cloud/index.ts` if present (copied in by CI during cloud builds), otherwise falls back to `src/cloud-stub.ts` which exports `CLOUD_AVAILABLE = false`.
 
-**To build Community-only:** Delete or rename `src/cloud/`. The build falls back to `src/cloud-stub.ts` which exports null for all cloud components.
+**Community builds use the stub by default** — no `src/cloud/` directory exists in this repo.
 
 ## License
 
