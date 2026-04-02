@@ -342,17 +342,23 @@ class LocalHTTPServer {
                 let requestJson = (try? JSONSerialization.data(withJSONObject: info))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 bridge.handleHTTPRequest(clientId: clientId, body: requestJson) { [weak self] response in
-                    // Check for _status/_headers overrides from JS (used by OAuth redirects)
                     if let data = response.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let status = json["_status"] as? Int {
-                        let extraHeaders = json["_headers"] as? [String: String] ?? [:]
-                        let body = json["_body"] as? String ?? ""
-                        let ct = status == 302 ? "text/plain" : "application/json"
-                        self?.sendResponse(on: connection, status: status, contentType: ct, headers: extraHeaders, body: body)
-                    } else {
-                        self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        // _serveSPA: JS says this is a frontend route — serve index.html
+                        if json["_serveSPA"] as? Bool == true {
+                            self?.serveStaticFile(path: "/index.html", on: connection)
+                            return
+                        }
+                        // _status/_headers overrides from JS (used by OAuth redirects)
+                        if let status = json["_status"] as? Int {
+                            let extraHeaders = json["_headers"] as? [String: String] ?? [:]
+                            let body = json["_body"] as? String ?? ""
+                            let ct = status == 302 ? "text/plain" : "application/json"
+                            self?.sendResponse(on: connection, status: status, contentType: ct, headers: extraHeaders, body: body)
+                            return
+                        }
                     }
+                    self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
                 }
             } else {
                 sendResponse(on: connection, status: 503, contentType: "application/json", body: "{\"error\":\"Bridge not ready\"}")
