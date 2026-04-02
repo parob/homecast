@@ -62,13 +62,6 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     private var httpCallbacks: [String: (String) -> Void] = [:]
 
     func handleHTTPRequest(clientId: String, body: String, completion: @escaping (String) -> Void) {
-        guard let webView = webView else {
-            completion("{\"error\":\"Bridge not ready\"}")
-            return
-        }
-
-        httpCallbacks[clientId] = completion
-
         let escapedClientId = clientId.replacingOccurrences(of: "'", with: "\\'")
         let escapedBody = body
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -78,18 +71,26 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
 
         let js = "window.__localserver_http && window.__localserver_http('\(escapedClientId)', '\(escapedBody)');"
 
-        DispatchQueue.main.async {
-            webView.evaluateJavaScript(js) { _, error in
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let webView = self.webView else {
+                completion("{\"error\":\"Bridge not ready\"}")
+                return
+            }
+
+            self.httpCallbacks[clientId] = completion
+
+            webView.evaluateJavaScript(js) { [weak self] _, error in
                 if let error = error {
-                    self.httpCallbacks.removeValue(forKey: clientId)
-                    completion("{\"error\":\"JS eval error: \(error.localizedDescription)\"}")
+                    if let callback = self?.httpCallbacks.removeValue(forKey: clientId) {
+                        callback("{\"error\":\"JS eval error: \(error.localizedDescription)\"}")
+                    }
                 }
             }
-        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-            if let callback = self?.httpCallbacks.removeValue(forKey: clientId) {
-                callback("{\"error\":\"Timeout\"}")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                if let callback = self?.httpCallbacks.removeValue(forKey: clientId) {
+                    callback("{\"error\":\"Timeout\"}")
+                }
             }
         }
     }
@@ -100,14 +101,8 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     private var graphqlCallbacks: [String: (String) -> Void] = [:]
 
     /// Forward a GraphQL POST body to JS for processing.
+    /// All callback dictionary access is serialized on the main queue to prevent thread safety issues.
     func handleGraphQLRequest(clientId: String, body: String, completion: @escaping (String) -> Void) {
-        guard let webView = webView else {
-            completion("{\"data\":null,\"errors\":[{\"message\":\"Bridge not ready\"}]}")
-            return
-        }
-
-        graphqlCallbacks[clientId] = completion
-
         let escapedClientId = clientId.replacingOccurrences(of: "'", with: "\\'")
         let escapedBody = body
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -117,20 +112,28 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
 
         let js = "window.__localserver_graphql && window.__localserver_graphql('\(escapedClientId)', '\(escapedBody)');"
 
-        DispatchQueue.main.async {
-            webView.evaluateJavaScript(js) { _, error in
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let webView = self.webView else {
+                completion("{\"data\":null,\"errors\":[{\"message\":\"Bridge not ready\"}]}")
+                return
+            }
+
+            self.graphqlCallbacks[clientId] = completion
+
+            webView.evaluateJavaScript(js) { [weak self] _, error in
                 if let error = error {
                     NSLog("[LocalNetworkBridge] GraphQL JS eval error: %@", error.localizedDescription)
-                    self.graphqlCallbacks.removeValue(forKey: clientId)
-                    completion("{\"data\":null,\"errors\":[{\"message\":\"JS eval error\"}]}")
+                    if let callback = self?.graphqlCallbacks.removeValue(forKey: clientId) {
+                        callback("{\"data\":null,\"errors\":[{\"message\":\"JS eval error\"}]}")
+                    }
                 }
             }
-        }
 
-        // Timeout after 10 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-            if let callback = self?.graphqlCallbacks.removeValue(forKey: clientId) {
-                callback("{\"data\":null,\"errors\":[{\"message\":\"Timeout\"}]}")
+            // Timeout after 10 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                if let callback = self?.graphqlCallbacks.removeValue(forKey: clientId) {
+                    callback("{\"data\":null,\"errors\":[{\"message\":\"Timeout\"}]}")
+                }
             }
         }
     }

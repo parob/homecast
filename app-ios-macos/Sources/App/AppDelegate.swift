@@ -213,12 +213,16 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     private func forwardRelayStatusToMenuBar(connectionState: String, relayStatus: Bool?) {
         guard let plugin = menuBarPlugin else { return }
 
+        // Community mode: the local Mac IS the relay — always active
+        let effectiveState = AppConfig.isCommunity ? "connected" : connectionState
+        let effectiveRelay: NSNumber? = AppConfig.isCommunity ? NSNumber(value: true) : relayStatus.map { NSNumber(value: $0) }
+
         let selector = NSSelectorFromString("relayStatusDidChangeWithConnectionState:relayStatus:")
         if plugin.responds(to: selector) {
             let method = plugin.method(for: selector)
             typealias Method = @convention(c) (AnyObject, Selector, String, NSNumber?) -> Void
             let impl = unsafeBitCast(method, to: Method.self)
-            impl(plugin, selector, connectionState, relayStatus.map { NSNumber(value: $0) })
+            impl(plugin, selector, effectiveState, effectiveRelay)
         }
     }
 

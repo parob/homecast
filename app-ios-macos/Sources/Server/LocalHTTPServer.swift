@@ -17,7 +17,24 @@ class LocalHTTPServer {
     private(set) var wsClients: [String: NWConnection] = [:]
 
     /// Bridge for forwarding WebSocket messages to/from the WKWebView JS context
-    weak var bridge: LocalNetworkBridge?
+    weak var bridge: LocalNetworkBridge? {
+        didSet {
+            // Process any queued GraphQL requests now that the bridge is available
+            if bridge != nil {
+                // Drain on the server queue where requests were enqueued
+                queue.async { [weak self] in
+                    guard let self = self else { return }
+                    let pending = self.pendingGraphQLRequests
+                    self.pendingGraphQLRequests.removeAll()
+                    for request in pending {
+                        request()
+                    }
+                }
+            }
+        }
+    }
+    /// Queued GraphQL requests waiting for the bridge to initialize
+    private var pendingGraphQLRequests: [() -> Void] = []
     private let webDistPath: String?
     private(set) var port: UInt16 = 0
     private(set) var wsPort: UInt16 = 0
@@ -197,8 +214,10 @@ class LocalHTTPServer {
     }
 
     private func receiveHTTPRequest(on connection: NWConnection) {
-        // Read up to 64KB for the HTTP request (headers + small body)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        // Read up to 64KB for the HTTP request (headers + body)
+        // Safari/WKWebView may split headers and body across TCP segments,
+        // so we check Content-Length and read more if the body is incomplete.
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
             guard let self = self, let data = data, !data.isEmpty else {
                 if let error = error {
                     print("[LocalHTTPServer] Receive error: \(error)")
@@ -212,8 +231,39 @@ class LocalHTTPServer {
                 return
             }
 
+            // Check if the full body has arrived
+            let contentLength = self.parseContentLength(from: requestString)
+            if contentLength > 0, let headerEnd = requestString.range(of: "\r\n\r\n") {
+                let receivedBody = requestString[headerEnd.upperBound...]
+                let receivedBytes = receivedBody.utf8.count
+                if receivedBytes < contentLength {
+                    // Body incomplete — read the remaining bytes
+                    let remaining = contentLength - receivedBytes
+                    connection.receive(minimumIncompleteLength: remaining, maximumLength: remaining) { moreData, _, _, _ in
+                        if let moreData = moreData, let moreString = String(data: moreData, encoding: .utf8) {
+                            self.handleHTTPRequest(requestString + moreString, rawData: data + moreData, on: connection)
+                        } else {
+                            // Couldn't read more — proceed with what we have
+                            self.handleHTTPRequest(requestString, rawData: data, on: connection)
+                        }
+                    }
+                    return
+                }
+            }
+
             self.handleHTTPRequest(requestString, rawData: data, on: connection)
         }
+    }
+
+    private func parseContentLength(from request: String) -> Int {
+        for line in request.components(separatedBy: "\r\n") {
+            if line.isEmpty { break } // End of headers
+            if line.lowercased().hasPrefix("content-length:") {
+                let value = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                return Int(value) ?? 0
+            }
+        }
+        return 0
     }
 
     // MARK: - HTTP Request Parsing & Routing
@@ -310,20 +360,31 @@ class LocalHTTPServer {
             return
         }
 
-        // GraphQL endpoint — forward to JS bridge if available, otherwise use stubs
+        // GraphQL endpoint — forward to JS bridge if available, otherwise queue
         if method == "POST" && (path == "/" || path == "/graphql") {
             let body = extractBody(from: request)
+            let operationName = extractOperationName(from: body) ?? "unknown"
+            NSLog("[LocalHTTPServer] GraphQL %@ — bridge: %@, body length: %d", operationName, bridge != nil ? "ready" : "nil", body.count)
             if let bridge = bridge {
                 let clientId = "graphql-\(UUID().uuidString)"
-                // Forward GraphQL request to JS for processing
                 bridge.handleGraphQLRequest(clientId: clientId, body: body) { [weak self] response in
+                    NSLog("[LocalHTTPServer] GraphQL %@ response: %@", operationName, String(response.prefix(100)))
                     self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
                 }
             } else {
-                // Fallback to stubs if bridge isn't ready yet
-                let operationName = extractOperationName(from: body)
-                let response = stubGraphQLResponse(for: operationName)
-                sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
+                // Bridge not ready — queue the request until it initializes
+                pendingGraphQLRequests.append { [weak self] in
+                    guard let self = self, let bridge = self.bridge else {
+                        self?.sendResponse(on: connection, status: 503, contentType: "application/json", body: """
+                        {"errors":[{"message":"Bridge unavailable"}]}
+                        """)
+                        return
+                    }
+                    let clientId = "graphql-\(UUID().uuidString)"
+                    bridge.handleGraphQLRequest(clientId: clientId, body: body) { [weak self] response in
+                        self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
+                    }
+                }
             }
             return
         }
@@ -402,7 +463,7 @@ class LocalHTTPServer {
             "HTTP/1.1 200 OK",
             "Content-Type: \(contentType)",
             "Content-Length: \(data.count)",
-            "Cache-Control: public, max-age=3600",
+            "Cache-Control: \(ext == "html" || ext == "js" ? "no-cache" : "public, max-age=3600")",
         ]
         headerLines.append(contentsOf: corsHeaders().map { "\($0.key): \($0.value)" })
         headerLines.append("Connection: close")
@@ -568,10 +629,10 @@ class LocalHTTPServer {
             {"data":{"pendingInvitations":[]}}
             """
         case "IsOnboarded":
-            // Stub: assume not onboarded if bridge isn't ready yet
-            // (the real check happens in JS once the bridge connects)
+            // If the server is running, the relay is ready. Auth status comes from
+            // the JS bridge (when available), but stub assumes disabled for quick responses.
             return """
-            {"data":{"isOnboarded":false}}
+            {"data":{"isOnboarded":true,"relayReady":true,"authEnabled":false}}
             """
         case "GetVersion":
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

@@ -30,10 +30,24 @@ enum AppConfig {
     /// The port the local HTTP server is running on (set at runtime).
     static var localServerPort: UInt16 = 5656
 
+    /// Saved relay address for iOS community mode (e.g. "192.168.1.50:5656")
+    static var relayAddress: String? {
+        get { UserDefaults.standard.string(forKey: "com.homecast.relayAddress") }
+        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.relayAddress") }
+    }
+
     /// Base URL for the web app (changes based on mode).
     static var webBaseURL: String {
         if isCommunity {
+            #if targetEnvironment(macCatalyst)
             return "http://localhost:\(localServerPort)"
+            #else
+            // iOS: connect to the user's Mac relay
+            if let addr = relayAddress {
+                return "http://\(addr)"
+            }
+            return "http://localhost:\(localServerPort)" // fallback
+            #endif
         }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
@@ -105,11 +119,8 @@ struct ContentView: View {
     @EnvironmentObject var connectionManager: ConnectionManager
     @EnvironmentObject var homeKitBridge: HomeKitBridge
     @State private var showModeSelector = !AppConfig.modeSelected
-    @State private var webViewId = UUID() // Forces WebView recreation on mode change
-    // Show "Change install type" on login page only
-    // Initialized based on mode — Community shows it by default (hidden on authSuccess),
-    // Cloud only shows it when no token exists
-    @State private var showBackButton: Bool = false
+    @State private var showRelayConnect = false
+    @State private var webViewId = UUID()
 
     private var webViewURL: URL {
         return URL(string: "\(AppConfig.webBaseURL)/login")!
@@ -121,12 +132,11 @@ struct ContentView: View {
                 let isCommunity = mode == .community
                 UserDefaults.standard.set(true, forKey: "com.homecast.modeSelected")
                 UserDefaults.standard.set(isCommunity, forKey: "com.homecast.communityMode")
+                webViewId = UUID()
                 if isCommunity {
                     #if targetEnvironment(macCatalyst)
-                    // Clean up any previous server instance
                     LocalHTTPServer.shared?.stop()
                     LocalHTTPServer.shared = nil
-
                     let server = LocalHTTPServer()
                     server.onReady = {
                         showModeSelector = false
@@ -134,67 +144,37 @@ struct ContentView: View {
                     server.start()
                     LocalHTTPServer.shared = server
                     return
+                    #else
+                    // iOS: show native relay address input
+                    showRelayConnect = true
+                    showModeSelector = false
+                    return
                     #endif
                 }
                 showModeSelector = false
             })
+        } else if showRelayConnect {
+            RelayConnector(onConnect: { address in
+                AppConfig.relayAddress = address
+                webViewId = UUID()
+                showRelayConnect = false
+            }, onBack: {
+                UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
+                UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
+                showRelayConnect = false
+                showModeSelector = true
+            })
         } else {
-            ZStack(alignment: .bottomLeading) {
-                WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
-                    .ignoresSafeArea()
-                    .id(webViewId)
-                    .onAppear {
-                        if AppConfig.isCommunity {
-                            showBackButton = true // Hidden on authSuccess bridge message
-                        } else {
-                            // Delay check so keychain restore has time to load the token
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                showBackButton = connectionManager.authToken == nil
-                            }
-                        }
-                    }
-                    .onChange(of: connectionManager.authToken) { newToken in
-                        if !AppConfig.isCommunity {
-                            showBackButton = newToken == nil
-                        }
-                    }
-                    .onReceive(NotificationCenter.default.publisher(for: .environmentDidChange)) { _ in
-                        if !AppConfig.modeSelected {
-                            showBackButton = true
-                            showModeSelector = true
-                        } else {
-                            webViewId = UUID()
-                        }
-                    }
-                    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("hideBackButton"))) { _ in
-                        showBackButton = false
-                    }
-
-                // Show "Change install type" on login page — hidden after auth
-                if showBackButton {
-                    Button(action: {
-                        UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
-                        if AppConfig.isCommunity {
-                            UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
-                            LocalHTTPServer.shared?.stop()
-                            LocalHTTPServer.shared = nil
-                        }
+            WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
+                .ignoresSafeArea()
+                .id(webViewId)
+                .onReceive(NotificationCenter.default.publisher(for: .environmentDidChange)) { _ in
+                    if !AppConfig.modeSelected {
                         showModeSelector = true
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 12, weight: .medium))
-                            Text("Change install type")
-                                .font(.system(size: 12))
-                        }
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                    } else {
+                        webViewId = UUID()
                     }
-                    .buttonStyle(.plain)
-                    .padding(8)
                 }
-            }
         }
     }
 }
@@ -228,41 +208,33 @@ struct ModeSelector: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
+            Spacer(minLength: 0)
 
-            VStack(spacing: 16) {
-                if let img = logoImage {
-                    Image(uiImage: img)
-                        .resizable()
-                        .frame(width: 64, height: 64)
-                        .cornerRadius(14)
+            // Logo + title + buttons as one centered group
+            VStack(spacing: 20) {
+                VStack(spacing: 16) {
+                    if let img = logoImage {
+                        Image(uiImage: img)
+                            .resizable()
+                            .frame(width: 64, height: 64)
+                            .cornerRadius(14)
+                    }
+
+                    Text("Welcome to Homecast")
+                        .font(.system(size: 24, weight: .semibold))
+
+                    Text("Choose how you'd like to connect your devices.")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
                 }
 
-                Text("Welcome to Homecast")
-                    .font(.system(size: 24, weight: .semibold))
-
-                Text("Choose how you'd like to connect your devices.")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.bottom, 32)
-
-            VStack(spacing: 12) {
-                // Homecast Cloud (recommended)
+                VStack(spacing: 12) {
+                // Homecast Cloud
                 Button(action: { onSelect(.cloud) }) {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text("Homecast Cloud")
-                                    .font(.system(size: 15, weight: .medium))
-                                Text("Recommended")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.blue)
-                                    .cornerRadius(3)
-                            }
+                            Text("Homecast Cloud")
+                                .font(.system(size: 15, weight: .medium))
                             Text("Remote access, cloud sync, and sharing")
                                 .font(.system(size: 12))
                                 .foregroundColor(.secondary)
@@ -274,9 +246,9 @@ struct ModeSelector: View {
                     }
                     .padding(14)
                     .background(Color(.systemBackground))
-                    .cornerRadius(10)
+                    .cornerRadius(16)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 16)
                             .stroke(Color.blue.opacity(0.3), lineWidth: 1)
                     )
                 }
@@ -293,9 +265,15 @@ struct ModeSelector: View {
                             Text("Community")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundColor(.white)
+                            #if targetEnvironment(macCatalyst)
                             Text("Runs entirely on this Mac — no cloud needed")
                                 .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.5))
+                            #else
+                            Text("Connect to a Mac running the Homecast relay")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.5))
+                            #endif
                         }
                         Spacer()
                         if isStarting {
@@ -309,41 +287,187 @@ struct ModeSelector: View {
                         }
                     }
                     .padding(14)
-                    .background(Color(hue: 222/360, saturation: 0.47, brightness: 0.08)) // hsl(222,47%,8%) — dark card
-                    .cornerRadius(10)
+                    .background(Color(hue: 222/360, saturation: 0.47, brightness: 0.08))
+                    .cornerRadius(16)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color(hue: 217/360, saturation: 0.32, brightness: 0.17).opacity(0.8), lineWidth: 0.5) // hsl(217,32%,17%) — dark border
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color(hue: 217/360, saturation: 0.32, brightness: 0.17).opacity(0.8), lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
                 .disabled(isStarting)
 
-            }
-            .frame(maxWidth: 380)
+                }
+                .frame(maxWidth: 300)
 
-            Spacer()
-
-            VStack(spacing: 8) {
                 Button(action: {
                     if let url = URL(string: "https://homecast.cloud/pricing") {
                         UIApplication.shared.open(url)
                     }
                 }) {
                     Text("Compare plans & pricing")
-                        .font(.system(size: 11))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.primary)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
-
-                Text("You can log out and swap between modes at any time.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
             }
-            .padding(.bottom, 20)
+
+            Spacer(minLength: 0)
+
+            Text("You can log out and swap between modes at any time.")
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Relay Connector (iOS only)
+
+struct RelayConnector: View {
+    let onConnect: (String) -> Void
+    let onBack: () -> Void
+
+    @State private var address = "http://localhost:5656"
+    @State private var isConnecting = false
+    @State private var error = ""
+
+    private var logoImage: UIImage? {
+        if let path = Bundle.main.path(forResource: "web-dist/icon-192", ofType: "png"),
+           let image = UIImage(contentsOfFile: path) {
+            return image
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            VStack(spacing: 20) {
+                VStack(spacing: 16) {
+                    if let img = logoImage {
+                        Image(uiImage: img)
+                            .resizable()
+                            .frame(width: 64, height: 64)
+                            .cornerRadius(14)
+                    }
+
+                    Text("Connect to Relay")
+                        .font(.system(size: 24, weight: .semibold))
+
+                    Text("Enter the address of your Homecast relay running on your Mac.")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                VStack(spacing: 12) {
+                    TextField("http://192.168.1.50:5656", text: $address)
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(isConnecting)
+
+                    if !error.isEmpty {
+                        Text(error)
+                            .font(.system(size: 12))
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button(action: connect) {
+                        HStack {
+                            if isConnecting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .padding(.trailing, 4)
+                            }
+                            Text(isConnecting ? "Connecting..." : "Connect")
+                                .font(.system(size: 15, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.accentColor)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
+                    .disabled(isConnecting)
+
+                    Button(action: onBack) {
+                        Text("Back")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isConnecting)
+                }
+                .frame(maxWidth: 300)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    private func connect() {
+        guard !address.trimmingCharacters(in: .whitespaces).isEmpty else {
+            error = "Enter a relay address"
+            return
+        }
+        isConnecting = true
+        error = ""
+
+        // Normalize URL
+        var url = address.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !url.hasPrefix("http://") && !url.hasPrefix("https://") {
+            url = "http://\(url)"
+        }
+
+        // Extract host:port
+        guard let parsed = URL(string: url), let host = parsed.host else {
+            error = "Invalid URL"
+            isConnecting = false
+            return
+        }
+        let port = parsed.port ?? 5656
+        let addr = "\(host):\(port)"
+
+        // Validate relay
+        guard let healthURL = URL(string: "http://\(addr)/health") else {
+            error = "Invalid address"
+            isConnecting = false
+            return
+        }
+
+        let task = URLSession.shared.dataTask(with: healthURL) { data, response, err in
+            DispatchQueue.main.async {
+                self.isConnecting = false
+                if let err = err {
+                    self.error = "Could not connect: \(err.localizedDescription)"
+                    return
+                }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      json["status"] as? String == "ok" else {
+                    self.error = "Not a Homecast relay"
+                    return
+                }
+                onConnect(addr)
+            }
+        }
+        task.resume()
     }
 }
 
@@ -551,6 +675,22 @@ struct WebViewContainer: UIViewRepresentable {
             forMainFrameOnly: false
         ))
 
+        // iOS community mode: inject client state so web app knows it's connected to a relay
+        #if !targetEnvironment(macCatalyst)
+        if AppConfig.isCommunity, let addr = AppConfig.relayAddress {
+            let communityScript = """
+            window.__HOMECAST_COMMUNITY__ = true;
+            localStorage.setItem('cookie-consent', 'granted');
+            console.log('[Homecast] iOS community client — relay: \(addr)');
+            """
+            config.userContentController.addUserScript(WKUserScript(
+                source: communityScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+        }
+        #endif
+
         // Inject local server bridge globals (Community mode only)
         #if targetEnvironment(macCatalyst)
         if AppConfig.isCommunity {
@@ -600,18 +740,28 @@ struct WebViewContainer: UIViewRepresentable {
                     if (window.__localserver_graphql_handler) {
                         window.__localserver_graphql_handler(clientId, request);
                     } else {
-                        // Handler not registered yet — return empty
-                        webkit.messageHandlers.localServer.postMessage({
-                            action: 'graphqlResponse',
-                            clientId: clientId,
-                            response: JSON.stringify({data: {}})
-                        });
+                        // Handler not registered yet — retry until web app finishes loading
+                        var retries = 0;
+                        var retry = function() {
+                            if (window.__localserver_graphql_handler) {
+                                window.__localserver_graphql_handler(clientId, request);
+                            } else if (retries++ < 20) {
+                                setTimeout(retry, 250);
+                            } else {
+                                webkit.messageHandlers.localServer.postMessage({
+                                    action: 'graphqlResponse',
+                                    clientId: clientId,
+                                    response: JSON.stringify({data: null, errors: [{message: 'Handler not ready after 5s'}]})
+                                });
+                            }
+                        };
+                        setTimeout(retry, 250);
                     }
                 } catch (e) {
                     webkit.messageHandlers.localServer.postMessage({
                         action: 'graphqlResponse',
                         clientId: clientId,
-                        response: JSON.stringify({data: null, errors: [{message: 'Parse error'}]})
+                        response: JSON.stringify({data: null, errors: [{message: e.message}]})
                     });
                 }
             };
@@ -623,17 +773,27 @@ struct WebViewContainer: UIViewRepresentable {
                     if (window.__localserver_http_handler) {
                         window.__localserver_http_handler(clientId, request);
                     } else {
-                        webkit.messageHandlers.localServer.postMessage({
-                            action: 'httpResponse',
-                            clientId: clientId,
-                            response: JSON.stringify({error: 'HTTP handler not ready'})
-                        });
+                        var retries = 0;
+                        var retry = function() {
+                            if (window.__localserver_http_handler) {
+                                window.__localserver_http_handler(clientId, request);
+                            } else if (retries++ < 20) {
+                                setTimeout(retry, 250);
+                            } else {
+                                webkit.messageHandlers.localServer.postMessage({
+                                    action: 'httpResponse',
+                                    clientId: clientId,
+                                    response: JSON.stringify({error: 'HTTP handler not ready after 5s'})
+                                });
+                            }
+                        };
+                        setTimeout(retry, 250);
                     }
                 } catch (e) {
                     webkit.messageHandlers.localServer.postMessage({
                         action: 'httpResponse',
                         clientId: clientId,
-                        response: JSON.stringify({error: 'Parse error'})
+                        response: JSON.stringify({error: e.message})
                     });
                 }
             };
@@ -947,7 +1107,6 @@ struct WebViewContainer: UIViewRepresentable {
                     return
                 }
                 print("[WebView] Received login token from web")
-                NotificationCenter.default.post(name: Notification.Name("hideBackButton"), object: nil)
                 // Mark as WebView-initiated so updateUIView doesn't interfere with frontend navigation
                 self.webViewInitiatedLogin = true
                 Task { @MainActor in
@@ -963,20 +1122,31 @@ struct WebViewContainer: UIViewRepresentable {
                 print("[WebView] Received logout from web")
                 // Mark as WebView-initiated so updateUIView doesn't interfere with frontend navigation
                 self.webViewInitiatedLogout = true
+                // Show "Change install type" button on login page
                 Task { @MainActor in
                     connectionManager.signOut()
                 }
             case "authSuccess":
-                // User authenticated — hide the "Change install type" button
-                NotificationCenter.default.post(name: Notification.Name("hideBackButton"), object: nil)
+                print("[WebView] User authenticated")
             case "resetMode":
                 // Reset mode selection — stop server, clean up, show mode selector
                 print("[WebView] Reset mode selection")
                 LocalHTTPServer.shared?.stop()
                 LocalHTTPServer.shared = nil
-                UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
-                UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
-                NotificationCenter.default.post(name: .environmentDidChange, object: nil)
+                // Clear ALL web data (localStorage, cookies, cache) across all origins
+                // THEN show mode selector — ensures no stale data when user picks a mode
+                WKWebsiteDataStore.default().removeData(
+                    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                    modifiedSince: .distantPast
+                ) {
+                    DispatchQueue.main.async {
+                        print("[WebView] Web data cleared, showing mode selector")
+                        UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
+                        UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
+                        AppConfig.relayAddress = nil
+                        NotificationCenter.default.post(name: .environmentDidChange, object: nil)
+                    }
+                }
             case "copy":
                 if let text = body["text"] as? String {
                     let textCopy = String(text)
@@ -1052,8 +1222,7 @@ struct WebViewContainer: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 webView.evaluateJavaScript("window.location.pathname") { result, _ in
                     if let path = result as? String, path.contains("/portal") {
-                        NotificationCenter.default.post(name: Notification.Name("hideBackButton"), object: nil)
-                    }
+                            }
                 }
             }
 
