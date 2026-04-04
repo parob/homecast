@@ -162,6 +162,51 @@ Cloud-specific UI components (admin panel, billing, cloud relay management) live
 
 **Community builds use the stub by default** — no `src/cloud/` directory exists in this repo.
 
+## Deployment & Environments
+
+The web app (`app-web/`) runs in **two different ways** depending on mode:
+
+| Mode | Where web app loads from | How to deploy |
+|------|-------------------------|---------------|
+| **Community** | Bundled in Mac app (`Resources/web-dist/`) | `./scripts/bundle-web-app.sh` → rebuild Mac app |
+| **Cloud** | Served from Firebase Hosting (`homecast.cloud`) | Push to `app-web` repo → promote via CI |
+
+### Cloud deployment pipeline
+
+```
+app-web push to main
+  → CI triggers "Deploy Web App to Staging" on homecast-cloud (automatic)
+  → staging.homecast.cloud updated
+
+To promote to production:
+  → Run "Deploy Web App to Production" workflow on homecast-cloud
+  → gh workflow run "Deploy Web App to Production" --ref main -f confirm=deploy
+  → homecast.cloud updated
+```
+
+**Critical:** Changes to relay code (`src/relay/local-handler.ts`, `src/server/`) affect the Mac app's WKWebView behavior. In cloud mode, the Mac app loads this code from `homecast.cloud`, NOT from the local bundle. You MUST deploy to production for cloud relay fixes to take effect. Rebuilding the Mac app alone is NOT sufficient for cloud mode.
+
+### Verify deployment
+
+```bash
+# Check what's deployed
+curl -s https://homecast.cloud/version.json
+curl -s https://staging.homecast.cloud/version.json
+
+# Check CI status
+cd ~/Documents/GitHub/homecast-cloud && gh run list --workflow "Deploy Web App to Production" --limit 3
+```
+
+### Environments
+
+| Environment | Web App | API Server | Mac App Relay |
+|-------------|---------|------------|---------------|
+| **Production** | `homecast.cloud` | `api.homecast.cloud` | Connects via WS to `api.homecast.cloud`, loads UI from `homecast.cloud` |
+| **Staging** | `staging.homecast.cloud` | `staging.api.homecast.cloud` | Connects via WS to `staging.api.homecast.cloud`, loads UI from `staging.homecast.cloud` |
+| **Community** | Bundled in Mac app | N/A (all local) | Serves from `localhost:5656`, uses bundled `web-dist/` |
+
+The Mac app's environment is set via `AppConfig.isStaging` (UserDefaults) and `AppConfig.isCommunity`. The relay MUST be connected to the same environment that the client (HA, browser) is using.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
