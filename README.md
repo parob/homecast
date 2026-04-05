@@ -69,26 +69,25 @@ Other devices connect to your Mac's IP:
 ## API
 
 ```bash
-# List homes
-curl http://your-mac.local:5656/rest/homes
+# Get device state
+curl http://your-mac.local:5656/rest/state
 
-# List accessories
-curl http://your-mac.local:5656/rest/accessories?home=HOME_ID
-
-# Turn on a light
+# Turn on a light (use slug keys from state response)
 curl -X POST http://your-mac.local:5656/rest/state \
   -H "Content-Type: application/json" \
-  -d '{"ACCESSORY_ID": {"switch": {"power_state": 1}}}'
+  -d '{"my_home_a1b2": {"bedroom_c3d4": {"lamp_e5f6": {"on": true}}}}'
 
-# List scenes
-curl http://your-mac.local:5656/rest/scenes?home=HOME_ID
+# Run a scene
+curl -X POST http://your-mac.local:5656/rest/scene \
+  -H "Content-Type: application/json" \
+  -d '{"home": "my_home_a1b2", "name": "Good Night"}'
 ```
 
 ### MCP (AI Assistants)
 
 Point your MCP client at `http://your-mac.local:5656/mcp`.
 
-Available tools: `list_homes`, `list_rooms`, `list_accessories`, `get_accessory`, `set_characteristic`, `set_state`, `list_scenes`, `execute_scene`, `list_service_groups`
+Available tools: `get_state`, `set_state`, `run_scene`
 
 ## Remote Access
 

@@ -53,13 +53,15 @@ Your Mac                         LAN / Tunnel
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /rest/homes` | List HomeKit homes |
+| `GET /rest/state` | Get simplified device state (`?home=X&room=X&type=X&name=X`) |
+| `POST /rest/state` | Control devices |
 | `GET /rest/accessories` | List accessories (filter: `?home=X&room=X`) |
 | `GET /rest/accessories/:id` | Get single accessory |
-| `POST /rest/state` | Control devices |
 | `GET /rest/scenes` | List scenes (`?home=X`) |
-| `POST /rest/scenes/:id/execute` | Execute a scene |
+| `POST /rest/scenes/:id/execute` | Execute a scene by ID |
+| `POST /rest/scene` | Execute a scene by name (`{home, name}`) |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
-| `POST /mcp` | MCP endpoint for AI assistants |
+| `POST /mcp` | MCP endpoint (tools: `get_state`, `set_state`, `run_scene`) |
 | `GET /health` | Health check |
 | `GET /config.json` | Server config (mode, version, ports) |
 | `WebSocket :5657` | Real-time updates |
