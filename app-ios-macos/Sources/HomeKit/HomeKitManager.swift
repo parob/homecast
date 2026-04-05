@@ -1240,7 +1240,13 @@ class HomeKitManager: NSObject, ObservableObject {
 
     /// Set state using simplified format: {room: {accessory: {prop: value}}}
     /// Writes are executed concurrently via TaskGroup for minimum latency.
-    func setState(state: [String: [String: [String: Any]]], homeId: String? = nil) async throws -> (ok: Int, failed: [String]) {
+    struct StateSetChange {
+        let accessoryId: String
+        let characteristicType: String
+        let value: Any
+    }
+
+    func setState(state: [String: [String: [String: Any]]], homeId: String? = nil) async throws -> (ok: Int, failed: [String], changes: [StateSetChange]) {
         // Collect all write operations first, then execute concurrently
         struct WriteOp: @unchecked Sendable {
             let label: String
@@ -1249,15 +1255,17 @@ class HomeKitManager: NSObject, ObservableObject {
             let charType: String
             let value: Any
             let homeId: String?
+            let simpleName: String
 
             // Sendable-safe initializer (Any is not Sendable, but we only pass JSON primitives)
-            nonisolated init(label: String, accessoryId: String? = nil, groupId: String? = nil, charType: String, value: Any, homeId: String? = nil) {
+            nonisolated init(label: String, accessoryId: String? = nil, groupId: String? = nil, charType: String, value: Any, homeId: String? = nil, simpleName: String = "") {
                 self.label = label
                 self.accessoryId = accessoryId
                 self.groupId = groupId
                 self.charType = charType
                 self.value = value
                 self.homeId = homeId
+                self.simpleName = simpleName
             }
         }
 
@@ -1278,7 +1286,7 @@ class HomeKitManager: NSObject, ObservableObject {
                         let charType = CharacteristicMapper.fromSimpleName(prop)
                         let convertedValue = CharacteristicMapper.convertSimpleValue(value, forProperty: prop)
                         print("[HomeKit] 📝 setState: \(fullKey).\(prop) = \(value) -> \(charType)=\(convertedValue)")
-                        ops.append(WriteOp(label: "\(fullKey).\(prop)", accessoryId: accessory.uniqueIdentifier.uuidString, charType: charType, value: convertedValue))
+                        ops.append(WriteOp(label: "\(fullKey).\(prop)", accessoryId: accessory.uniqueIdentifier.uuidString, charType: charType, value: convertedValue, simpleName: prop))
                     }
                 } else if let (group, _) = findServiceGroupByKey(groupKey: accKey, homeId: homeId) {
                     for (prop, value) in properties {
@@ -1286,7 +1294,7 @@ class HomeKitManager: NSObject, ObservableObject {
                         let charType = CharacteristicMapper.fromSimpleName(prop)
                         let convertedValue = CharacteristicMapper.convertSimpleValue(value, forProperty: prop)
                         print("[HomeKit] 📝 setState (group): \(fullKey).\(prop) = \(value) -> \(charType)=\(convertedValue)")
-                        ops.append(WriteOp(label: "\(fullKey).\(prop)", groupId: group.uniqueIdentifier.uuidString, charType: charType, value: convertedValue, homeId: homeId))
+                        ops.append(WriteOp(label: "\(fullKey).\(prop)", groupId: group.uniqueIdentifier.uuidString, charType: charType, value: convertedValue, homeId: homeId, simpleName: prop))
                     }
                 } else {
                     print("[HomeKit] ⚠️ setState: \(fullKey) not found")
@@ -1295,9 +1303,9 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        // Execute all writes concurrently
-        let results: [(Bool, String?)] = await withTaskGroup(of: (Bool, String?).self, returning: [(Bool, String?)].self) { group in
-            for op in ops {
+        // Execute all writes concurrently, track which ops succeeded
+        let results: [(Bool, String?, Int)] = await withTaskGroup(of: (Bool, String?, Int).self, returning: [(Bool, String?, Int)].self) { group in
+            for (index, op) in ops.enumerated() {
                 group.addTask {
                     do {
                         if let accessoryId = op.accessoryId {
@@ -1305,14 +1313,14 @@ class HomeKitManager: NSObject, ObservableObject {
                         } else if let groupId = op.groupId {
                             let _ = try await self.setServiceGroupCharacteristic(homeId: op.homeId, groupId: groupId, characteristicType: op.charType, value: op.value)
                         }
-                        return (true, nil)
+                        return (true, nil, index)
                     } catch {
                         print("[HomeKit] ❌ setState failed: \(op.label): \(error)")
-                        return (false, "\(op.label): \(error.localizedDescription)")
+                        return (false, "\(op.label): \(error.localizedDescription)", index)
                     }
                 }
             }
-            var collected: [(Bool, String?)] = []
+            var collected: [(Bool, String?, Int)] = []
             for await result in group {
                 collected.append(result)
             }
@@ -1321,7 +1329,36 @@ class HomeKitManager: NSObject, ObservableObject {
 
         let okCount = results.filter { $0.0 }.count
         let failed = notFound + results.compactMap { $0.1 }
-        return (okCount, failed)
+
+        // Build list of successful changes with resolved UUIDs and HomeKit characteristic types
+        var changes: [StateSetChange] = []
+        for (success, _, index) in results where success {
+            let op = ops[index]
+            let friendlyType = CharacteristicMapper.fromHomeKitType(op.charType)
+
+            if let accessoryId = op.accessoryId {
+                // Individual accessory
+                changes.append(StateSetChange(accessoryId: accessoryId, characteristicType: friendlyType, value: op.value))
+            } else if let groupId = op.groupId {
+                // Service group — emit changes for the group AND each member accessory
+                changes.append(StateSetChange(accessoryId: groupId, characteristicType: friendlyType, value: op.value))
+                if let groupUUID = UUID(uuidString: groupId) {
+                    for home in homes {
+                        if let group = home.serviceGroups.first(where: { $0.uniqueIdentifier == groupUUID }) {
+                            let memberIds = Set(group.services.compactMap { service in
+                                home.accessories.first(where: { $0.services.contains(service) })?.uniqueIdentifier.uuidString
+                            })
+                            for memberId in memberIds {
+                                changes.append(StateSetChange(accessoryId: memberId, characteristicType: friendlyType, value: op.value))
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        return (okCount, failed, changes)
     }
 
     // MARK: - Private Helpers

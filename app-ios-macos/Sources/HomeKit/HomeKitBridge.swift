@@ -625,11 +625,16 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
 
     private func setState(state: [String: [String: [String: Any]]], homeId: String?) async throws -> [String: Any] {
         await homeKitManager.waitForReady()
-        let (ok, failed) = try await homeKitManager.setState(state: state, homeId: homeId)
+        let (ok, failed, changes) = try await homeKitManager.setState(state: state, homeId: homeId)
         return [
             "success": failed.isEmpty,
             "ok": ok,
-            "failed": failed
+            "failed": failed,
+            "changes": changes.map { [
+                "accessoryId": $0.accessoryId,
+                "characteristicType": $0.characteristicType,
+                "value": $0.value
+            ] }
         ]
     }
 
