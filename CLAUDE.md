@@ -122,6 +122,105 @@ Messages use this JSON format:
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
 
+## Advanced Automation Engine
+
+The web app includes an n8n-style visual automation engine with data flow between nodes.
+
+### Architecture
+
+```
+app-web/src/automation/           # Engine core
+├── engine/
+│   ├── AutomationEngine.ts       # Orchestrator: lifecycle, trigger → condition → action
+│   ├── ActionExecutor.ts         # Executes actions, captures per-node output, error handling
+│   ├── TriggerManager.ts         # Registers triggers, service group support
+│   ├── ConditionEvaluator.ts     # AND/OR/NOT condition trees
+│   ├── ExecutionContext.ts       # Per-run state: nodeOutputs, variables, trace
+│   └── ScriptRunner.ts           # Reusable script execution
+├── expression/
+│   ├── ExpressionEngine.ts       # Template resolution: {{ nodes.http1.data.body }}
+│   ├── ExpressionLexer.ts        # Tokenizer
+│   ├── ExpressionParser.ts       # AST parser
+│   ├── ExpressionEval.ts         # AST evaluator with nodes/trigger/variables context
+│   └── functions.ts              # Built-in: states(), is_state(), now(), min/max, etc.
+├── state/StateStore.ts           # Reactive device state tracking
+├── types/automation.ts           # All type definitions (triggers, actions, conditions)
+└── types/execution.ts            # ExecutionTrace, TraceStep, StateChangeEvent
+
+app-web/src/components/automation-editor/  # Visual editor
+├── AutomationEditorDialog.tsx    # Main dialog: canvas, toolbar, undo/redo
+├── constants.ts                  # Node definitions, output schemas, categories
+├── nodes/BaseNode.tsx            # Universal node renderer (multi-input/output handles)
+├── panels/
+│   ├── NodePalette.tsx           # Drag-and-drop palette
+│   ├── NodeConfigPanel.tsx       # Right tray config (per-node-type forms)
+│   └── ExecutionHistoryPanel.tsx # Execution trace viewer
+├── edges/ControlFlowEdge.tsx     # Smooth step edges
+└── serialization/
+    ├── graphToAutomation.ts      # React Flow graph → Automation JSON
+    └── automationToGraph.ts      # Automation JSON → React Flow graph
+```
+
+### Data Flow Model
+
+Every node captures output accessible to downstream nodes via expressions:
+- `{{ nodes.http1.data.body.temperature }}` — access HTTP response body
+- `{{ nodes.code1.data.result }}` — access code node return value
+- `{{ trigger.to_value }}` — access trigger data
+- Node IDs with hyphens require bracket notation: `{{ nodes['http-1'].data.status }}`
+
+Output schemas are defined in `NODE_OUTPUT_SCHEMAS` in `constants.ts`.
+
+### Node Types (Palette)
+
+| Node | Category | Engine Type | Description |
+|------|----------|-------------|-------------|
+| Device Changed | trigger | `state` / `numeric_state` | Device or service group state change |
+| Schedule | trigger | `time` / `time_pattern` / `sun` | Time-based triggers |
+| Webhook | trigger | `webhook` | HTTP webhook trigger |
+| Set Device | action | `set_characteristic` | Control a device |
+| Run Scene | action | `execute_scene` | Execute HomeKit scene |
+| Delay | action | `delay` | Wait for duration |
+| Notify | action | `notify` | Push notification |
+| HTTP Request | action | `fire_webhook` | HTTP request (response captured as output) |
+| Code | action | `code` | Sandboxed JavaScript (receives `input` object) |
+| IF | logic | `if_then_else` | Conditional branch (true/false outputs) |
+| Wait | logic | `wait_for_trigger` | Pause until condition or timeout |
+| Merge | logic | `merge` | Combine data from multiple branches (2 input handles) |
+| Sub-workflow | logic | `call_script` | Execute another automation |
+
+### Service Group Triggers
+
+Triggers can reference a service group instead of individual accessory:
+- `serviceGroupId` on `StateTrigger`/`NumericStateTrigger` (mutually exclusive with `accessoryId`)
+- `TriggerManager` uses `ServiceGroupResolver.getGroupsForAccessory()` for dynamic reverse-index lookup
+- Group membership changes reflected immediately (no re-registration needed)
+
+### Per-Node Error Handling
+
+Actions support `onError: 'stop' | 'continue' | 'retry'`:
+- `stop` (default): error propagates, automation halts
+- `continue`: error logged in node output, next action proceeds
+- `retry`: exponential backoff up to `maxRetries`, then continues
+
+### Persistence (IndexedDB)
+
+| Store | Key | Purpose |
+|-------|-----|---------|
+| `hc_automations` | `id` | Automation definitions (JSON) |
+| `execution_traces` | `id` (index: `automationId`) | Execution history (100 per automation) |
+| `automation_versions` | `id` (index: `automationId`) | Version snapshots (50 per automation, auto-created on save) |
+| `credentials` | `id` | Encrypted credentials for HTTP nodes |
+
+### Testing
+
+```bash
+cd app-web
+npm test              # Run all tests
+npm run test:watch    # Watch mode
+npx vitest run src/automation/  # Automation tests only
+```
+
 ## Adding New Swift Files
 
 New `.swift` files must be added to `Homecast.xcodeproj/project.pbxproj` in 4 places: PBXBuildFile, PBXFileReference, PBXGroup children, PBXSourcesBuildPhase. Use the next available ID in the `C1` prefix range for Server files.
