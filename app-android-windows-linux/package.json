@@ -1,7 +1,7 @@
 {
   "name": "homecast-android-windows-linux",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
     "tauri": "tauri"
   },
