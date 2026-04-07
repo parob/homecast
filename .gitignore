@@ -37,7 +37,7 @@ Package.resolved
 app-web/
 
 # Cloud server (private repo: parob/homecast-cloud)
-server/
+/server/
 
 # Node / docs
 node_modules/
