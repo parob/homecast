@@ -10,7 +10,6 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     /// Local HTTP server for Community mode (Mac only)
     #if targetEnvironment(macCatalyst)
     var localHTTPServer: LocalHTTPServer?
-    var mqttClient: MQTTClient?
     var mqttBridge: MQTTBridge?
     #endif
 
@@ -68,7 +67,32 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         }
         #endif
 
+        // Check notification authorization status
+        Task { @MainActor in
+            await NotificationManager.shared.checkAuthorizationStatus()
+        }
+
         return true
+    }
+
+    // MARK: - Remote Notification Registration
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        Task { @MainActor in
+            NotificationManager.shared.didRegisterForRemoteNotifications(deviceToken: deviceToken)
+        }
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        Task { @MainActor in
+            NotificationManager.shared.didFailToRegisterForRemoteNotifications(error: error)
+        }
     }
 
     // MARK: - Local Server Lifecycle
@@ -81,19 +105,14 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         localHTTPServer = server
         LocalHTTPServer.shared = server
 
-        // Initialize MQTT client + bridge (connected later when settings are loaded)
-        let client = MQTTClient()
-        let bridge = MQTTBridge(mqttClient: client)
-        mqttClient = client
+        // Initialize MQTT bridge (auto-connects saved brokers from UserDefaults)
+        let bridge = MQTTBridge()
         mqttBridge = bridge
-        MQTTClient.shared = client
+        bridge.loadAndConnectSavedBrokers()
     }
 
     func stopLocalServer() {
-        mqttClient?.disconnect()
-        mqttClient = nil
         mqttBridge = nil
-        MQTTClient.shared = nil
         localHTTPServer?.stop()
         localHTTPServer = nil
         print("[Homecast] Community mode: local server stopped")

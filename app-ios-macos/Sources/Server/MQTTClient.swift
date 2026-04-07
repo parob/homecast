@@ -5,8 +5,6 @@ import Network
 /// Connects to an external MQTT broker and handles publish/subscribe.
 /// No external dependencies — uses Apple's Network framework.
 class MQTTClient {
-    /// Singleton for access from WKWebView Coordinator
-    static var shared: MQTTClient?
 
     struct BrokerConfig {
         let host: String

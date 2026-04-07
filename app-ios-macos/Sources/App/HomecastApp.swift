@@ -1188,48 +1188,87 @@ struct WebViewContainer: UIViewRepresentable {
                     self.handleFileOperation(method: method, payload: payload, callbackId: callbackId)
                 }
             case "mqtt":
-                // Handle MQTT configuration from the web app
+                // Handle MQTT broker management from the web app
                 #if targetEnvironment(macCatalyst)
-                if let method = body["method"] as? String {
+                if let method = body["method"] as? String,
+                   let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+                   let bridge = appDelegate.mqttBridge {
+                    let callbackId = body["callbackId"] as? String ?? ""
                     switch method {
-                    case "connect":
-                        if let host = body["host"] as? String,
-                           let port = body["port"] as? Int {
-                            let config = MQTTClient.BrokerConfig(
+                    case "getBrokers":
+                        let brokers = bridge.getBrokers()
+                        if let data = try? JSONSerialization.data(withJSONObject: brokers),
+                           let json = String(data: data, encoding: .utf8) {
+                            let escaped = json.replacingOccurrences(of: "'", with: "\\'")
+                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
+                            webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+
+                    case "addBroker":
+                        if let homeId = body["homeId"] as? String,
+                           let host = body["host"] as? String {
+                            let config = MQTTBrokerConfig(
+                                id: UUID().uuidString,
+                                name: body["name"] as? String ?? host,
                                 host: host,
-                                port: UInt16(port),
+                                port: UInt16(body["port"] as? Int ?? 1883),
                                 username: body["username"] as? String,
                                 password: body["password"] as? String,
                                 useTLS: body["useTLS"] as? Bool ?? false,
-                                clientId: "homecast-\(ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: ""))",
-                                topicPrefix: body["topicPrefix"] as? String ?? "homecast"
+                                topicPrefix: body["topicPrefix"] as? String ?? "homecast",
+                                haDiscovery: body["haDiscovery"] as? Bool ?? true,
+                                haDiscoveryPrefix: body["haDiscoveryPrefix"] as? String ?? "homeassistant",
+                                enabled: true
                             )
-                            if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                                appDelegate.mqttBridge?.topicPrefix = config.topicPrefix
-                                appDelegate.mqttBridge?.haDiscoveryEnabled = body["haDiscovery"] as? Bool ?? true
-                                if let prefix = body["haDiscoveryPrefix"] as? String {
-                                    appDelegate.mqttBridge?.haDiscoveryPrefix = prefix
-                                }
-                                // Set LWT before connecting
-                                appDelegate.mqttClient?.willTopic = "\(config.topicPrefix)/status"
-                                appDelegate.mqttClient?.willMessage = Data("offline".utf8)
-                                appDelegate.mqttClient?.willRetain = true
-                                appDelegate.mqttClient?.connect(config: config)
+                            let added = bridge.addBroker(config, forHome: homeId)
+                            if let data = try? JSONEncoder().encode(added),
+                               let json = String(data: data, encoding: .utf8) {
+                                let escaped = json.replacingOccurrences(of: "'", with: "\\'")
+                                let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
+                                webView?.evaluateJavaScript(js, completionHandler: nil)
                             }
                         }
-                    case "disconnect":
-                        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                            appDelegate.mqttClient?.disconnect()
-                        }
-                    case "status":
-                        // Return MQTT status to JS
-                        if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-                           let bridge = appDelegate.mqttBridge {
-                            let status = bridge.statusDescription
-                            let callbackId = body["callbackId"] as? String ?? ""
-                            let js = "window.__mqtt_status_callback && window.__mqtt_status_callback('\(callbackId)', '\(status)');"
+
+                    case "removeBroker":
+                        if let homeId = body["homeId"] as? String,
+                           let brokerId = body["brokerId"] as? String {
+                            bridge.removeBroker(id: brokerId, forHome: homeId)
+                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '{\"ok\":true}');"
                             webView?.evaluateJavaScript(js, completionHandler: nil)
                         }
+
+                    case "updateBroker":
+                        if let homeId = body["homeId"] as? String,
+                           let brokerId = body["brokerId"] as? String,
+                           let updates = body["updates"] as? [String: Any] {
+                            bridge.updateBroker(id: brokerId, forHome: homeId, updates: updates)
+                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '{\"ok\":true}');"
+                            webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+
+                    case "testConnection":
+                        if let host = body["host"] as? String {
+                            let port = UInt16(body["port"] as? Int ?? 1883)
+                            bridge.testConnection(
+                                host: host,
+                                port: port,
+                                username: body["username"] as? String,
+                                password: body["password"] as? String,
+                                useTLS: body["useTLS"] as? Bool ?? false
+                            ) { success, error in
+                                var result: [String: Any] = ["success": success]
+                                if let error = error { result["error"] = error }
+                                if let data = try? JSONSerialization.data(withJSONObject: result),
+                                   let json = String(data: data, encoding: .utf8) {
+                                    let escaped = json.replacingOccurrences(of: "'", with: "\\'")
+                                    let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
+                                    DispatchQueue.main.async {
+                                        webView?.evaluateJavaScript(js, completionHandler: nil)
+                                    }
+                                }
+                            }
+                        }
+
                     default:
                         break
                     }
