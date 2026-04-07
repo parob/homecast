@@ -14,5 +14,7 @@
 	<array>
 		<string>$(AppIdentifierPrefix)cloud.homecast.app</string>
 	</array>
+	<key>aps-environment</key>
+	<string>production</string>
 </dict>
 </plist>

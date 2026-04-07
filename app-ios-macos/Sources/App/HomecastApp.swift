@@ -1262,8 +1262,8 @@ struct WebViewContainer: UIViewRepresentable {
                                    let json = String(data: data, encoding: .utf8) {
                                     let escaped = json.replacingOccurrences(of: "'", with: "\\'")
                                     let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
-                                    DispatchQueue.main.async {
-                                        webView?.evaluateJavaScript(js, completionHandler: nil)
+                                    DispatchQueue.main.async { [weak self] in
+                                        self?.webView?.evaluateJavaScript(js, completionHandler: nil)
                                     }
                                 }
                             }

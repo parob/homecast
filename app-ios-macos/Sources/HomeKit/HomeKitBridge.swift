@@ -346,6 +346,25 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
             return setEnvironment(environment: environment)
 
+        // Notification operations
+        case "notification.show":
+            let message = payload["message"] as? String ?? ""
+            let title = payload["title"] as? String
+            let data = payload["data"] as? [String: Any]
+            NotificationManager.shared.showLocalNotification(
+                title: title,
+                message: message,
+                data: data
+            )
+            return ["success": true]
+
+        case "notification.requestPermission":
+            let granted = await NotificationManager.shared.requestPermission()
+            return ["granted": granted]
+
+        case "notification.getAPNsToken":
+            return ["token": NotificationManager.shared.apnsToken as Any]
+
         default:
             throw HomeKitBridgeError.unknownMethod(method)
         }

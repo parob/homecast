@@ -6,6 +6,19 @@ Homecast connects Apple HomeKit smart home devices to open standards (REST, MCP,
 
 The Community Edition runs entirely on a Mac — no cloud server needed.
 
+## Multi-Repo Product
+
+Homecast is a single product split across multiple repos. When working in any one repo, **search across all of them** — features, bugs, and context frequently span repos.
+
+| Repo | Path | Description |
+|------|------|-------------|
+| [parob/homecast](https://github.com/parob/homecast) | `homecast/` | Mac app (Swift) + this CLAUDE.md (PUBLIC, MIT) |
+| [parob/homecast-web](https://github.com/parob/homecast-web) | `homecast/app-web/` | Web app — nested inside homecast as a subdir (PUBLIC, MIT) |
+| [parob/homecast-cloud](https://github.com/parob/homecast-cloud) | `homecast-cloud/` | Cloud server (Python) + cloud UI + docs site (PRIVATE) |
+| [parob/homecast-hass](https://github.com/parob/homecast-hass) | `homecast-hass/` | Home Assistant integration (PUBLIC) |
+
+All repos live as siblings under `~/Documents/GitHub/`. The web app is a separate git repo checked out inside `homecast/app-web/`.
+
 ## Project Structure
 
 | Directory | Description |
@@ -20,15 +33,16 @@ The Community Edition runs entirely on a Mac — no cloud server needed.
 The Mac app acts as both the HomeKit relay and the server:
 
 ```
-Your Mac                         LAN / Tunnel
-┌──────────────────────┐    ┌──────────────────┐
-│ HomeKit Framework    │    │ Browser           │
-│      ▲               │    │ iOS App           │
-│ HomeKitManager       │    │ AI Assistant      │
-│      ▲               │    └────────┬─────────┘
-│ WKWebView (web app)  │             │
-│      ▲               │     HTTP/WS │
-│ LocalHTTPServer ─────┼─────────────┘
+Your Mac                         LAN / Tunnel          External
+┌──────────────────────┐    ┌──────────────────┐    ┌─────────────┐
+│ HomeKit Framework    │    │ Browser           │    │ MQTT Broker │
+│      ▲               │    │ iOS App           │    └──────▲──────┘
+│ HomeKitManager       │    │ AI Assistant      │           │ MQTT
+│      ▲               │    └────────┬─────────┘           │
+│ WKWebView (web app)  │             │                     │
+│      ▲               │     HTTP/WS │                     │
+│ LocalHTTPServer ─────┼─────────────┘                     │
+│ MQTTBridge ──────────┼───────────────────────────────────┘
 │  (port 5656/5657)    │
 └──────────────────────┘
 ```
@@ -109,6 +123,10 @@ Messages use this JSON format:
 |------|---------|
 | `app-ios-macos/Sources/Server/LocalHTTPServer.swift` | NWListener HTTP + WS server |
 | `app-ios-macos/Sources/Server/LocalNetworkBridge.swift` | Swift ↔ JS bridge for external clients |
+| `app-ios-macos/Sources/Server/MQTTBridge.swift` | HomeKit ↔ MQTT bridge (state publish, command subscribe) |
+| `app-ios-macos/Sources/Server/MQTTClient.swift` | MQTT 3.1.1 client (NWConnection-based) |
+| `app-ios-macos/Sources/Server/MQTTDiscovery.swift` | Home Assistant MQTT auto-discovery config generator |
+| `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote push notifications |
 | `app-ios-macos/Sources/App/HomecastApp.swift` | SwiftUI app, WKWebView, mode selector |
 | `app-ios-macos/Sources/HomeKit/HomeKitBridge.swift` | JS-to-native HomeKit bridge |
 | `app-ios-macos/Sources/HomeKit/HomeKitManager.swift` | Central HomeKit operations |
@@ -181,7 +199,7 @@ Output schemas are defined in `NODE_OUTPUT_SCHEMAS` in `constants.ts`.
 | Set Device | action | `set_characteristic` | Control a device |
 | Run Scene | action | `execute_scene` | Execute HomeKit scene |
 | Delay | action | `delay` | Wait for duration |
-| Notify | action | `notify` | Push notification |
+| Notify | action | `notify` | Push/email/local notification (with action buttons) |
 | HTTP Request | action | `fire_webhook` | HTTP request (response captured as output) |
 | Code | action | `code` | Sandboxed JavaScript (receives `input` object) |
 | IF | logic | `if_then_else` | Conditional branch (true/false outputs) |
@@ -211,6 +229,33 @@ Actions support `onError: 'stop' | 'continue' | 'retry'`:
 | `execution_traces` | `id` (index: `automationId`) | Execution history (100 per automation) |
 | `automation_versions` | `id` (index: `automationId`) | Version snapshots (50 per automation, auto-created on save) |
 | `credentials` | `id` | Encrypted credentials for HTTP nodes |
+
+### Push Notifications (Cloud Only)
+
+The Notify action node delivers notifications via 4 channels:
+
+| Channel | Mechanism | Recipient |
+|---------|-----------|-----------|
+| Local | `UNUserNotificationCenter` on relay Mac | Relay owner (immediate, no server) |
+| Web Push | FCM via `firebase-messaging-sw.js` | All registered browsers |
+| macOS/iOS Push | APNs via FCM | Registered Mac/iOS apps |
+| Email | Maileroo (existing) | Users with email enabled |
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `app-web/public/firebase-messaging-sw.js` | FCM service worker (background push) |
+| `app-web/src/hooks/usePushNotifications.ts` | Permission flow, FCM token registration |
+| `app-web/src/lib/firebase.ts` | Firebase config (project `homecast-483609`) |
+| `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (global prefs, devices, history) |
+| `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote notifications |
+
+**Notification preference hierarchy** (most specific wins): automation > home > global > defaults (push=on, email=off, local=on).
+
+**Rate limits:** 30 push/hr per automation, 200 push/day per user, 5 email/hr per automation, 50 email/day per user.
+
+**Bridge methods:** `notification.show`, `notification.requestPermission`, `notification.getAPNsToken`
 
 ### Testing
 

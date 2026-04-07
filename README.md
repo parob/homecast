@@ -49,6 +49,7 @@ open Homecast.xcodeproj
 - **Sharing** — share homes, rooms, or accessories via links with optional passcode
 - **Collections** — organize devices into custom groups
 - **Automations** — view and manage HomeKit automations
+- **MQTT** — publish device state to any MQTT broker, with Home Assistant auto-discovery
 - **No cloud, no account** — everything runs locally on your Mac
 
 ## How It Works
