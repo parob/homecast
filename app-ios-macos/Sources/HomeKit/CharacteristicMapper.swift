@@ -288,6 +288,56 @@ enum CharacteristicMapper {
         "battery": HMCharacteristicTypeBatteryLevel,
     ]
 
+    /// Reverse map: HomeKit type UUID → simple name (built lazily)
+    private static let reverseSimpleNameMap: [String: String] = {
+        var map: [String: String] = [:]
+        for (name, type) in simpleNameMap {
+            map[type] = name
+        }
+        return map
+    }()
+
+    // MARK: - MQTT Bridge Methods
+
+    /// Get simplified name for a HomeKit characteristic type (or friendly name).
+    /// Returns nil if the characteristic should be skipped.
+    static func simpleNameForType(_ charType: String) -> String? {
+        // Try reverse simple name map first (UUID → simple name)
+        if let name = reverseSimpleNameMap[charType] { return name }
+        // Try converting from friendly name (e.g., "power_state" → find in simpleNameMap)
+        let normalized = charType.lowercased()
+        if simpleNameMap[normalized] != nil { return normalized }
+        // Try characteristicMap to get UUID, then reverse lookup
+        if let uuid = characteristicMap[normalized], let name = reverseSimpleNameMap[uuid] {
+            return name
+        }
+        return nil
+    }
+
+    /// Reverse map: HomeKit type UUID → characteristic friendly name
+    private static let reverseCharacteristicMap: [String: String] = {
+        var map: [String: String] = [:]
+        for (name, type) in characteristicMap {
+            // Prefer shorter names (e.g., "on" over "power_state")
+            if let existing = map[type], existing.count <= name.count { continue }
+            map[type] = name
+        }
+        return map
+    }()
+
+    /// Get the friendly characteristic name for a simplified MQTT name.
+    /// e.g., "current_temp" → "current_temperature", "on" → "on"
+    static func typeForSimpleName(_ simpleName: String) -> String? {
+        let normalized = simpleName.lowercased()
+        // If simple name is directly a characteristicMap key, return it
+        if characteristicMap[normalized] != nil { return normalized }
+        // Look up in simpleNameMap → get UUID → reverse to friendly name
+        if let uuid = simpleNameMap[normalized], let friendly = reverseCharacteristicMap[uuid] {
+            return friendly
+        }
+        return nil
+    }
+
     // MARK: - Conversion Methods
 
     /// Convert server's simplified name to HomeKit characteristic type UUID

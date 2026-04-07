@@ -311,8 +311,9 @@ class LocalHTTPServer {
 
         // Community mode config — web app fetches this on startup to detect mode
         if path == "/config.json" {
+            let mqttStatus = MQTTClient.shared != nil ? "\"\(MQTTClient.shared?.statusDescription ?? "unavailable")\"" : "null"
             let json = """
-            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort)}
+            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"mqtt":\(mqttStatus)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return
@@ -320,8 +321,9 @@ class LocalHTTPServer {
 
         // Health check
         if path == "/health" {
+            let mqttStatus = MQTTClient.shared != nil ? "\"\(MQTTClient.shared?.statusDescription ?? "unavailable")\"" : "null"
             let json = """
-            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil)}
+            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttStatus)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return

@@ -1187,6 +1187,54 @@ struct WebViewContainer: UIViewRepresentable {
                 Task { @MainActor in
                     self.handleFileOperation(method: method, payload: payload, callbackId: callbackId)
                 }
+            case "mqtt":
+                // Handle MQTT configuration from the web app
+                #if targetEnvironment(macCatalyst)
+                if let method = body["method"] as? String {
+                    switch method {
+                    case "connect":
+                        if let host = body["host"] as? String,
+                           let port = body["port"] as? Int {
+                            let config = MQTTClient.BrokerConfig(
+                                host: host,
+                                port: UInt16(port),
+                                username: body["username"] as? String,
+                                password: body["password"] as? String,
+                                useTLS: body["useTLS"] as? Bool ?? false,
+                                clientId: "homecast-\(ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: ""))",
+                                topicPrefix: body["topicPrefix"] as? String ?? "homecast"
+                            )
+                            if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                                appDelegate.mqttBridge?.topicPrefix = config.topicPrefix
+                                appDelegate.mqttBridge?.haDiscoveryEnabled = body["haDiscovery"] as? Bool ?? true
+                                if let prefix = body["haDiscoveryPrefix"] as? String {
+                                    appDelegate.mqttBridge?.haDiscoveryPrefix = prefix
+                                }
+                                // Set LWT before connecting
+                                appDelegate.mqttClient?.willTopic = "\(config.topicPrefix)/status"
+                                appDelegate.mqttClient?.willMessage = Data("offline".utf8)
+                                appDelegate.mqttClient?.willRetain = true
+                                appDelegate.mqttClient?.connect(config: config)
+                            }
+                        }
+                    case "disconnect":
+                        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                            appDelegate.mqttClient?.disconnect()
+                        }
+                    case "status":
+                        // Return MQTT status to JS
+                        if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+                           let bridge = appDelegate.mqttBridge {
+                            let status = bridge.statusDescription
+                            let callbackId = body["callbackId"] as? String ?? ""
+                            let js = "window.__mqtt_status_callback && window.__mqtt_status_callback('\(callbackId)', '\(status)');"
+                            webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+                    default:
+                        break
+                    }
+                }
+                #endif
             case "relayStatus":
                 let connectionState = body["connectionState"] as? String ?? "disconnected"
                 let relayStatus = body["relayStatus"] as? NSNumber
@@ -1230,6 +1278,10 @@ struct WebViewContainer: UIViewRepresentable {
             #if targetEnvironment(macCatalyst)
             if AppConfig.isCommunity && localNetworkBridge.webView == nil {
                 if let server = LocalHTTPServer.shared {
+                    // Set MQTT bridge before attaching (attach forwards it to WebView)
+                    if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                        localNetworkBridge.mqttBridge = appDelegate.mqttBridge
+                    }
                     localNetworkBridge.attach(webView: webView, server: server)
                 }
             }

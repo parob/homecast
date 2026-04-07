@@ -9,12 +9,18 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     weak var webView: WKWebView?
     weak var server: LocalHTTPServer?
 
+    /// MQTT bridge — receives broadcast events for publishing to MQTT topics
+    var mqttBridge: MQTTBridge?
+
     /// Attach to a WKWebView — called after the WebView is created.
     func attach(webView: WKWebView, server: LocalHTTPServer) {
         self.webView = webView
         self.server = server
         server.bridge = self
         NSLog("[LocalNetworkBridge] Attached to WebView and server")
+
+        // Attach MQTT bridge to the same WebView
+        mqttBridge?.attach(webView: webView)
     }
 
     // MARK: - External Client → JS
@@ -159,6 +165,14 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
             // Broadcast to all connected WebSocket clients
             guard let message = body["message"] as? String else { return }
             server?.broadcastToWSClients(message)
+
+            // Forward to MQTT bridge for publishing to MQTT topics
+            if let mqttBridge = mqttBridge,
+               let msgData = message.data(using: .utf8),
+               let msgJson = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any],
+               let broadcastType = msgJson["type"] as? String {
+                mqttBridge.handleBroadcast(type: broadcastType, payload: msgJson)
+            }
 
         case "graphqlResponse":
             guard let clientId = body["clientId"] as? String,

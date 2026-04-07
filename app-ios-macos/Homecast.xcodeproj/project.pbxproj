@@ -51,6 +51,9 @@
 		C1000001A /* LocalHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000001F /* LocalHTTPServer.swift */; };
 		C1000002A /* LocalNetworkBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000002F /* LocalNetworkBridge.swift */; };
 		C1000003A /* web-dist in Resources */ = {isa = PBXBuildFile; fileRef = C1000003F /* web-dist */; };
+		C1000004A /* MQTTClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000004F /* MQTTClient.swift */; };
+		C1000005A /* MQTTBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000005F /* MQTTBridge.swift */; };
+		C1000006A /* MQTTDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000006F /* MQTTDiscovery.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +128,9 @@
 		C1000001F /* LocalHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalHTTPServer.swift; sourceTree = "<group>"; };
 		C1000002F /* LocalNetworkBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNetworkBridge.swift; sourceTree = "<group>"; };
 		C1000003F /* web-dist */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "web-dist"; sourceTree = "<group>"; };
+		C1000004F /* MQTTClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MQTTClient.swift; sourceTree = "<group>"; };
+		C1000005F /* MQTTBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MQTTBridge.swift; sourceTree = "<group>"; };
+		C1000006F /* MQTTDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MQTTDiscovery.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -174,6 +180,9 @@
 			children = (
 				C1000001F /* LocalHTTPServer.swift */,
 				C1000002F /* LocalNetworkBridge.swift */,
+				C1000004F /* MQTTClient.swift */,
+				C1000005F /* MQTTBridge.swift */,
+				C1000006F /* MQTTDiscovery.swift */,
 			);
 			path = Server;
 			sourceTree = "<group>";
@@ -405,6 +414,9 @@
 				B2000001A /* BuildInfo.swift in Sources */,
 				C1000001A /* LocalHTTPServer.swift in Sources */,
 				C1000002A /* LocalNetworkBridge.swift in Sources */,
+				C1000004A /* MQTTClient.swift in Sources */,
+				C1000005A /* MQTTBridge.swift in Sources */,
+				C1000006A /* MQTTDiscovery.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

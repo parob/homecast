@@ -10,6 +10,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     /// Local HTTP server for Community mode (Mac only)
     #if targetEnvironment(macCatalyst)
     var localHTTPServer: LocalHTTPServer?
+    var mqttClient: MQTTClient?
+    var mqttBridge: MQTTBridge?
     #endif
 
     func application(
@@ -78,9 +80,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         server.start()
         localHTTPServer = server
         LocalHTTPServer.shared = server
+
+        // Initialize MQTT client + bridge (connected later when settings are loaded)
+        let client = MQTTClient()
+        let bridge = MQTTBridge(mqttClient: client)
+        mqttClient = client
+        mqttBridge = bridge
+        MQTTClient.shared = client
     }
 
     func stopLocalServer() {
+        mqttClient?.disconnect()
+        mqttClient = nil
+        mqttBridge = nil
+        MQTTClient.shared = nil
         localHTTPServer?.stop()
         localHTTPServer = nil
         print("[Homecast] Community mode: local server stopped")
