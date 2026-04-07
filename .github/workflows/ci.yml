@@ -48,7 +48,10 @@ jobs:
 
       - name: Build and bundle web app
         run: |
-          cd app-web && npm ci && npm run build
+          cd app-web
+          npm ci
+          npm run build
+          cd ..
           mkdir -p app-ios-macos/Resources/web-dist
           cp -r app-web/dist/* app-ios-macos/Resources/web-dist/
 
