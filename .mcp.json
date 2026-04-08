@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "homecast-debug": {
+      "type": "http",
+      "url": "https://api.homecast.cloud/debug/mcp",
+      "headers": {
+        "Authorization": "Bearer ${HOMECAST_DEBUG_MCP_SECRET}"
+      }
+    },
+    "homecast-staging-debug": {
+      "type": "http",
+      "url": "https://staging.api.homecast.cloud/debug/mcp",
+      "headers": {
+        "Authorization": "Bearer ${HOMECAST_DEBUG_MCP_SECRET}"
+      }
+    }
+  }
+}
