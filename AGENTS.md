@@ -232,14 +232,15 @@ Actions support `onError: 'stop' | 'continue' | 'retry'`:
 
 ### Push Notifications (Cloud Only)
 
-The Notify action node delivers notifications via 4 channels:
+The Notify action node delivers notifications via 2 configurable channels + automatic relay alert:
 
-| Channel | Mechanism | Recipient |
-|---------|-----------|-----------|
-| Local | `UNUserNotificationCenter` on relay Mac | Relay owner (immediate, no server) |
-| Web Push | FCM via `firebase-messaging-sw.js` | All registered browsers |
-| macOS/iOS Push | APNs via FCM | Registered Mac/iOS apps |
-| Email | Maileroo (existing) | Users with email enabled |
+| Channel | Mechanism | Recipient | Configurable |
+|---------|-----------|-----------|-------------|
+| Relay alert | `UNUserNotificationCenter` on relay Mac | Relay owner (instant, no internet) | Always on |
+| Push | Web Push (FCM) to browsers + APNs to Mac/iOS apps | You + home members | Toggle in settings |
+| Email | Maileroo | You + home members | Toggle in settings (off by default) |
+
+Server deduplicates: relay Mac's APNs token is skipped (it already showed the local alert).
 
 **Key files:**
 
@@ -251,7 +252,7 @@ The Notify action node delivers notifications via 4 channels:
 | `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (global prefs, devices, history) |
 | `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote notifications |
 
-**Notification preference hierarchy** (most specific wins): automation > home > global > defaults (push=on, email=off, local=on).
+**Notification preference hierarchy** (most specific wins): automation > home > global > defaults (push=on, email=off). UI shows 2 toggles only (Push + Email). Relay alert is always on.
 
 **Rate limits:** 30 push/hr per automation, 200 push/day per user, 5 email/hr per automation, 50 email/day per user.
 
