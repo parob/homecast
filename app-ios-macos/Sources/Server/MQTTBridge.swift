@@ -44,8 +44,8 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
     private var homeSlugMap: [String: String] = [:]         // slug → homeId
     private var homeSlugs: [String: String] = [:]           // homeId → slug
     private var roomSlugs: [String: (slug: String, homeSlug: String)] = [:]
-    private var accessoryMap: [String: String] = [:]        // "homeSlug/room/roomSlug/accSlug" → accessoryId
-    private var reverseAccessoryMap: [String: String] = [:] // accessoryId → "homeSlug/room/roomSlug/accSlug"
+    private var accessoryMap: [String: String] = [:]        // "homeSlug/roomSlug/accSlug" → accessoryId
+    private var reverseAccessoryMap: [String: String] = [:] // accessoryId → "homeSlug/roomSlug/accSlug"
     /// accessoryId → homeId
     private var accessoryHomeMap: [String: String] = [:]
 
@@ -273,7 +273,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         let prefix = config.topicPrefix
         // Subscribe to command topics for this home's slug
         if let homeSlug = homeSlugs[homeId] {
-            client.subscribe(topic: "\(prefix)/\(homeSlug)/room/+/+/set")
+            client.subscribe(topic: "\(prefix)/\(homeSlug)/+/+/set")
             client.subscribe(topic: "\(prefix)/\(homeSlug)/scene/+/execute")
         }
         NSLog("[MQTTBridge] Broker '%@' connected, subscribed to commands", config.name)
@@ -364,7 +364,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
                           let roomInfo = roomSlugs[roomId] else { continue }
 
                     let accSlug = makeSlug(name: accName, id: accId)
-                    let path = "\(homeSlug)/room/\(roomInfo.slug)/\(accSlug)"
+                    let path = "\(homeSlug)/\(roomInfo.slug)/\(accSlug)"
                     accessoryMap[path] = accId
                     reverseAccessoryMap[accId] = path
                     accessoryHomeMap[accId] = homeId
@@ -573,8 +573,8 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         let prefix = config.topicPrefix
         let parts = topic.components(separatedBy: "/")
 
-        // {prefix}/{home}/room/{room}/{accessory}/set
-        if parts.count == 6 && parts[0] == prefix && parts[2] == "room" && parts[5] == "set" {
+        // {prefix}/{home}/{room}/{accessory}/set
+        if parts.count == 5 && parts[0] == prefix && parts[4] == "set" {
             handleSetCommand(topicParts: parts, payload: payload)
         }
         // {prefix}/{home}/scene/{scene}/execute
@@ -584,7 +584,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleSetCommand(topicParts: [String], payload: Data) {
-        let path = "\(topicParts[1])/room/\(topicParts[3])/\(topicParts[4])"
+        let path = "\(topicParts[1])/\(topicParts[2])/\(topicParts[3])"
         guard let accessoryId = accessoryMap[path] else {
             NSLog("[MQTTBridge] Unknown accessory path: %@", path)
             return
