@@ -426,7 +426,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
                   let json = String(data: data, encoding: .utf8) else { return }
 
             forEachClient(forHome: homeId) { client, config in
-                client.publish(topic: "\(config.topicPrefix)/\(path)/state", string: json, retain: true)
+                client.publish(topic: "\(config.topicPrefix)/\(path)", string: json, retain: true)
             }
 
         case "reachability_update":
@@ -512,7 +512,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         if !state.isEmpty,
            let data = try? JSONSerialization.data(withJSONObject: state),
            let json = String(data: data, encoding: .utf8) {
-            client.publish(topic: "\(config.topicPrefix)/\(path)/state", string: json, retain: true)
+            client.publish(topic: "\(config.topicPrefix)/\(path)", string: json, retain: true)
         }
 
         client.publish(topic: "\(config.topicPrefix)/\(path)/availability",
