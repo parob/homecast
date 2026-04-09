@@ -80,6 +80,41 @@ Your Mac                         LAN / Tunnel          External
 | `GET /config.json` | Server config (mode, version, ports) |
 | `WebSocket :5657` | Real-time updates |
 
+## MQTT
+
+Homecast publishes device state to MQTT brokers and accepts commands via MQTT. Follows the Zigbee2MQTT convention: base topic is state, `/set` for commands.
+
+### Topic Structure
+
+```
+homecast/{home}/{room}/{accessory}              # retained device state (JSON, sorted keys)
+homecast/{home}/{room}/{accessory}/set          # publish here to control a device
+homecast/{home}/{room}/{accessory}/availability # "online" or "offline"
+homecast/{home}/{room}/{group}                  # service group state
+homecast/{home}/{room}/{group}/set              # control all devices in group
+homecast/{home}/{room}/{group}/members          # JSON array of member accessory slugs
+homecast/{home}/status                          # home online/offline (LWT)
+homeassistant/{component}/homecast_{id}/config  # HA auto-discovery
+```
+
+Slugs: `{name}-{first 4 hex of UUID}` (e.g., `county-hall-2d10`, `kitchen-dfee`).
+
+### Community Mode
+
+Mac app connects as MQTT client to user-configured broker(s). Per-home, stored in UserDefaults. Settings at: Settings → Homes → [Home] → MQTT (requires Developer Mode).
+
+### Cloud Mode
+
+Managed broker at `mqtt.homecast.cloud` (EMQX on GCE). Per-home `mqtt_enabled` toggle. Auth via API access token as MQTT password (username blank). Custom brokers stored in DB via GraphQL.
+
+MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer with visual controls, auto-connects via cross-subdomain cookie.
+
+### Authentication
+
+- **Password:** Homecast API access token (`hc_...`)
+- **Username:** leave blank
+- **Port:** 8883 (TLS) or 1883
+
 ## Relay Protocol (WebSocket)
 
 Messages use this JSON format:
@@ -139,6 +174,8 @@ Messages use this JSON format:
 | `app-web/src/server/local-broadcast.ts` | Event broadcasting to clients |
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
+| `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`) |
+| `app-web/src/components/settings/HomeDetailView.tsx` | Per-home MQTT broker toggle + custom brokers |
 
 ## Advanced Automation Engine
 
