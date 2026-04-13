@@ -1548,10 +1548,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             titlebar.separatorStyle = .none
         }
 
-        // Set window size — minimum 960px to match WKWebView's minimum viewport width
-        // (Mac Catalyst enforces ~960px viewport regardless of frame size)
-        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 960, height: 600)
-        windowScene.sizeRestrictions?.maximumSize = CGSize(width: 1400, height: 1000)
+        // Set window size — allow resizing down to mobile-like widths
+        windowScene.sizeRestrictions?.minimumSize = CGSize(width: 480, height: 400)
+        windowScene.sizeRestrictions?.maximumSize = CGSize(width: 99999, height: 99999)
 
         // Check if we should show window on first launch
         if SceneDelegate.isFirstLaunch {
