@@ -1056,10 +1056,9 @@ struct WebViewContainer: UIViewRepresentable {
                 let width = Int(wv.bounds.width)
                 guard width != self?.lastReportedWidth, width > 0 else { return }
                 self?.lastReportedWidth = width
-                wv.evaluateJavaScript(
-                    "window.__nativeWidth = \(width); window.dispatchEvent(new Event('nativeResize'))",
-                    completionHandler: nil
-                )
+                let js = "window.__nativeWidth = \(width); console.log('[Homecast] nativeWidth=' + \(width) + ' innerWidth=' + window.innerWidth); window.dispatchEvent(new Event('nativeResize'))"
+                wv.evaluateJavaScript(js, completionHandler: nil)
+                print("[Homecast] Frame width: \(width)pt")
             }
         }
 
