@@ -569,6 +569,12 @@ struct WebViewContainer: UIViewRepresentable {
         if #available(iOS 16.0, macCatalyst 16.0, *) {
             let prefs = WKWebpagePreferences()
             prefs.allowsContentJavaScript = true
+            #if targetEnvironment(macCatalyst)
+            // Use mobile content mode so the viewport matches the actual window width
+            // instead of Mac Catalyst's fixed ~960px scaled viewport.
+            // This allows the web app to switch to mobile layout at small window sizes.
+            prefs.preferredContentMode = .mobile
+            #endif
             config.defaultWebpagePreferences = prefs
         }
 
@@ -885,6 +891,12 @@ struct WebViewContainer: UIViewRepresentable {
         #endif
 
         #if targetEnvironment(macCatalyst)
+        // Observe WebView frame changes to sync actual window width to JavaScript.
+        // Mac Catalyst scales the CSS viewport, so window.innerWidth doesn't match
+        // the real window frame. We post the UIKit frame width so the web app can
+        // switch to mobile layout at small window sizes.
+        context.coordinator.startFrameObserver(for: webView)
+
         // On Mac, disable content inset adjustment for full-bleed layout
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = false
@@ -979,7 +991,12 @@ struct WebViewContainer: UIViewRepresentable {
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
         var webViewInitiatedLogin = false
+        // When true, the "backgroundDark" fallback (black/white) is suppressed
+        // because Dashboard is sending the precise "backgroundColor" hex color.
+        private var hasExplicitBackgroundColor = false
         var webViewInitiatedLogout = false
+        private var frameObservation: NSKeyValueObservation?
+        private var lastReportedWidth: Int = 0
 
         init(connectionManager: ConnectionManager, homeKitBridge: HomeKitBridge) {
             self.connectionManager = connectionManager
@@ -1028,6 +1045,21 @@ struct WebViewContainer: UIViewRepresentable {
             print("[WebView] Auto-reloading (24h timer)")
             DispatchQueue.main.async { [weak self] in
                 self?.webView?.reloadFromOrigin()
+            }
+        }
+
+        /// Observe the WKWebView's bounds and post the actual UIKit width to JavaScript.
+        /// Mac Catalyst scales the CSS viewport, so window.innerWidth doesn't reflect
+        /// the real frame width. This lets the web app switch to mobile layout.
+        func startFrameObserver(for webView: WKWebView) {
+            frameObservation = webView.observe(\.bounds, options: [.new, .initial]) { [weak self] wv, _ in
+                let width = Int(wv.bounds.width)
+                guard width != self?.lastReportedWidth, width > 0 else { return }
+                self?.lastReportedWidth = width
+                wv.evaluateJavaScript(
+                    "window.__nativeWidth = \(width); window.dispatchEvent(new Event('nativeResize'))",
+                    completionHandler: nil
+                )
             }
         }
 
@@ -1155,10 +1187,25 @@ struct WebViewContainer: UIViewRepresentable {
                     }
                 }
             case "backgroundDark":
+                // Coarse fallback (black/white) — only apply when Dashboard
+                // hasn't sent a precise color via "backgroundColor".
+                guard !hasExplicitBackgroundColor else { break }
                 let isDark = body["isDark"] as? Bool ?? false
                 Task { @MainActor in
                     self.webView?.backgroundColor = isDark ? .black : .white
                     self.webView?.scrollView.backgroundColor = isDark ? .black : .white
+                }
+            case "backgroundColor":
+                if let hex = body["color"] as? String {
+                    hasExplicitBackgroundColor = true
+                    Task { @MainActor in
+                        let color = Self.colorFromHex(hex)
+                        self.webView?.backgroundColor = color
+                        self.webView?.scrollView.backgroundColor = color
+                    }
+                } else {
+                    // Dashboard unmounted — fall back to backgroundDark
+                    hasExplicitBackgroundColor = false
                 }
             case "openUrl":
                 if let urlString = body["url"] as? String,
@@ -1655,6 +1702,19 @@ struct WebViewContainer: UIViewRepresentable {
                     print("[WebView] File callback failed: \(error.localizedDescription)")
                 }
             }
+        }
+
+        /// Parse a hex color string (#rrggbb) to UIColor.
+        static func colorFromHex(_ hex: String) -> UIColor {
+            var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            if h.hasPrefix("#") { h.removeFirst() }
+            guard h.count == 6, let rgb = UInt64(h, radix: 16) else { return .black }
+            return UIColor(
+                red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255,
+                alpha: 1
+            )
         }
     }
 }
