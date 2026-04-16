@@ -159,15 +159,15 @@ class HighlightingMenuItemView: NSView {
         nameLabel.textColor = textColor
 
         if !isReachable {
-            stateLabel.stringValue = "Unreachable"
+            stateLabel.stringValue = "No Response"
             stateLabel.textColor = DS.Colors.mutedForeground
             stateLabel.isHidden = false
         }
     }
 
-    /// Layout helper for unreachable state: shows only icon, name, and "Unreachable" label.
-    /// Returns true if unreachable layout was applied (caller should return early from layoutSubviews).
-    func layoutUnreachable() -> Bool {
+    /// Layout helper for the No Response state: shows only icon, name, and "No Response" label.
+    /// Returns true if the layout was applied (caller should return early from layoutSubviews).
+    func layoutNoResponse() -> Bool {
         guard !isReachable else { return false }
 
         let height = frame.height

@@ -100,7 +100,7 @@ final class SecuritySystemMenuItem: HighlightingMenuItemView {
     // MARK: - Layout
 
     override func layoutSubviews() {
-        if layoutUnreachable() { return }
+        if layoutNoResponse() { return }
         super.layoutSubviews()
 
         let height = frame.height
@@ -202,7 +202,7 @@ final class SecuritySystemMenuItem: HighlightingMenuItemView {
         let color: NSColor
 
         if !isReachable {
-            stateLabel.stringValue = "Unreachable"
+            stateLabel.stringValue = "No Response"
             stateLabel.textColor = DS.Colors.mutedForeground
             return
         }

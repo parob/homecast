@@ -161,7 +161,7 @@ final class LightMenuItem: HighlightingMenuItemView {
     // MARK: - Layout
 
     override func layoutSubviews() {
-        if layoutUnreachable() { return }
+        if layoutNoResponse() { return }
         let height = frame.height
         let iconSize = DS.ControlSize.iconMedium
         let switchWidth = DS.ControlSize.switchWidth

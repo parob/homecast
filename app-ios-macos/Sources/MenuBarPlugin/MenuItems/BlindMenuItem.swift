@@ -79,7 +79,7 @@ final class BlindMenuItem: HighlightingMenuItemView {
     // MARK: - Layout
 
     override func layoutSubviews() {
-        if layoutUnreachable() { return }
+        if layoutNoResponse() { return }
         super.layoutSubviews()
 
         let height = frame.height

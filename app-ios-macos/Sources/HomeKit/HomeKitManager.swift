@@ -201,8 +201,13 @@ class HomeKitManager: NSObject, ObservableObject {
 
     /// Re-read key characteristics and manually fire delegate events for any that changed.
     /// readValue() does NOT trigger didUpdateValueFor, so we must detect and broadcast changes ourselves.
+    ///
+    /// We deliberately do NOT filter by `isReachable` here: HMAccessory.isReachable can be stale
+    /// (devices HomeKit last failed to reach stay flagged as unreachable even after they recover).
+    /// Probing them lets HomeKit re-establish contact and fire accessoryDidUpdateReachability.
+    /// Reads to genuinely-offline devices fail fast and are swallowed by `try?` below.
     private func refreshAndBroadcastChanges() async {
-        let allAccessories = homes.flatMap { $0.accessories }.filter { $0.isReachable }
+        let allAccessories = homes.flatMap { $0.accessories }
 
         // Collect characteristics with their current cached values
         var toRefresh: [(characteristic: HMCharacteristic, accessory: HMAccessory, oldValue: Any?)] = []
@@ -506,9 +511,9 @@ class HomeKitManager: NSObject, ObservableObject {
             throw HomeKitError.accessoryNotFound(id)
         }
 
-        guard accessory.isReachable else {
-            return // Can't read from unreachable device
-        }
+        // Do not short-circuit on !isReachable: HMAccessory.isReachable can be stale after a
+        // transient failure. Let the reads through — a successful read nudges HomeKit to update
+        // reachability via accessoryDidUpdateReachability; a genuine offline read fails fast.
 
         // Read all readable characteristics concurrently
         await withTaskGroup(of: Void.self) { group in
@@ -1478,9 +1483,10 @@ extension HomeKitManager: HMHomeManagerDelegate {
         HMCharacteristicTypeOutletInUse,
     ]
 
-    /// Refresh only key characteristics for UI display (skips info services)
+    /// Refresh only key characteristics for UI display (skips info services).
+    /// Intentionally does NOT filter by isReachable — see refreshAndBroadcastChanges() for rationale.
     func refreshKeyCharacteristics() async {
-        let allAccessories = homes.flatMap { $0.accessories }.filter { $0.isReachable }
+        let allAccessories = homes.flatMap { $0.accessories }
 
         // Collect all key characteristics to read
         var characteristicsToRead: [HMCharacteristic] = []

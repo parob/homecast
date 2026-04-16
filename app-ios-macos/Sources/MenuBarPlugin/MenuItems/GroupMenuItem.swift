@@ -148,7 +148,7 @@ final class GroupMenuItem: HighlightingMenuItemView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if layoutUnreachable() { return }
+        if layoutNoResponse() { return }
 
         let height = frame.height
         let iconSize = DS.ControlSize.iconMedium
