@@ -51,6 +51,13 @@ enum AppConfig {
         }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
+
+    /// Base URL for the cloud API. Nil in Community mode (no cloud endpoint).
+    /// Used by LogShipper to post Mac-side logs to /internal/logs.
+    static var apiBaseURL: URL? {
+        if isCommunity { return nil }
+        return URL(string: isStaging ? "https://staging.api.homecast.cloud" : "https://api.homecast.cloud")
+    }
 }
 
 // Notifications
