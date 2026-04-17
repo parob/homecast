@@ -1245,9 +1245,7 @@ struct WebViewContainer: UIViewRepresentable {
                         let brokers = bridge.getBrokers()
                         if let data = try? JSONSerialization.data(withJSONObject: brokers),
                            let json = String(data: data, encoding: .utf8) {
-                            let escaped = json.replacingOccurrences(of: "'", with: "\\'")
-                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
-                            webView?.evaluateJavaScript(js, completionHandler: nil)
+                            sendMQTTCallback(callbackId: callbackId, json: json)
                         }
 
                     case "addBroker":
@@ -1269,9 +1267,7 @@ struct WebViewContainer: UIViewRepresentable {
                             let added = bridge.addBroker(config, forHome: homeId)
                             if let data = try? JSONEncoder().encode(added),
                                let json = String(data: data, encoding: .utf8) {
-                                let escaped = json.replacingOccurrences(of: "'", with: "\\'")
-                                let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
-                                webView?.evaluateJavaScript(js, completionHandler: nil)
+                                sendMQTTCallback(callbackId: callbackId, json: json)
                             }
                         }
 
@@ -1301,16 +1297,12 @@ struct WebViewContainer: UIViewRepresentable {
                                 username: body["username"] as? String,
                                 password: body["password"] as? String,
                                 useTLS: body["useTLS"] as? Bool ?? false
-                            ) { success, error in
+                            ) { [weak self] success, error in
                                 var result: [String: Any] = ["success": success]
                                 if let error = error { result["error"] = error }
                                 if let data = try? JSONSerialization.data(withJSONObject: result),
                                    let json = String(data: data, encoding: .utf8) {
-                                    let escaped = json.replacingOccurrences(of: "'", with: "\\'")
-                                    let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
-                                    DispatchQueue.main.async { [weak self] in
-                                        self?.webView?.evaluateJavaScript(js, completionHandler: nil)
-                                    }
+                                    self?.sendMQTTCallback(callbackId: callbackId, json: json)
                                 }
                             }
                         }
@@ -1349,15 +1341,6 @@ struct WebViewContainer: UIViewRepresentable {
             // Don't stop the network monitor — we need it to detect restoration.
             if isShowingErrorPage { return }
             stopNetworkMonitor()
-
-            // Hide back button once the app navigates to /portal (user is authenticated)
-            // Check after a short delay since React Router navigates client-side after didFinish
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                webView.evaluateJavaScript("window.location.pathname") { result, _ in
-                    if let path = result as? String, path.contains("/portal") {
-                            }
-                }
-            }
 
             // Attach local network bridge for Community mode (once, on first load)
             #if targetEnvironment(macCatalyst)
@@ -1675,6 +1658,20 @@ struct WebViewContainer: UIViewRepresentable {
 
             } catch {
                 sendFileCallback(callbackId: callbackId, error: "Failed to read file: \(error.localizedDescription)")
+            }
+        }
+
+        /// Invoke `window.__mqtt_callback(callbackId, json)` with the JSON string safely
+        /// embedded as a JS single-quoted string literal.
+        private func sendMQTTCallback(callbackId: String, json: String) {
+            let escaped = json
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '\(escaped)');"
+            DispatchQueue.main.async { [weak self] in
+                self?.webView?.evaluateJavaScript(js, completionHandler: nil)
             }
         }
 

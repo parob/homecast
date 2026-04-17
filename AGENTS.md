@@ -76,9 +76,9 @@ Your Mac                         LAN / Tunnel          External
 | `POST /rest/scene` | Execute a scene by name (`{home, name}`) |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
 | `POST /mcp` | MCP endpoint (tools: `get_state`, `set_state`, `run_scene`) |
-| `GET /health` | Health check |
-| `GET /config.json` | Server config (mode, version, ports) |
 | `WebSocket :5657` | Real-time updates |
+
+`/rest/*` and `/mcp` are handled by JS (`local-rest.ts`, `local-mcp.ts`) via the Swift→JS bridge. `/health` and `/config.json` are served directly by `LocalHTTPServer.swift` (they respond before the web app is loaded) and return `{mode, version, port, wsPort, mqtt}`.
 
 ## MQTT
 
@@ -111,9 +111,11 @@ MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer with visual con
 
 ### Authentication
 
-- **Password:** Homecast API access token (`hc_...`)
-- **Username:** leave blank
-- **Port:** 8883 (TLS) or 1883
+Auth depends on which broker is being used:
+
+- **Community mode (user-configured broker):** whatever the broker accepts. `MQTTBrokerConfig` takes arbitrary `username`/`password`; Homecast passes them through unchanged. If the broker requires no auth, leave both blank.
+- **Cloud mode (`mqtt.homecast.cloud`):** Homecast API access token (`hc_...`) as the password, username blank.
+- **Port:** 8883 (TLS) or 1883 in both modes.
 
 ## Relay Protocol (WebSocket)
 

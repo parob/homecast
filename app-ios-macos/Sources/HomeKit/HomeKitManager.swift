@@ -42,6 +42,15 @@ class HomeKitManager: NSObject, ObservableObject {
     /// Cached accessory UUID → event context for O(1) lookups in delegate callbacks
     private var accessoryContextCache: [UUID: AccessoryEventContext] = [:]
 
+    /// Last-seen timestamps per accessory UUID, updated on successful characteristic reads.
+    /// Used to override a stale `HMAccessory.isReachable == false` when we have recent evidence
+    /// the device is actually responsive. HomeKit's reachability bit can get stuck after a transient
+    /// failure (notably on WiFi plugs like Meross) — if we just read a value back, the device is up.
+    private var lastSeenAt: [UUID: Date] = [:]
+
+    /// Treat as reachable if HomeKit says so OR we successfully read from it within this window.
+    private let reachabilityGracePeriod: TimeInterval = 120
+
     override init() {
         self.homeManager = HMHomeManager()
         super.init()
@@ -187,6 +196,7 @@ class HomeKitManager: NSObject, ObservableObject {
     private func startPeriodicRefresh() {
         periodicRefreshTask?.cancel()
         periodicRefreshTask = Task { @MainActor in
+            var cycleCount = 0
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(nanoseconds: UInt64(refreshInterval * 1_000_000_000))
@@ -195,7 +205,40 @@ class HomeKitManager: NSObject, ObservableObject {
                 }
                 guard self.isObserving else { break }
                 await self.refreshAndBroadcastChanges()
+
+                // Every 3rd cycle (~3 min), prod unreachable accessories by re-subscribing
+                // to HAP event notifications. This forces HomeKit to attempt a new connection
+                // to the device — the same nudge that toggling in Apple Home provides.
+                cycleCount += 1
+                if cycleCount % 3 == 0 {
+                    await self.probeUnreachableAccessories()
+                }
             }
+        }
+    }
+
+    /// Re-subscribe to event notifications on unreachable accessories.
+    /// enableNotification(true) forces HomeKit to attempt a fresh HAP connection;
+    /// if it succeeds, HomeKit flips isReachable → true and fires the delegate.
+    private func probeUnreachableAccessories() async {
+        let unreachable = homes.flatMap { $0.accessories }.filter { !$0.isReachable }
+        guard !unreachable.isEmpty else { return }
+
+        var probed = 0
+        for accessory in unreachable {
+            for service in accessory.services {
+                if service.serviceType == HMServiceTypeAccessoryInformation { continue }
+                for characteristic in service.characteristics {
+                    if characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification),
+                       Self.keyCharacteristicTypes.contains(characteristic.characteristicType) {
+                        characteristic.enableNotification(true) { _ in }
+                        probed += 1
+                    }
+                }
+            }
+        }
+        if probed > 0 {
+            print("[HomeKit] 🔍 Probed \(unreachable.count) unreachable accessor(y|ies) (\(probed) notification subscriptions)")
         }
     }
 
@@ -252,6 +295,9 @@ class HomeKitManager: NSObject, ObservableObject {
                 }
                 for await result in group {
                     guard let (accessory, accessoryId, charType, oldValue, newValue) = result else { continue }
+                    // Successful read — record evidence of liveness (may flip effective reachability
+                    // from false → true and fire the delegate if HomeKit still reports unreachable).
+                    recordSuccessfulRead(accessory)
                     if !Self.valuesEqual(oldValue, newValue) {
                         changedCount += 1
                         let value = newValue ?? NSNull()
@@ -268,8 +314,23 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
+        // Diagnostic: report refresh outcome including per-accessory read success, so we can
+        // tell reachability-override failures apart from missed-broadcast failures.
+        let attemptedAccessories = Set(toRefresh.map { $0.accessory.uniqueIdentifier })
+        let succeededAccessories = Set(lastSeenAt.compactMap { (uuid, seen) -> UUID? in
+            attemptedAccessories.contains(uuid) && Date().timeIntervalSince(seen) < 5 ? uuid : nil
+        })
+        let failedAccessories = attemptedAccessories.subtracting(succeededAccessories)
+        if !failedAccessories.isEmpty {
+            let failedNames = failedAccessories.compactMap { uuid in
+                homes.flatMap { $0.accessories }.first(where: { $0.uniqueIdentifier == uuid })?.name
+            }
+            print("[HomeKit] 🔴 Refresh: \(failedAccessories.count) accessor(y|ies) had ALL reads fail → \(failedNames.prefix(5).joined(separator: ", "))")
+        }
         if changedCount > 0 {
-            print("[HomeKit] 🔄 Periodic refresh found \(changedCount) changed characteristic(s)")
+            print("[HomeKit] 🔄 Periodic refresh found \(changedCount) changed characteristic(s) across \(succeededAccessories.count)/\(attemptedAccessories.count) responsive accessories")
+        } else {
+            print("[HomeKit] ✓ Periodic refresh: \(succeededAccessories.count)/\(attemptedAccessories.count) accessories responded, no changes")
         }
     }
 
@@ -279,6 +340,38 @@ class HomeKitManager: NSObject, ObservableObject {
         case (nil, _), (_, nil): return false
         case let (a as NSObject, b as NSObject): return a.isEqual(b)
         default: return false
+        }
+    }
+
+    /// Effective reachability: trust HomeKit when true, fall back to recent successful-read
+    /// evidence when HomeKit reports false (its bit is notoriously stale for WiFi plugs).
+    func isEffectivelyReachable(_ accessory: HMAccessory) -> Bool {
+        if accessory.isReachable { return true }
+        if let seen = lastSeenAt[accessory.uniqueIdentifier],
+           Date().timeIntervalSince(seen) < reachabilityGracePeriod {
+            return true
+        }
+        return false
+    }
+
+    /// Record a successful characteristic read. If this flips the effective reachability
+    /// from false → true (i.e. HomeKit still says unreachable but we just heard from the
+    /// device), fire the delegate so the UI updates without waiting for HomeKit to notice.
+    private func recordSuccessfulRead(_ accessory: HMAccessory) {
+        let uuid = accessory.uniqueIdentifier
+        let wasEffectivelyReachable = isEffectivelyReachable(accessory)
+        lastSeenAt[uuid] = Date()
+        if !accessory.isReachable && !wasEffectivelyReachable {
+            print("[HomeKit] 🟢 Reachability override: \(accessory.name) — HomeKit says unreachable but we just read a value; reporting reachable")
+            if let context = findAccessoryContext(accessory) {
+                delegate?.accessoryReachabilityDidUpdate(
+                    accessoryId: uuid.uuidString,
+                    isReachable: true,
+                    context: context
+                )
+            } else {
+                print("[HomeKit] ⚠️ No context found for \(accessory.name); cannot broadcast reachability override")
+            }
         }
     }
 
@@ -463,7 +556,7 @@ class HomeKitManager: NSObject, ObservableObject {
             if let roomId = roomId, let roomUuid = UUID(uuidString: roomId) {
                 accessories = accessories.filter { $0.room?.uniqueIdentifier == roomUuid }
             }
-            result = accessories.map { AccessoryModel(from: $0, homeId: homeId, includeValues: includeValues) }
+            result = accessories.map { AccessoryModel(from: $0, homeId: homeId, includeValues: includeValues, reachableOverride: isEffectivelyReachable($0)) }
         } else {
             // No home filter - iterate through all homes and include homeId
             for home in homes {
@@ -472,7 +565,7 @@ class HomeKitManager: NSObject, ObservableObject {
                 if let roomId = roomId, let roomUuid = UUID(uuidString: roomId) {
                     accessories = accessories.filter { $0.room?.uniqueIdentifier == roomUuid }
                 }
-                result.append(contentsOf: accessories.map { AccessoryModel(from: $0, homeId: hid, includeValues: includeValues) })
+                result.append(contentsOf: accessories.map { AccessoryModel(from: $0, homeId: hid, includeValues: includeValues, reachableOverride: isEffectivelyReachable($0)) })
             }
         }
 
@@ -486,7 +579,7 @@ class HomeKitManager: NSObject, ObservableObject {
 
         for home in homes {
             if let accessory = home.accessories.first(where: { $0.uniqueIdentifier == uuid }) {
-                return AccessoryModel(from: accessory, homeId: home.uniqueIdentifier.uuidString)
+                return AccessoryModel(from: accessory, homeId: home.uniqueIdentifier.uuidString, reachableOverride: isEffectivelyReachable(accessory))
             }
         }
 
@@ -516,7 +609,8 @@ class HomeKitManager: NSObject, ObservableObject {
         // reachability via accessoryDidUpdateReachability; a genuine offline read fails fast.
 
         // Read all readable characteristics concurrently
-        await withTaskGroup(of: Void.self) { group in
+        var anySucceeded = false
+        await withTaskGroup(of: Bool.self) { group in
             for service in accessory.services {
                 for characteristic in service.characteristics {
                     if characteristic.properties.contains(HMCharacteristicPropertyReadable) {
@@ -531,22 +625,27 @@ class HomeKitManager: NSObject, ObservableObject {
                                         }
                                     }
                                 }
+                                return true
                             } catch {
-                                // Ignore individual read errors
+                                return false
                             }
                         }
                     }
                 }
             }
+            for await success in group where success {
+                anySucceeded = true
+            }
         }
+        if anySucceeded { recordSuccessfulRead(accessory) }
     }
 
     // MARK: - Characteristic Operations
 
     func readCharacteristic(accessoryId: String, characteristicType: String) async throws -> Any {
-        let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
+        let (accessory, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
 
-        return try await withCheckedThrowingContinuation { continuation in
+        let value = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
             characteristic.readValue { error in
                 if let error = error {
                     continuation.resume(throwing: HomeKitError.readFailed(error))
@@ -555,6 +654,8 @@ class HomeKitManager: NSObject, ObservableObject {
                 }
             }
         }
+        recordSuccessfulRead(accessory)
+        return value
     }
 
     func setCharacteristic(accessoryId: String, characteristicType: String, value: Any) async throws -> ControlResult {
@@ -587,6 +688,8 @@ class HomeKitManager: NSObject, ObservableObject {
                 }
             }
         }
+        // Successful write is strong evidence the device is reachable, regardless of HomeKit's bit.
+        recordSuccessfulRead(accessory)
 
         return ControlResult(
             success: true,

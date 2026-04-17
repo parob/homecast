@@ -161,14 +161,14 @@ struct AccessoryModel {
     let isReachable: Bool
     let services: [ServiceModel]
 
-    init(from accessory: HMAccessory, homeId: String? = nil, includeValues: Bool = true) {
+    init(from accessory: HMAccessory, homeId: String? = nil, includeValues: Bool = true, reachableOverride: Bool? = nil) {
         self.id = accessory.uniqueIdentifier.uuidString
         self.name = accessory.name
         self.homeId = homeId
         self.roomId = accessory.room?.uniqueIdentifier.uuidString
         self.roomName = accessory.room?.name
         self.category = accessory.category.localizedDescription
-        self.isReachable = accessory.isReachable
+        self.isReachable = reachableOverride ?? accessory.isReachable
         self.services = accessory.services.map { ServiceModel(from: $0, includeValues: includeValues) }
     }
 

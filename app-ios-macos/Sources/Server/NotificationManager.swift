@@ -37,7 +37,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             }
             return granted
         } catch {
-            print("[NotificationManager] Permission request failed: \(error)")
+            NSLog("[NotificationManager] Permission request failed: %@", error.localizedDescription)
             return false
         }
     }
@@ -97,7 +97,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("[NotificationManager] Failed to show notification: \(error)")
+                NSLog("[NotificationManager] Failed to show notification: %@", error.localizedDescription)
             }
         }
     }
@@ -115,13 +115,13 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func didRegisterForRemoteNotifications(deviceToken: Data) {
         let tokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         apnsToken = tokenString
-        print("[NotificationManager] APNs token: \(tokenString.prefix(16))...")
+        NSLog("[NotificationManager] APNs token: %@...", String(tokenString.prefix(16)))
         // The web app will read this token via the JS bridge and register it with the server
     }
 
     /// Called from AppDelegate when APNs registration fails.
     func didFailToRegisterForRemoteNotifications(error: Error) {
-        print("[NotificationManager] APNs registration failed: \(error)")
+        NSLog("[NotificationManager] APNs registration failed: %@", error.localizedDescription)
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -138,7 +138,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         if actionIdentifier != UNNotificationDefaultActionIdentifier &&
            actionIdentifier != UNNotificationDismissActionIdentifier {
             // User tapped an action button — this will be forwarded to the automation engine
-            print("[NotificationManager] Action tapped: \(actionIdentifier)")
+            NSLog("[NotificationManager] Action tapped: %@", actionIdentifier)
             NotificationCenter.default.post(
                 name: .notificationActionTapped,
                 object: nil,

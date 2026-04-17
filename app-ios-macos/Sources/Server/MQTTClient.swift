@@ -133,7 +133,10 @@ class MQTTClient {
         }
 
         let host = NWEndpoint.Host(config.host)
-        let port = NWEndpoint.Port(rawValue: config.port)!
+        guard let port = NWEndpoint.Port(rawValue: config.port) else {
+            updateState(.error("Invalid port: \(config.port)"))
+            return
+        }
         connection = NWConnection(host: host, port: port, using: params)
 
         connection?.stateUpdateHandler = { [weak self] state in
