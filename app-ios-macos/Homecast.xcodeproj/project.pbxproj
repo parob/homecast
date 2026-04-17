@@ -55,6 +55,9 @@
 		C1000005A /* MQTTBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000005F /* MQTTBridge.swift */; };
 		C1000006A /* MQTTDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000006F /* MQTTDiscovery.swift */; };
 		C1000007A /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000007F /* NotificationManager.swift */; };
+		C1000008A /* PersistentLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000008F /* PersistentLogger.swift */; };
+		C1000009A /* LogShipper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000009F /* LogShipper.swift */; };
+		C100000AA /* MetricKitReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000AF /* MetricKitReporter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -133,6 +136,9 @@
 		C1000005F /* MQTTBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MQTTBridge.swift; sourceTree = "<group>"; };
 		C1000006F /* MQTTDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MQTTDiscovery.swift; sourceTree = "<group>"; };
 		C1000007F /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		C1000008F /* PersistentLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentLogger.swift; sourceTree = "<group>"; };
+		C1000009F /* LogShipper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogShipper.swift; sourceTree = "<group>"; };
+		C100000AF /* MetricKitReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricKitReporter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -182,6 +188,9 @@
 			children = (
 				C1000001F /* LocalHTTPServer.swift */,
 				C1000002F /* LocalNetworkBridge.swift */,
+				C1000008F /* PersistentLogger.swift */,
+				C1000009F /* LogShipper.swift */,
+				C100000AF /* MetricKitReporter.swift */,
 				C1000004F /* MQTTClient.swift */,
 				C1000005F /* MQTTBridge.swift */,
 				C1000006F /* MQTTDiscovery.swift */,
@@ -421,6 +430,9 @@
 				C1000005A /* MQTTBridge.swift in Sources */,
 				C1000006A /* MQTTDiscovery.swift in Sources */,
 				C1000007A /* NotificationManager.swift in Sources */,
+				C1000008A /* PersistentLogger.swift in Sources */,
+				C1000009A /* LogShipper.swift in Sources */,
+				C100000AA /* MetricKitReporter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

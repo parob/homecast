@@ -17,6 +17,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        // Observability: start persistent logging + MetricKit crash/hang
+        // capture as early as possible so startup issues are captured. In
+        // cloud mode, wire LogShipper so WARN+ flows to /internal/logs.
+        Log.info("app launching isCommunity=\(AppConfig.isCommunity) isStaging=\(AppConfig.isStaging)",
+                 category: "lifecycle")
+        MetricKitReporter.shared.start()
+        if let apiBase = AppConfig.apiBaseURL {
+            let logsURL = apiBase.appendingPathComponent("internal/logs")
+            LogShipper.shared.configure(
+                apiURL: logsURL,
+                tokenProvider: { [weak self] in self?.connectionManager?.authToken }
+            )
+        }
+
         // Initialize HomeKit manager
         homeKitManager = HomeKitManager()
 
