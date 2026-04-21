@@ -602,6 +602,15 @@ struct WebViewContainer: UIViewRepresentable {
         }
         #endif
 
+        // Add message handler for the native cloud-relay WebSocket bridge.
+        // Registered in both cloud and community mode — the JS adapter only
+        // activates on the cloud-relay socket, and leaving the handler
+        // registered means switching modes at runtime doesn't require a
+        // separate wiring path.
+        #if targetEnvironment(macCatalyst)
+        config.userContentController.add(context.coordinator.relayWSBridge, name: "relayWs")
+        #endif
+
         // Set platform detection flags and HomeKit bridge for the web app
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let appBuild = BuildInfo.gitHash
@@ -671,6 +680,36 @@ struct WebViewContainer: UIViewRepresentable {
         };
 
         console.log('[Homecast] HomeKit bridge ready for relay mode');
+
+        // ── Native relay WebSocket bridge ────────────────────────────────
+        // The web app's ServerWebSocket can use window.NativeRelayWebSocket
+        // as a drop-in replacement for `new WebSocket(url)` when
+        // window.homecastNativeRelayWs === true.
+        window.homecastNativeRelayWs = true;
+        window.__relay_ws_sockets = {};
+        window.__relay_ws_event = function(payload) {
+            try {
+                var sock = window.__relay_ws_sockets[payload.socketId];
+                if (!sock) return;
+                switch (payload.type) {
+                    case 'open':
+                        sock._onOpen();
+                        break;
+                    case 'message':
+                        sock._onMessage(payload.data);
+                        break;
+                    case 'error':
+                        sock._onError(payload.message);
+                        break;
+                    case 'close':
+                        sock._onClose(payload.code, payload.reason, payload.wasClean);
+                        break;
+                }
+            } catch (e) {
+                console.error('[RelayWS] event dispatch failed:', e);
+            }
+        };
+        console.log('[Homecast] Native relay WebSocket bridge ready');
         """
         #else
         let platformScript = """
@@ -893,6 +932,9 @@ struct WebViewContainer: UIViewRepresentable {
         #if targetEnvironment(macCatalyst)
         homeKitBridge.attach(webView: webView)
 
+        // Attach native relay WebSocket bridge
+        context.coordinator.relayWSBridge.attach(webView: webView)
+
         // Attach local network bridge for Community mode (external WebSocket clients)
         // Bridge attachment for Community mode happens in didFinish navigation delegate
         #endif
@@ -995,6 +1037,14 @@ struct WebViewContainer: UIViewRepresentable {
 
         // Community mode: bridge for external WebSocket clients
         let localNetworkBridge = LocalNetworkBridge()
+
+        // Cloud mode: native WebSocket client that replaces the browser
+        // WebSocket inside the WKWebView for the api.homecast.cloud relay
+        // connection. Gives us real WS ping/pong, NWPathMonitor-driven
+        // teardown, and lifecycle events shipped through LogShipper.
+        #if targetEnvironment(macCatalyst)
+        let relayWSBridge = RelayWebSocketBridge()
+        #endif
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
         var webViewInitiatedLogin = false
