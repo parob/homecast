@@ -110,7 +110,7 @@ struct RootView: View {
     var body: some View {
         #if targetEnvironment(macCatalyst)
         ContentView()
-            .frame(minWidth: 960, minHeight: 600)
+            .frame(minWidth: 400, minHeight: 600)
             .ignoresSafeArea()
         #else
         ContentView()
