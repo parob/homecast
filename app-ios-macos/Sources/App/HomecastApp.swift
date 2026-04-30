@@ -306,21 +306,6 @@ struct ModeSelector: View {
 
                 }
                 .frame(maxWidth: 300)
-
-                Button(action: {
-                    if let url = URL(string: "https://homecast.cloud/pricing") {
-                        UIApplication.shared.open(url)
-                    }
-                }) {
-                    Text("Compare plans & pricing")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.primary)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                        .background(Color(.systemGray6))
-                        .cornerRadius(10)
-                }
-                .buttonStyle(.plain)
             }
 
             Spacer(minLength: 0)
@@ -727,6 +712,18 @@ struct WebViewContainer: UIViewRepresentable {
             forMainFrameOnly: false
         ))
 
+        // Native purchase bridge — App Store builds only. Signals the React app
+        // to route Plan/Cloud upgrade flows through StoreKit instead of Stripe.
+        let purchaseBootstrap = """
+        window.isHomecastNativePurchaseAvailable = true;
+        console.log('[Homecast] Native purchase bridge available');
+        """
+        config.userContentController.addUserScript(WKUserScript(
+            source: purchaseBootstrap,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+
         // iOS community mode: inject client state so web app knows it's connected to a relay
         #if !targetEnvironment(macCatalyst)
         if AppConfig.isCommunity, let addr = AppConfig.relayAddress {
@@ -938,6 +935,11 @@ struct WebViewContainer: UIViewRepresentable {
         // Attach local network bridge for Community mode (external WebSocket clients)
         // Bridge attachment for Community mode happens in didFinish navigation delegate
         #endif
+
+        // Attach StoreKit purchase bridge (Mac Catalyst + iOS — App Store builds)
+        if #available(iOS 15.0, macCatalyst 15.0, *) {
+            PurchaseBridge.shared.attach(webView: webView)
+        }
 
         #if targetEnvironment(macCatalyst)
         // Observe WebView frame changes to sync actual window width to JavaScript.
@@ -1282,6 +1284,16 @@ struct WebViewContainer: UIViewRepresentable {
                 #else
                 print("[WebView] HomeKit bridge not available on iOS")
                 #endif
+            case "purchase":
+                // Route StoreKit IAP calls (App Store builds)
+                let method = body["method"] as? String
+                let payload = body["payload"] as? [String: Any]
+                let callbackId = body["callbackId"] as? String
+                if #available(iOS 15.0, macCatalyst 15.0, *) {
+                    Task { @MainActor in
+                        PurchaseBridge.shared.handle(method: method, payload: payload, callbackId: callbackId)
+                    }
+                }
             case "file":
                 // Handle file operations
                 let method = body["method"] as? String

@@ -1,0 +1,75 @@
+{
+  "identifier" : "808E4D42-354A-44C8-9BEF-D2A84BD46AF3",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_applicationInternalID" : "0",
+    "_developerTeamID" : "3HMH4559WD",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "F59DA7CE-D0AE-4EC2-B23A-F208C5340984",
+      "localizations" : [
+        {
+          "description" : "Homecast subscription plans",
+          "displayName" : "Homecast Plans",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "Homecast Plans",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "10.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6F7F7722-6187-46F4-A8C2-A7C72173FE6E",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlimited accessories, push notifications, MQTT broker.",
+              "displayName" : "Standard",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "cloud.homecast.app.standard.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Standard Monthly",
+          "subscriptionGroupID" : null,
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "14.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "A1B2C3D4-E5F6-4789-9ABC-DEF012345678",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Everything in Standard, plus we run the relay for you. No Mac required.",
+              "displayName" : "Cloud",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "cloud.homecast.app.cloud.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Cloud Monthly",
+          "subscriptionGroupID" : null,
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

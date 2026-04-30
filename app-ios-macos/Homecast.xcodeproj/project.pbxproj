@@ -59,6 +59,8 @@
 		C1000009A /* LogShipper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000009F /* LogShipper.swift */; };
 		C100000AA /* MetricKitReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000AF /* MetricKitReporter.swift */; };
 		C100000BA /* RelayWebSocketBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000BF /* RelayWebSocketBridge.swift */; };
+		D1000001A /* PurchaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000001F /* PurchaseManager.swift */; };
+		D1000002A /* PurchaseBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000002F /* PurchaseBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -141,6 +143,8 @@
 		C1000009F /* LogShipper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogShipper.swift; sourceTree = "<group>"; };
 		C100000AF /* MetricKitReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricKitReporter.swift; sourceTree = "<group>"; };
 		C100000BF /* RelayWebSocketBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayWebSocketBridge.swift; sourceTree = "<group>"; };
+		D1000001F /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
+		D1000002F /* PurchaseBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -180,9 +184,19 @@
 				A0000006G /* App */,
 				A0000007G /* HomeKit */,
 				C1000000G /* Server */,
+				D1000000G /* Purchases */,
 				A0000009G /* MenuBarPlugin */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		D1000000G /* Purchases */ = {
+			isa = PBXGroup;
+			children = (
+				D1000001F /* PurchaseManager.swift */,
+				D1000002F /* PurchaseBridge.swift */,
+			);
+			path = Purchases;
 			sourceTree = "<group>";
 		};
 		C1000000G /* Server */ = {
@@ -437,6 +451,8 @@
 				C1000009A /* LogShipper.swift in Sources */,
 				C100000AA /* MetricKitReporter.swift in Sources */,
 				C100000BA /* RelayWebSocketBridge.swift in Sources */,
+				D1000001A /* PurchaseManager.swift in Sources */,
+				D1000002A /* PurchaseBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
