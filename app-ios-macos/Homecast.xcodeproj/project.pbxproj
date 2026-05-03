@@ -90,6 +90,7 @@
 /* Begin PBXFileReference section */
 		42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitBridge.swift; sourceTree = "<group>"; };
 		42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButtonGroup.swift; sourceTree = "<group>"; };
+		42BCDD292FA7453A00692926 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
 		A1000001F /* HomecastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomecastApp.swift; sourceTree = "<group>"; };
 		A1000002F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000003F /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
@@ -171,6 +172,7 @@
 		A0000001G = {
 			isa = PBXGroup;
 			children = (
+				42BCDD292FA7453A00692926 /* Products.storekit */,
 				A0000002G /* Sources */,
 				A0000003G /* Resources */,
 				A0000004G /* Frameworks */,
@@ -188,32 +190,6 @@
 				A0000009G /* MenuBarPlugin */,
 			);
 			path = Sources;
-			sourceTree = "<group>";
-		};
-		D1000000G /* Purchases */ = {
-			isa = PBXGroup;
-			children = (
-				D1000001F /* PurchaseManager.swift */,
-				D1000002F /* PurchaseBridge.swift */,
-			);
-			path = Purchases;
-			sourceTree = "<group>";
-		};
-		C1000000G /* Server */ = {
-			isa = PBXGroup;
-			children = (
-				C1000001F /* LocalHTTPServer.swift */,
-				C1000002F /* LocalNetworkBridge.swift */,
-				C1000008F /* PersistentLogger.swift */,
-				C1000009F /* LogShipper.swift */,
-				C100000AF /* MetricKitReporter.swift */,
-				C100000BF /* RelayWebSocketBridge.swift */,
-				C1000004F /* MQTTClient.swift */,
-				C1000005F /* MQTTBridge.swift */,
-				C1000006F /* MQTTDiscovery.swift */,
-				C1000007F /* NotificationManager.swift */,
-			);
-			path = Server;
 			sourceTree = "<group>";
 		};
 		A0000003G /* Resources */ = {
@@ -317,6 +293,32 @@
 				B1000022F /* RemoteMenuItem.swift */,
 			);
 			path = MenuItems;
+			sourceTree = "<group>";
+		};
+		C1000000G /* Server */ = {
+			isa = PBXGroup;
+			children = (
+				C1000001F /* LocalHTTPServer.swift */,
+				C1000002F /* LocalNetworkBridge.swift */,
+				C1000008F /* PersistentLogger.swift */,
+				C1000009F /* LogShipper.swift */,
+				C100000AF /* MetricKitReporter.swift */,
+				C100000BF /* RelayWebSocketBridge.swift */,
+				C1000004F /* MQTTClient.swift */,
+				C1000005F /* MQTTBridge.swift */,
+				C1000006F /* MQTTDiscovery.swift */,
+				C1000007F /* NotificationManager.swift */,
+			);
+			path = Server;
+			sourceTree = "<group>";
+		};
+		D1000000G /* Purchases */ = {
+			isa = PBXGroup;
+			children = (
+				D1000001F /* PurchaseManager.swift */,
+				D1000002F /* PurchaseBridge.swift */,
+			);
+			path = Purchases;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -789,7 +791,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
 	};
 	rootObject = A0000000P /* Project object */;
 }
