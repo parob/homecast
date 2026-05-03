@@ -45,8 +45,21 @@ actor PurchaseManager {
     }
 
     func loadProducts(productIds: [String]) async throws -> [Product] {
+        print("[PurchaseManager] loadProducts requested for: \(productIds)")
         let storeProducts = try await Product.products(for: productIds)
-        for p in storeProducts { products[p.id] = p }
+        print("[PurchaseManager] Product.products returned \(storeProducts.count) product(s)")
+        for p in storeProducts {
+            print("[PurchaseManager]   - id=\(p.id), displayPrice=\(p.displayPrice)")
+            products[p.id] = p
+        }
+        if storeProducts.isEmpty {
+            print("[PurchaseManager] WARNING: zero products returned. Likely causes:")
+            print("[PurchaseManager]   1. Scheme has no StoreKit Configuration File attached (Edit Scheme → Run → Options)")
+            print("[PurchaseManager]   2. Sandbox tester not signed into System Settings → App Store")
+            print("[PurchaseManager]   3. Paid Apps Agreement not active in App Store Connect")
+            let bundleId = Bundle.main.bundleIdentifier ?? "(unknown)"
+            print("[PurchaseManager]   4. Bundle ID mismatch: app=\(bundleId), expected=cloud.homecast.app")
+        }
         return storeProducts
     }
 
