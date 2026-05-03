@@ -1,31 +1,81 @@
 {
   "identifier" : "808E4D42-354A-44C8-9BEF-D2A84BD46AF3",
-  "nonRenewingSubscriptions" : [],
-  "products" : [],
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
   "settings" : {
-    "_applicationInternalID" : "0",
+    "_compatibilityTimeRate" : 1,
     "_developerTeamID" : "3HMH4559WD",
     "_failTransactionsEnabled" : false,
     "_lastSynchronizedDate" : 0,
     "_locale" : "en_US",
     "_storefront" : "USA",
-    "_storeKitErrors" : []
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store Sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Subscription Status"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Transaction"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Refund Request Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Offer Code Redeem Sheet"
+      }
+    ]
   },
   "subscriptionGroups" : [
     {
       "id" : "F59DA7CE-D0AE-4EC2-B23A-F208C5340984",
       "localizations" : [
-        {
-          "description" : "Homecast subscription plans",
-          "displayName" : "Homecast Plans",
-          "locale" : "en_US"
-        }
+
       ],
       "name" : "Homecast Plans",
       "subscriptions" : [
         {
-          "adHocOffers" : [],
-          "codeOffers" : [],
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
           "displayPrice" : "10.99",
           "familyShareable" : false,
           "groupNumber" : 1,
@@ -41,12 +91,16 @@
           "productID" : "cloud.homecast.app.standard.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Standard Monthly",
-          "subscriptionGroupID" : null,
+          "subscriptionGroupID" : "F59DA7CE-D0AE-4EC2-B23A-F208C5340984",
           "type" : "RecurringSubscription"
         },
         {
-          "adHocOffers" : [],
-          "codeOffers" : [],
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
           "displayPrice" : "14.99",
           "familyShareable" : false,
           "groupNumber" : 2,
@@ -62,7 +116,7 @@
           "productID" : "cloud.homecast.app.cloud.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Cloud Monthly",
-          "subscriptionGroupID" : null,
+          "subscriptionGroupID" : "F59DA7CE-D0AE-4EC2-B23A-F208C5340984",
           "type" : "RecurringSubscription"
         }
       ]

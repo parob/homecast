@@ -90,7 +90,7 @@
 /* Begin PBXFileReference section */
 		42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitBridge.swift; sourceTree = "<group>"; };
 		42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButtonGroup.swift; sourceTree = "<group>"; };
-		42BCDD292FA7453A00692926 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
+		42BCDD2C2FA7725000692926 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
 		A1000001F /* HomecastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomecastApp.swift; sourceTree = "<group>"; };
 		A1000002F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000003F /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
@@ -172,7 +172,7 @@
 		A0000001G = {
 			isa = PBXGroup;
 			children = (
-				42BCDD292FA7453A00692926 /* Products.storekit */,
+				42BCDD2C2FA7725000692926 /* Products.storekit */,
 				A0000002G /* Sources */,
 				A0000003G /* Resources */,
 				A0000004G /* Frameworks */,
