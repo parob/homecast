@@ -49,7 +49,7 @@ final class PurchaseBridge {
                             "productId": product.id,
                             "displayPrice": product.displayPrice,
                             "price": NSDecimalNumber(decimal: product.price).doubleValue,
-                            "currencyCode": product.priceFormatStyle.currencyCode ?? "",
+                            "currencyCode": product.priceFormatStyle.currencyCode,
                             "period": Self.periodString(product),
                         ]
                     }
