@@ -64,13 +64,17 @@ final class PurchaseBridge {
                 Task { await self.respond(callbackId: callbackId, error: "Missing productId") }
                 return
             }
+            // Optional userId — JS passes the authenticated Homecast user's
+            // UUID so we can bind the StoreKit transaction to that account
+            // via appAccountToken. The server then refuses any JWS whose
+            // token doesn't match the JWT-authenticated user.
+            let userId = (payload?["userId"] as? String).flatMap { UUID(uuidString: $0) }
             Task {
                 do {
-                    let jws = try await PurchaseManager.shared.purchase(productId: productId)
+                    let jws = try await PurchaseManager.shared.purchase(productId: productId, userId: userId)
                     if let jws = jws {
                         await self.respond(callbackId: callbackId, result: ["jws": jws])
                     } else {
-                        // User cancelled or pending parent approval
                         await self.respond(callbackId: callbackId, result: ["cancelled": true])
                     }
                 } catch {

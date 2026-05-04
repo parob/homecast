@@ -65,7 +65,13 @@ actor PurchaseManager {
 
     /// Returns the JWS string of the verified transaction, or nil if the
     /// user cancelled or the purchase is pending parent approval.
-    func purchase(productId: String) async throws -> String? {
+    ///
+    /// `userId` (Homecast user UUID) is passed as Apple's `appAccountToken`
+    /// so the JWS is cryptographically bound to a specific Homecast account.
+    /// The server checks the token matches the authenticated user, which
+    /// makes forging a sub against another user's account effectively
+    /// require knowing their internal UUID.
+    func purchase(productId: String, userId: UUID? = nil) async throws -> String? {
         let product: Product
         if let cached = products[productId] {
             product = cached
@@ -78,7 +84,11 @@ actor PurchaseManager {
             product = first
         }
 
-        let result = try await product.purchase()
+        var options: Set<Product.PurchaseOption> = []
+        if let userId = userId {
+            options.insert(.appAccountToken(userId))
+        }
+        let result = try await product.purchase(options: options)
         switch result {
         case .success(let verification):
             let jws = verification.jwsRepresentation
