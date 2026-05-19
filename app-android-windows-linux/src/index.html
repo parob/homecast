@@ -144,8 +144,22 @@
     </div>
 
     <script>
+      // Tell the Android shell where to come back to when the user wants
+      // to switch modes. Safe no-op on other platforms.
+      try {
+        if (window.HomecastAndroid && typeof window.HomecastAndroid.setHomeUrl === 'function') {
+          window.HomecastAndroid.setHomeUrl(window.location.href);
+        }
+      } catch (_) {}
+
       // Check for saved preference
       (function() {
+        var reset = /[?&]reset=1\b/.test(window.location.search) || window.location.hash === '#select';
+        if (reset) {
+          localStorage.removeItem('homecast-mode');
+          localStorage.removeItem('homecast-server-url');
+          return;
+        }
         var saved = localStorage.getItem('homecast-mode');
         var url = localStorage.getItem('homecast-server-url');
         if (saved === 'cloud') {

@@ -363,24 +363,42 @@ enum CharacteristicMapper {
         return characteristicMap[normalized] ?? friendlyName
     }
 
+    /// Canonical reverse-lookup map (HomeKit UUID → friendly name).
+    /// `characteristicMap` has multiple friendly aliases per UUID (e.g. "on" and
+    /// "power_state" both map to HMCharacteristicTypePowerState). Iterating that
+    /// dict and returning the first match was non-deterministic because Swift's
+    /// Dictionary has no defined iteration order, so the same accessory came out
+    /// as "on" on one launch and "power_state" on another.
+    private static let canonicalCharacteristicName: [String: String] = {
+        // Sort by name first so the fallback choice (when no canonical override
+        // applies) is at least stable across runs.
+        var map: [String: String] = [:]
+        for (name, type) in characteristicMap.sorted(by: { $0.key < $1.key }) {
+            if map[type] == nil { map[type] = name }
+        }
+        // Explicit canonical preferences where the alphabetic winner isn't what
+        // we want downstream. Keep this list short — only entries with aliases.
+        map[HMCharacteristicTypePowerState] = "power_state"
+        return map
+    }()
+
+    private static let canonicalServiceName: [String: String] = {
+        var map: [String: String] = [:]
+        for (name, type) in serviceMap.sorted(by: { $0.key < $1.key }) {
+            if map[type] == nil { map[type] = name }
+        }
+        return map
+    }()
+
     /// Convert HomeKit characteristic type UUID to friendly name
     static func fromHomeKitType(_ homeKitType: String) -> String {
-        for (friendly, hkType) in characteristicMap {
-            if hkType == homeKitType {
-                return friendly
-            }
-        }
-        // Return last component of UUID path if no mapping found
+        if let name = canonicalCharacteristicName[homeKitType] { return name }
         return homeKitType.components(separatedBy: ".").last ?? homeKitType
     }
 
     /// Convert HomeKit service type UUID to friendly name
     static func fromHomeKitServiceType(_ homeKitType: String) -> String {
-        for (friendly, hkType) in serviceMap {
-            if hkType == homeKitType {
-                return friendly
-            }
-        }
+        if let name = canonicalServiceName[homeKitType] { return name }
         return homeKitType.components(separatedBy: ".").last ?? homeKitType
     }
 

@@ -3,11 +3,13 @@ package cloud.homecast.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.view.WindowInsetsController
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessaging
@@ -15,6 +17,7 @@ import com.google.firebase.messaging.FirebaseMessaging
 class MainActivity : TauriActivity() {
 
     private var webViewRef: WebView? = null
+    @Volatile private var homeUrl: String? = null
     private val permissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -28,6 +31,51 @@ class MainActivity : TauriActivity() {
         instance = this
         webView.addJavascriptInterface(StatusBarBridge(), "HomecastAndroid")
         webView.addJavascriptInterface(PushBridge(), "HomecastAndroidPush")
+        installBackPressHandler()
+    }
+
+    private fun installBackPressHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val wv = webViewRef
+                val home = homeUrl
+                if (wv == null || home == null) {
+                    finish(); return
+                }
+                val current = wv.url
+                if (current != null && sameOrigin(current, home)) {
+                    // Already on the picker — back exits the app.
+                    finish(); return
+                }
+                val history = wv.copyBackForwardList()
+                val idx = history.currentIndex
+                // If the previous history entry is the picker, going back would
+                // trigger the IIFE redirect again — load home with ?reset=1 so
+                // the selector renders and the saved mode is cleared.
+                if (idx > 0 && sameOrigin(history.getItemAtIndex(idx - 1).url, home)) {
+                    runOnUiThread { wv.loadUrl(homeUrlWithReset(home)) }
+                    return
+                }
+                if (wv.canGoBack()) {
+                    runOnUiThread { wv.goBack() }
+                    return
+                }
+                finish()
+            }
+        })
+    }
+
+    private fun sameOrigin(a: String, b: String): Boolean = try {
+        val ua = Uri.parse(a)
+        val ub = Uri.parse(b)
+        ua.scheme == ub.scheme && ua.host == ub.host && ua.port == ub.port
+    } catch (_: Throwable) { false }
+
+    private fun homeUrlWithReset(home: String): String {
+        val sep = if (home.contains("?")) "&" else "?"
+        // Strip any existing fragment so the IIFE sees a clean ?reset=1
+        val base = home.substringBefore('#')
+        return "$base${sep}reset=1"
     }
 
     override fun onDestroy() {
@@ -49,6 +97,18 @@ class MainActivity : TauriActivity() {
                     WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                 )
             }
+        }
+
+        @JavascriptInterface
+        fun setHomeUrl(url: String) {
+            if (homeUrl == null) homeUrl = url
+        }
+
+        @JavascriptInterface
+        fun resetMode() {
+            val home = homeUrl ?: return
+            val target = homeUrlWithReset(home)
+            runOnUiThread { webViewRef?.loadUrl(target) }
         }
     }
 

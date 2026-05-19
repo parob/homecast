@@ -16,9 +16,13 @@ fn inject_platform_globals(webview: &tauri::Webview) {
         "unknown"
     };
 
+    // NOTE: do NOT set window.isHomecastApp here. The cloud web app uses
+    // that flag as a proxy for "Apple App Store build" (anti-steering copy,
+    // Apple subscription disclosure, repo-link instead of Sponsor link).
+    // The Mac/iOS native WKWebView host injects it; Tauri (Android, Windows,
+    // Linux) is not an App Store build and must not impersonate one.
     let script = format!(
         r#"
-        window.isHomecastApp = true;
         window.isHomecastTauriApp = true;
         window.homecastPlatform = "{}";
         window.isHomecastIOSApp = {};
