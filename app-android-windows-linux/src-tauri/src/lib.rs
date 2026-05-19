@@ -76,28 +76,78 @@ fn inject_platform_globals(webview: &tauri::Webview) {
     // Android-specific injections
     #[cfg(target_os = "android")]
     {
-        // Safe area CSS (Android WebView doesn't support env(safe-area-inset-*))
-        let _ = webview.eval(r#"
-            (function() {
-                var id = '__tauri_safe_area';
-                if (document.getElementById(id)) return;
-                var s = document.createElement('style');
-                s.id = id;
-                s.textContent = ':root { --safe-area-top: 48px; }';
-                document.head.appendChild(s);
-            })();
-        "#);
-
+        let _ = webview.eval(ANDROID_SAFE_AREA_JS);
     }
 }
+
+#[cfg(target_os = "android")]
+const ANDROID_SAFE_AREA_JS: &str = r#"
+(function() {
+    try {
+        var STYLE_ID = '__homecast_safe_area_style';
+        var VALUE = '48px';
+        function ensureStyle() {
+            if (document.getElementById(STYLE_ID)) return;
+            var s = document.createElement('style');
+            s.id = STYLE_ID;
+            s.textContent = ':root { --safe-area-top: ' + VALUE + ' !important; }';
+            (document.head || document.documentElement).appendChild(s);
+        }
+        function ensureInline() {
+            try {
+                var el = document.documentElement;
+                var cur = el.style.getPropertyValue('--safe-area-top');
+                var prio = el.style.getPropertyPriority('--safe-area-top');
+                if (cur === VALUE && prio === 'important') return;
+                el.style.setProperty('--safe-area-top', VALUE, 'important');
+            } catch(e) {}
+        }
+        ensureInline();
+        ensureStyle();
+        if (window.__homecastSafeAreaObserver) return;
+        var reapply = function() { ensureInline(); ensureStyle(); };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', reapply, { once: true });
+        }
+        try {
+            var obs = new MutationObserver(function(mutations) {
+                for (var i = 0; i < mutations.length; i++) {
+                    var m = mutations[i];
+                    if (m.type === 'attributes' && m.target === document.documentElement) {
+                        ensureInline();
+                    }
+                    if (m.type === 'childList' && !document.getElementById(STYLE_ID)) {
+                        ensureStyle();
+                    }
+                }
+            });
+            obs.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+            if (document.head) {
+                obs.observe(document.head, { childList: true });
+            }
+            window.__homecastSafeAreaObserver = obs;
+        } catch(e) {}
+    } catch(e) {}
+})();
+"#;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .on_page_load(|webview, payload| {
-            if matches!(payload.event(), PageLoadEvent::Finished) {
-                inject_platform_globals(&webview);
+            match payload.event() {
+                // Set safe-area-top BEFORE first paint so content positioned
+                // with calc(... + var(--safe-area-top)) doesn't flash at 0px.
+                PageLoadEvent::Started => {
+                    #[cfg(target_os = "android")]
+                    {
+                        let _ = webview.eval(ANDROID_SAFE_AREA_JS);
+                    }
+                }
+                PageLoadEvent::Finished => {
+                    inject_platform_globals(&webview);
+                }
             }
         })
         .run(tauri::generate_context!())
