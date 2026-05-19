@@ -1,45 +1,66 @@
 use tauri::webview::PageLoadEvent;
 
-/// Inject platform globals so the web app knows it's running in a native context.
+#[cfg(target_os = "android")]
+const PLATFORM_FLAGS_JS: &str = "\
+    window.isHomecastTauriApp = true;\
+    window.homecastPlatform = \"android\";\
+    window.isHomecastIOSApp = false;\
+    window.isHomecastAndroidApp = true;\
+    window.isHomecastDesktopApp = false;";
+
+#[cfg(target_os = "ios")]
+const PLATFORM_FLAGS_JS: &str = "\
+    window.isHomecastTauriApp = true;\
+    window.homecastPlatform = \"ios\";\
+    window.isHomecastIOSApp = true;\
+    window.isHomecastAndroidApp = false;\
+    window.isHomecastDesktopApp = false;";
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const PLATFORM_FLAGS_JS: &str = {
+    #[cfg(target_os = "macos")]
+    { "\
+        window.isHomecastTauriApp = true;\
+        window.homecastPlatform = \"macos\";\
+        window.isHomecastIOSApp = false;\
+        window.isHomecastAndroidApp = false;\
+        window.isHomecastDesktopApp = true;" }
+    #[cfg(target_os = "windows")]
+    { "\
+        window.isHomecastTauriApp = true;\
+        window.homecastPlatform = \"windows\";\
+        window.isHomecastIOSApp = false;\
+        window.isHomecastAndroidApp = false;\
+        window.isHomecastDesktopApp = true;" }
+    #[cfg(target_os = "linux")]
+    { "\
+        window.isHomecastTauriApp = true;\
+        window.homecastPlatform = \"linux\";\
+        window.isHomecastIOSApp = false;\
+        window.isHomecastAndroidApp = false;\
+        window.isHomecastDesktopApp = true;" }
+};
+
+/// Inject the small set of synchronous platform flags React needs before its
+/// first render. Runs on PageLoadEvent::Started so flags like
+/// `window.isHomecastAndroidApp` are visible to module-level code and the
+/// initial useState/useEffect on mount. Safe to call again on Finished.
+fn inject_platform_flags(webview: &tauri::Webview) {
+    let _ = webview.eval(PLATFORM_FLAGS_JS);
+    #[cfg(target_os = "android")]
+    {
+        let _ = webview.eval(ANDROID_SAFE_AREA_JS);
+    }
+}
+
+/// Heavier post-load injections: community/staging detection. Runs on Finished.
+/// NOTE: do NOT set window.isHomecastApp here. The cloud web app uses
+/// that flag as a proxy for "Apple App Store build" (anti-steering copy,
+/// Apple subscription disclosure, repo-link instead of Sponsor link).
+/// The Mac/iOS native WKWebView host injects it; Tauri (Android, Windows,
+/// Linux) is not an App Store build and must not impersonate one.
 fn inject_platform_globals(webview: &tauri::Webview) {
-    let platform = if cfg!(target_os = "android") {
-        "android"
-    } else if cfg!(target_os = "ios") {
-        "ios"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "unknown"
-    };
-
-    // NOTE: do NOT set window.isHomecastApp here. The cloud web app uses
-    // that flag as a proxy for "Apple App Store build" (anti-steering copy,
-    // Apple subscription disclosure, repo-link instead of Sponsor link).
-    // The Mac/iOS native WKWebView host injects it; Tauri (Android, Windows,
-    // Linux) is not an App Store build and must not impersonate one.
-    let script = format!(
-        r#"
-        window.isHomecastTauriApp = true;
-        window.homecastPlatform = "{}";
-        window.isHomecastIOSApp = {};
-        window.isHomecastAndroidApp = {};
-        window.isHomecastDesktopApp = {};
-        "#,
-        platform,
-        if cfg!(target_os = "ios") { "true" } else { "false" },
-        if cfg!(target_os = "android") { "true" } else { "false" },
-        if cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")) {
-            "true"
-        } else {
-            "false"
-        },
-    );
-
-    let _ = webview.eval(&script);
+    inject_platform_flags(webview);
 
     // Community mode detection: inject flag when not on homecast.cloud
     let _ = webview.eval(r#"
@@ -73,11 +94,6 @@ fn inject_platform_globals(webview: &tauri::Webview) {
         })();
     "#);
 
-    // Android-specific injections
-    #[cfg(target_os = "android")]
-    {
-        let _ = webview.eval(ANDROID_SAFE_AREA_JS);
-    }
 }
 
 #[cfg(target_os = "android")]
@@ -140,10 +156,7 @@ pub fn run() {
                 // Set safe-area-top BEFORE first paint so content positioned
                 // with calc(... + var(--safe-area-top)) doesn't flash at 0px.
                 PageLoadEvent::Started => {
-                    #[cfg(target_os = "android")]
-                    {
-                        let _ = webview.eval(ANDROID_SAFE_AREA_JS);
-                    }
+                    inject_platform_flags(&webview);
                 }
                 PageLoadEvent::Finished => {
                     inject_platform_globals(&webview);
