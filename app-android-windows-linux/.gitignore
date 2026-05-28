@@ -6,3 +6,4 @@ src-tauri/Cargo.lock
 # Release signing keystore (keep this file safe, never commit)
 *.keystore
 *.jks
+scripts/play/.venv/

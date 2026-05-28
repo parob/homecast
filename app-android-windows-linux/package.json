@@ -3,7 +3,9 @@
   "private": true,
   "version": "1.1.0",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "play:release": "bash scripts/play/release.sh",
+    "play:promote": "bash scripts/play/promote.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"
