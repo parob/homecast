@@ -107,7 +107,15 @@ Mac app connects as MQTT client to user-configured broker(s). Per-home, stored i
 
 Managed broker at `mqtt.homecast.cloud` (EMQX on GCE). Per-home `mqtt_enabled` toggle. Auth via API access token as MQTT password (username blank). Custom brokers stored in DB via GraphQL.
 
-MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer with visual controls, auto-connects via cross-subdomain cookie.
+MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer. Each row shows an accessory-type icon + live values; expanding a row renders the real Dashboard `AccessoryWidget` (via `mqtt-browser/widget-adapter.ts`, which builds a synthetic HomeKitAccessory from the flat MQTT payload) alongside a live JSON editor. Auto-connects via cross-subdomain cookie.
+
+**Dev mode:** append `?mock=1` (e.g. `http://localhost:8081/mqtt?mock=1`) to seed realistic fake topics (light/fan/thermostat/lock/sensor/group across two homes) — no broker, login, or relay needed. Publishes mutate local state so controls are interactive offline.
+
+### Cloud publish/control behavior (non-obvious)
+
+- The cloud bridge (`homecast-cloud/server/homecast/mqtt/bridge.py`) serves each home from **the pod the relay is connected to**, keyed by a TTL-refreshed (`_HOME_INFO_TTL` / `_SLUG_TTL`) slug map. A home's live broker status is fetched cross-pod via `/internal/mqtt-status` and exposed as the `homeMqttStatus` GraphQL field.
+- HomeKit does **not** fire its observer for writes the relay itself initiated, so a `/set` (from MQTT or a web/iOS client) would otherwise never propagate. The server **optimistically echoes** every write to both MQTT and WS subscribers via `connection_manager.broadcast_state_change` / `broadcast_service_group_change`. The group variant emits a `service_group_update` (the web group tile ignores per-member `characteristic_update`s).
+- UUIDs are case-insensitive (RFC 4122) but sources disagree: the relay/HomeKit/dashboard cache use **UPPERCASE**, the cloud bridge resolves home IDs **lowercase**. Match home/group IDs case-insensitively when reconciling.
 
 ### Authentication
 
@@ -176,7 +184,9 @@ Messages use this JSON format:
 | `app-web/src/server/local-broadcast.ts` | Event broadcasting to clients |
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
-| `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`) |
+| `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`; `?mock=1` dev mode) |
+| `app-web/src/pages/mqtt-browser/widget-adapter.ts` | MQTT payload ↔ synthetic HomeKitAccessory (drives the real widgets in the browser) |
+| `app-web/src/pages/mqtt-browser/InlineRowControls.tsx` | Accessory-type icon for MQTT browser rows |
 | `app-web/src/components/settings/HomeDetailView.tsx` | Per-home MQTT broker toggle + custom brokers |
 
 ## Advanced Automation Engine
