@@ -30,6 +30,13 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         let urlString: String
         var hasOpened: Bool = false
         var pingTimer: DispatchSourceTimer?
+        // Liveness: we only tear the socket down after several *consecutive*
+        // pong misses, not the first one. A single late pong (App Nap wakeup,
+        // a latency blip) shouldn't kill a healthy connection.
+        var missedPings: Int = 0
+        var openedAt: Date?
+        var lastPongAt: Date?
+        var recentRTTsMs: [Int] = []
         init(socketId: String, task: URLSessionWebSocketTask, urlString: String) {
             self.socketId = socketId
             self.task = task
@@ -39,6 +46,15 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
 
     private var sockets: [String: SocketState] = [:]
     private let socketsLock = NSLock()
+
+    // App Nap exemption. A relay Mac is a server: when App Nap kicks in
+    // (window not focused, no user input) it throttles our timers and network
+    // I/O, which stalls the ping loop and shows up server-side as ping-timeout
+    // disconnects — clustered overnight when nobody's touching the machine.
+    // We hold a `.userInitiatedAllowingIdleSystemSleep` assertion for exactly
+    // as long as a relay socket exists: it suppresses App Nap and sudden
+    // termination while still letting the Mac idle-sleep normally.
+    private var napActivity: NSObjectProtocol?
 
     // Lazy so `self` is available as URLSessionDelegate after super.init().
     private lazy var session: URLSession = {
@@ -57,7 +73,13 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     private var lastPathSatisfied: Bool = true
 
     private let pingInterval: TimeInterval = 20
-    private let pingTimeout: TimeInterval = 10
+    // A pong must arrive within this window or the ping counts as a miss.
+    // Kept below pingInterval so at most one ping is ever in flight.
+    private let pingTimeout: TimeInterval = 15
+    // Only tear down after this many consecutive misses (~55s of silence).
+    // A truly dead socket is caught faster by the receive-path failure; this
+    // only guards against transient stalls where the pipe is still alive.
+    private let maxConsecutivePingMisses: Int = 3
 
     // MARK: - Init / attach
 
@@ -200,9 +222,10 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     }
 
     private func handleTaskFailure(socketId: String, error: Error) {
+        let stats = connectionStatsSuffix(socketId)
         guard let state = takeSocket(socketId) else { return }
         state.pingTimer?.cancel()
-        Log.warning("task failed: \(error.localizedDescription)",
+        Log.warning("task failed: \(error.localizedDescription)\(stats)",
                     category: "relay-ws",
                     metadata: ["socketId": socketId])
         emitEvent(socketId: socketId, type: "error",
@@ -237,20 +260,15 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
 
         let lock = NSLock()
         var completed = false
+        let sentAt = Date()
 
         let timeoutItem = DispatchWorkItem { [weak self] in
             lock.lock()
             if completed { lock.unlock(); return }
             completed = true
             lock.unlock()
-            Log.warning("ping timeout — closing socket",
-                        category: "relay-ws",
-                        metadata: ["socketId": socketId])
-            self?.handleTaskFailure(
-                socketId: socketId,
-                error: NSError(domain: "RelayWebSocketBridge", code: -1,
-                               userInfo: [NSLocalizedDescriptionKey: "ping timeout"])
-            )
+            self?.recordPingMiss(socketId: socketId,
+                                 reason: "no pong within \(Int(self?.pingTimeout ?? 0))s")
         }
         pathQueue.asyncAfter(deadline: .now() + pingTimeout, execute: timeoutItem)
 
@@ -261,12 +279,62 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             lock.unlock()
             timeoutItem.cancel()
             if let error = error {
-                Log.warning("ping failed: \(error.localizedDescription)",
-                            category: "relay-ws",
-                            metadata: ["socketId": socketId])
-                self?.handleTaskFailure(socketId: socketId, error: error)
+                self?.recordPingMiss(socketId: socketId,
+                                     reason: "ping failed: \(error.localizedDescription)")
+            } else {
+                let rttMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+                self?.recordPingSuccess(socketId: socketId, rttMs: rttMs)
             }
         }
+    }
+
+    /// A pong came back — reset the miss counter and remember the round-trip.
+    private func recordPingSuccess(socketId: String, rttMs: Int) {
+        updateSocket(socketId) { s in
+            s.missedPings = 0
+            s.lastPongAt = Date()
+            s.recentRTTsMs.append(rttMs)
+            if s.recentRTTsMs.count > 6 {
+                s.recentRTTsMs.removeFirst(s.recentRTTsMs.count - 6)
+            }
+        }
+    }
+
+    /// A ping timed out or errored — count it, and only close once we've missed
+    /// `maxConsecutivePingMisses` in a row.
+    private func recordPingMiss(socketId: String, reason: String) {
+        var misses = 0
+        var shouldClose = false
+        updateSocket(socketId) { s in
+            s.missedPings += 1
+            misses = s.missedPings
+            shouldClose = s.missedPings >= self.maxConsecutivePingMisses
+        }
+        guard misses > 0 else { return }  // socket already gone
+        if shouldClose {
+            Log.warning("closing after \(misses) consecutive ping misses: \(reason)\(connectionStatsSuffix(socketId))",
+                        category: "relay-ws",
+                        metadata: ["socketId": socketId])
+            handleTaskFailure(
+                socketId: socketId,
+                error: NSError(domain: "RelayWebSocketBridge", code: -1,
+                               userInfo: [NSLocalizedDescriptionKey: "ping timeout (\(misses) consecutive misses)"])
+            )
+        } else {
+            Log.warning("ping miss \(misses)/\(maxConsecutivePingMisses): \(reason)",
+                        category: "relay-ws",
+                        metadata: ["socketId": socketId])
+        }
+    }
+
+    /// Diagnostic suffix for close/failure logs: how long the socket was up and
+    /// its recent ping round-trips — lets us tell "Mac stalled" (RTTs climbing
+    /// then silence) from "server dropped us" (healthy RTTs, then a clean cut).
+    private func connectionStatsSuffix(_ socketId: String) -> String {
+        guard let s = getSocket(socketId) else { return "" }
+        let up = s.openedAt.map { Int(Date().timeIntervalSince($0)) } ?? -1
+        let rtts = s.recentRTTsMs.map(String.init).joined(separator: ",")
+        return " [up=\(up)s rttMs=\(rtts.isEmpty ? "none" : rtts)]"
     }
 
     // MARK: - URLSessionWebSocketDelegate
@@ -275,7 +343,11 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
                     webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol proto: String?) {
         guard let socketId = webSocketTask.taskDescription else { return }
-        updateSocket(socketId) { $0.hasOpened = true }
+        updateSocket(socketId) {
+            $0.hasOpened = true
+            $0.openedAt = Date()
+            $0.missedPings = 0
+        }
         Log.info("opened", category: "relay-ws", metadata: ["socketId": socketId])
         emitEvent(socketId: socketId, type: "open", extra: [:])
         startPingLoop(socketId: socketId)
@@ -286,10 +358,11 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
                     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
                     reason: Data?) {
         guard let socketId = webSocketTask.taskDescription else { return }
+        let stats = connectionStatsSuffix(socketId)
         guard let state = takeSocket(socketId) else { return }
         state.pingTimer?.cancel()
         let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        Log.info("closed code=\(closeCode.rawValue) reason=\(reasonString)",
+        Log.info("closed code=\(closeCode.rawValue) reason=\(reasonString)\(stats)",
                  category: "relay-ws",
                  metadata: ["socketId": socketId])
         emitClose(socketId: socketId,
@@ -339,11 +412,30 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     private func putSocket(_ state: SocketState) {
         socketsLock.lock(); defer { socketsLock.unlock() }
         sockets[state.socketId] = state
+        syncNapAssertionLocked()
     }
 
     private func takeSocket(_ id: String) -> SocketState? {
         socketsLock.lock(); defer { socketsLock.unlock() }
-        return sockets.removeValue(forKey: id)
+        let removed = sockets.removeValue(forKey: id)
+        syncNapAssertionLocked()
+        return removed
+    }
+
+    /// Hold the App Nap assertion iff at least one relay socket is live.
+    /// Caller must hold `socketsLock`.
+    private func syncNapAssertionLocked() {
+        if sockets.isEmpty {
+            if let activity = napActivity {
+                ProcessInfo.processInfo.endActivity(activity)
+                napActivity = nil
+            }
+        } else if napActivity == nil {
+            napActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Homecast cloud relay connection"
+            )
+        }
     }
 
     private func updateSocket(_ id: String, _ mutate: (SocketState) -> Void) {
