@@ -381,7 +381,8 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 "name": home.name,
                 "isPrimary": home.isPrimary,
                 "roomCount": home.roomCount,
-                "accessoryCount": home.accessoryCount
+                "accessoryCount": home.accessoryCount,
+                "isAdmin": home.isAdmin
             ]
         }
     }

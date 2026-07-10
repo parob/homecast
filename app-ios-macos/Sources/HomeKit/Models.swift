@@ -59,6 +59,9 @@ struct HomeModel: Codable {
     let isPrimary: Bool
     let roomCount: Int
     let accessoryCount: Int
+    /// Whether this Mac's Apple ID can edit the home in Apple Home
+    /// ("Add & Edit Accessories") — required for automation create/edit.
+    let isAdmin: Bool
 
     init(from home: HMHome) {
         self.id = home.uniqueIdentifier.uuidString
@@ -66,6 +69,7 @@ struct HomeModel: Codable {
         self.isPrimary = home.isPrimary
         self.roomCount = home.rooms.count
         self.accessoryCount = home.accessories.count
+        self.isAdmin = home.homeAccessControl(for: home.currentUser).isAdministrator
     }
 
     func toJSON() -> JSONValue {
@@ -74,7 +78,8 @@ struct HomeModel: Codable {
             "name": .string(name),
             "isPrimary": .bool(isPrimary),
             "roomCount": .int(roomCount),
-            "accessoryCount": .int(accessoryCount)
+            "accessoryCount": .int(accessoryCount),
+            "isAdmin": .bool(isAdmin)
         ])
     }
 }
@@ -991,7 +996,43 @@ enum HomeKitError: LocalizedError {
     case automationUpdateFailed(Error)
     case automationDeletionFailed(Error)
 
+    /// The canonical guidance for HMError.insufficientPrivileges — the Mac's
+    /// Apple ID lacks edit access in Apple Home. Wording mirrors the cloud
+    /// server (homekit_errors.py) and web app (homekit-errors.ts).
+    static let insufficientPrivilegesMessage =
+        "The relay's Apple ID doesn't have permission to edit this home, so HomeKit " +
+        "automations can't be created or changed. In the Apple Home app, open Home Settings, " +
+        "tap the relay user, and enable \"Add & Edit Accessories\" " +
+        "(called \"Allow Editing\" on older iOS and macOS versions)."
+
+    /// The underlying HomeKit error, for cases that wrap one.
+    private var wrappedError: Error? {
+        switch self {
+        case .readFailed(let error), .writeFailed(let error), .sceneExecutionFailed(let error),
+             .automationCreationFailed(let error), .automationUpdateFailed(let error),
+             .automationDeletionFailed(let error):
+            return error
+        default:
+            return nil
+        }
+    }
+
+    private static func isInsufficientPrivileges(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == HMErrorDomain
+            && nsError.code == HMError.Code.insufficientPrivileges.rawValue
+    }
+
+    /// True when the wrapped HomeKit error is the missing edit-permission case.
+    var isInsufficientPrivileges: Bool {
+        guard let wrapped = wrappedError else { return false }
+        return Self.isInsufficientPrivileges(wrapped)
+    }
+
     var errorDescription: String? {
+        if isInsufficientPrivileges {
+            return Self.insufficientPrivilegesMessage
+        }
         switch self {
         case .homeNotFound(let id):
             return "Home not found: \(id)"
@@ -1027,6 +1068,9 @@ enum HomeKitError: LocalizedError {
     }
 
     var code: String {
+        if isInsufficientPrivileges {
+            return "INSUFFICIENT_HOMEKIT_PRIVILEGES"
+        }
         switch self {
         case .homeNotFound:
             return "HOME_NOT_FOUND"

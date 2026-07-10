@@ -877,7 +877,13 @@ class HomeKitManager: NSObject, ObservableObject {
             components.hour = hour
             components.minute = minute
             components.second = 0
-            fireDate = Calendar.current.date(from: components) ?? Date()
+            var candidate = Calendar.current.date(from: components) ?? Date()
+            // HomeKit rejects fire dates in the past — if the time already
+            // passed today, roll to the next occurrence (tomorrow).
+            if candidate <= Date() {
+                candidate = Calendar.current.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+            }
+            fireDate = candidate
         } else {
             throw HomeKitError.invalidRequest("Timer trigger requires fireDate or hour/minute")
         }
