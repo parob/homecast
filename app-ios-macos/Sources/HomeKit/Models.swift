@@ -991,6 +991,7 @@ enum HomeKitError: LocalizedError {
     case readFailed(Error)
     case writeFailed(Error)
     case sceneExecutionFailed(Error)
+    case sceneDeletionFailed(Error)
     case automationNotFound(String)
     case automationCreationFailed(Error)
     case automationUpdateFailed(Error)
@@ -1009,6 +1010,7 @@ enum HomeKitError: LocalizedError {
     private var wrappedError: Error? {
         switch self {
         case .readFailed(let error), .writeFailed(let error), .sceneExecutionFailed(let error),
+             .sceneDeletionFailed(let error),
              .automationCreationFailed(let error), .automationUpdateFailed(let error),
              .automationDeletionFailed(let error):
             return error
@@ -1056,6 +1058,8 @@ enum HomeKitError: LocalizedError {
             return "Write failed: \(error.localizedDescription)"
         case .sceneExecutionFailed(let error):
             return "Scene execution failed: \(error.localizedDescription)"
+        case .sceneDeletionFailed(let error):
+            return "Scene deletion failed: \(error.localizedDescription)"
         case .automationNotFound(let id):
             return "Automation not found: \(id)"
         case .automationCreationFailed(let error):
@@ -1094,6 +1098,8 @@ enum HomeKitError: LocalizedError {
             return "WRITE_FAILED"
         case .sceneExecutionFailed:
             return "SCENE_EXECUTION_FAILED"
+        case .sceneDeletionFailed:
+            return "SCENE_DELETION_FAILED"
         case .automationNotFound:
             return "AUTOMATION_NOT_FOUND"
         case .automationCreationFailed:

@@ -739,6 +739,42 @@ class HomeKitManager: NSObject, ObservableObject {
         throw HomeKitError.sceneNotFound(sceneId)
     }
 
+    func deleteScene(sceneId: String) async throws {
+        guard let uuid = UUID(uuidString: sceneId) else {
+            throw HomeKitError.invalidId(sceneId)
+        }
+
+        for home in homes {
+            if let actionSet = home.actionSets.first(where: { $0.uniqueIdentifier == uuid }) {
+                // Built-in scenes (Good Morning, Good Night, ...) can't be removed
+                guard actionSet.actionSetType == HMActionSetTypeUserDefined else {
+                    throw HomeKitError.invalidRequest("Built-in scenes cannot be deleted")
+                }
+                // A scene attached to an automation IS that automation's action
+                // list — deleting it would gut the automation.
+                if let owner = home.triggers.first(where: { trigger in
+                    trigger.actionSets.contains(where: { $0.uniqueIdentifier == uuid })
+                }) {
+                    throw HomeKitError.invalidRequest(
+                        "Scene is used by automation \"\(owner.name)\" — delete the automation instead"
+                    )
+                }
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    home.removeActionSet(actionSet) { error in
+                        if let error = error {
+                            continuation.resume(throwing: HomeKitError.sceneDeletionFailed(error))
+                        } else {
+                            continuation.resume()
+                        }
+                    }
+                }
+                return
+            }
+        }
+
+        throw HomeKitError.sceneNotFound(sceneId)
+    }
+
     // MARK: - Automation Operations
 
     func listAutomations(homeId: String) throws -> [AutomationModel] {
@@ -799,26 +835,66 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        // 3. Check if trigger has a trigger-owned action set, otherwise create one
-        let actionSet: HMActionSet
-        if let existingActionSet = trigger.actionSets.first {
-            // Trigger already has an action set (may be trigger-owned)
-            actionSet = existingActionSet
-        } else {
-            // No action set yet — create one via home and attach to trigger
-            let newActionSet: HMActionSet = try await withCheckedThrowingContinuation { continuation in
-                home.addActionSet(withName: name) { actionSet, error in
-                    if let error = error {
-                        continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
-                    } else if let actionSet = actionSet {
-                        continuation.resume(returning: actionSet)
-                    } else {
-                        continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
+        // Steps 3-5 run after the trigger exists in the home — roll back on
+        // failure so a rejected create doesn't leave a disabled half-automation
+        // and an orphaned scene (the action set) behind.
+        var createdActionSet: HMActionSet? = nil
+        do {
+            // 3. Check if trigger has a trigger-owned action set, otherwise create one
+            let actionSet: HMActionSet
+            if let existingActionSet = trigger.actionSets.first {
+                // Trigger already has an action set (may be trigger-owned)
+                actionSet = existingActionSet
+            } else {
+                // No action set yet — create one via home and attach to trigger
+                let newActionSet: HMActionSet = try await withCheckedThrowingContinuation { continuation in
+                    home.addActionSet(withName: name) { actionSet, error in
+                        if let error = error {
+                            continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
+                        } else if let actionSet = actionSet {
+                            continuation.resume(returning: actionSet)
+                        } else {
+                            continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
+                        }
+                    }
+                }
+                createdActionSet = newActionSet
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    trigger.addActionSet(newActionSet) { error in
+                        if let error = error {
+                            continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
+                        } else {
+                            continuation.resume()
+                        }
+                    }
+                }
+                actionSet = newActionSet
+            }
+
+            // 4. Add characteristic write actions
+            for actionParam in actionsParams {
+                guard let accessoryId = actionParam["accessoryId"] as? String,
+                      let characteristicType = actionParam["characteristicType"] as? String,
+                      let targetValue = actionParam["targetValue"] else {
+                    continue
+                }
+                let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
+                let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
+                let writeAction = HMCharacteristicWriteAction(characteristic: characteristic, targetValue: convertedValue as! NSCopying)
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    actionSet.addAction(writeAction) { error in
+                        if let error = error {
+                            continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
+                        } else {
+                            continuation.resume()
+                        }
                     }
                 }
             }
+
+            // 5. Enable the trigger
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                trigger.addActionSet(newActionSet) { error in
+                trigger.enable(true) { error in
                     if let error = error {
                         continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
                     } else {
@@ -826,42 +902,53 @@ class HomeKitManager: NSObject, ObservableObject {
                     }
                 }
             }
-            actionSet = newActionSet
-        }
-
-        // 4. Add characteristic write actions
-        for actionParam in actionsParams {
-            guard let accessoryId = actionParam["accessoryId"] as? String,
-                  let characteristicType = actionParam["characteristicType"] as? String,
-                  let targetValue = actionParam["targetValue"] else {
-                continue
-            }
-            let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
-            let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
-            let writeAction = HMCharacteristicWriteAction(characteristic: characteristic, targetValue: convertedValue as! NSCopying)
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                actionSet.addAction(writeAction) { error in
-                    if let error = error {
-                        continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
-                    } else {
+        } catch {
+            if let orphan = createdActionSet {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    home.removeActionSet(orphan) { removeError in
+                        if let removeError = removeError {
+                            print("[HomeKit] Rollback: failed to remove action set '\(orphan.name)': \(removeError.localizedDescription)")
+                        }
                         continuation.resume()
                     }
                 }
             }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                home.removeTrigger(trigger) { removeError in
+                    if let removeError = removeError {
+                        print("[HomeKit] Rollback: failed to remove trigger '\(trigger.name)': \(removeError.localizedDescription)")
+                    }
+                    continuation.resume()
+                }
+            }
+            throw error
         }
 
-        // 5. Enable the trigger
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            trigger.enable(true) { error in
-                if let error = error {
-                    continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
-                } else {
+        return AutomationModel(from: trigger, homeId: homeId)
+    }
+
+    /// Remove action sets Homecast created for a trigger (they carry the
+    /// automation's name) once no trigger references them any more. Without
+    /// this, deleting an automation leaves its action set behind as an
+    /// orphaned scene in Apple Home. User scenes attached deliberately keep
+    /// their own names and other references, so they never match.
+    private func removeOrphanedActionSets(_ actionSets: [HMActionSet], named name: String, in home: HMHome) async {
+        for actionSet in actionSets {
+            guard actionSet.actionSetType == HMActionSetTypeUserDefined else { continue }
+            guard actionSet.name == name else { continue }
+            let stillReferenced = home.triggers.contains { other in
+                other.actionSets.contains { $0.uniqueIdentifier == actionSet.uniqueIdentifier }
+            }
+            if stillReferenced { continue }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                home.removeActionSet(actionSet) { error in
+                    if let error = error {
+                        print("[HomeKit] Failed to remove orphaned action set '\(actionSet.name)': \(error.localizedDescription)")
+                    }
                     continuation.resume()
                 }
             }
         }
-
-        return AutomationModel(from: trigger, homeId: homeId)
     }
 
     private func createTimerTrigger(name: String, params: [String: Any]) async throws -> HMTimerTrigger {
@@ -1184,8 +1271,10 @@ class HomeKitManager: NSObject, ObservableObject {
         // If trigger params changed (fire date, events, etc.), we need to delete and recreate
         if params["trigger"] != nil {
             let homeId = home.uniqueIdentifier.uuidString
-            // Save current action sets
+            // Save current action sets (also used for orphaned-scene cleanup —
+            // the recreate makes a fresh action set, stranding the old one)
             let currentActionSets = trigger.actionSets
+            let oldTriggerName = trigger.name
 
             // Delete old trigger
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -1218,7 +1307,11 @@ class HomeKitManager: NSObject, ObservableObject {
                 }
                 createParams["actions"] = actionsArr
             }
-            return try await createAutomation(homeId: homeId, params: createParams)
+            let recreated = try await createAutomation(homeId: homeId, params: createParams)
+            // The recreate built a fresh action set; clean up the old trigger's
+            // now-unreferenced one so it doesn't linger as an orphaned scene.
+            await removeOrphanedActionSets(currentActionSets, named: oldTriggerName, in: home)
+            return recreated
         }
 
         return AutomationModel(from: trigger, homeId: home.uniqueIdentifier.uuidString)
@@ -1231,6 +1324,9 @@ class HomeKitManager: NSObject, ObservableObject {
 
         for home in homes {
             if let trigger = home.triggers.first(where: { $0.uniqueIdentifier == uuid }) {
+                // Capture before removal — needed for orphaned-scene cleanup after
+                let attachedActionSets = trigger.actionSets
+                let triggerName = trigger.name
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     home.removeTrigger(trigger) { error in
                         if let error = error {
@@ -1240,6 +1336,7 @@ class HomeKitManager: NSObject, ObservableObject {
                         }
                     }
                 }
+                await removeOrphanedActionSets(attachedActionSets, named: triggerName, in: home)
                 return
             }
         }

@@ -250,6 +250,12 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
             return try await executeScene(sceneId: sceneId)
 
+        case "scene.delete":
+            guard let sceneId = payload["sceneId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("sceneId")
+            }
+            return try await deleteScene(sceneId: sceneId)
+
         // Automation operations
         case "automations.list":
             guard let homeId = payload["homeId"] as? String else {
@@ -585,11 +591,18 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         await homeKitManager.waitForReady()
         let scenes = try homeKitManager.listScenes(homeId: homeId)
         return scenes.map { scene in
-            [
+            var obj: [String: Any] = [
                 "id": scene.id,
                 "name": scene.name,
-                "actionCount": scene.actionCount
+                "actionCount": scene.actionCount,
+                "actionSetType": scene.actionSetType
             ]
+            // Non-nil when the scene is an automation's action list — clients
+            // should route deletion through the automation, not the scene.
+            if let automationName = scene.automationName {
+                obj["automationName"] = automationName
+            }
+            return obj
         }
     }
 
@@ -599,6 +612,15 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         return [
             "success": result.success,
             "sceneId": result.sceneId
+        ]
+    }
+
+    private func deleteScene(sceneId: String) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+        try await homeKitManager.deleteScene(sceneId: sceneId)
+        return [
+            "success": true,
+            "sceneId": sceneId
         ]
     }
 
