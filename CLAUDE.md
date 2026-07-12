@@ -72,11 +72,13 @@ Your Mac                         LAN / Tunnel          External
 | `GET /rest/accessories` | List accessories (filter: `?home=X&room=X`) |
 | `GET /rest/accessories/:id` | Get single accessory |
 | `GET /rest/scenes` | List scenes (`?home=X`) |
+| `POST /rest/scenes` | Create a scene (`{homeId, name, actions}`) |
+| `PATCH /rest/scenes/:id` | Update a scene (`{name?, actions?}`) |
 | `POST /rest/scenes/:id/execute` | Execute a scene by ID |
 | `DELETE /rest/scenes/:id` | Delete a scene by ID |
 | `POST /rest/scene` | Execute a scene by name (`{home, name}`) |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
-| `POST /mcp` | MCP endpoint (tools: `get_state`, `set_state`, `run_scene`, `delete_scene`, `get_automations`, `create_automation`, `update_automation`, `delete_automation`) |
+| `POST /mcp` | MCP endpoint (tools: `get_state`, `set_state`, `run_scene`, `create_scene`, `update_scene`, `delete_scene`, `get_automations`, `create_automation`, `update_automation`, `delete_automation`) |
 | `WebSocket :5657` | Real-time updates |
 
 `/rest/*` and `/mcp` are handled by JS (`local-rest.ts`, `local-mcp.ts`) via the Swift→JS bridge. `/health` and `/config.json` are served directly by `LocalHTTPServer.swift` (they respond before the web app is loaded) and return `{mode, version, port, wsPort, mqtt}`.

@@ -739,6 +739,123 @@ class HomeKitManager: NSObject, ObservableObject {
         throw HomeKitError.sceneNotFound(sceneId)
     }
 
+    func createScene(homeId: String, params: [String: Any]) async throws -> SceneModel {
+        guard let uuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        guard let name = params["name"] as? String else {
+            throw HomeKitError.invalidRequest("Missing scene name")
+        }
+        guard let actionsParams = params["actions"] as? [[String: Any]], !actionsParams.isEmpty else {
+            throw HomeKitError.invalidRequest("At least one action is required")
+        }
+
+        let actionSet: HMActionSet = try await withCheckedThrowingContinuation { continuation in
+            home.addActionSet(withName: name) { actionSet, error in
+                if let error = error {
+                    continuation.resume(throwing: HomeKitError.sceneCreationFailed(error))
+                } else if let actionSet = actionSet {
+                    continuation.resume(returning: actionSet)
+                } else {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
+                }
+            }
+        }
+
+        // Add characteristic write actions — roll the action set back on any
+        // failure so a rejected create doesn't leave an empty orphaned scene.
+        do {
+            try await addWriteActions(actionsParams, to: actionSet)
+        } catch {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                home.removeActionSet(actionSet) { removeError in
+                    if let removeError = removeError {
+                        print("[HomeKit] Rollback: failed to remove scene '\(actionSet.name)': \(removeError.localizedDescription)")
+                    }
+                    continuation.resume()
+                }
+            }
+            throw error
+        }
+
+        return SceneModel(from: actionSet)
+    }
+
+    func updateScene(sceneId: String, params: [String: Any]) async throws -> SceneModel {
+        guard let uuid = UUID(uuidString: sceneId) else {
+            throw HomeKitError.invalidId(sceneId)
+        }
+
+        for home in homes {
+            if let actionSet = home.actionSets.first(where: { $0.uniqueIdentifier == uuid }) {
+                guard actionSet.actionSetType == HMActionSetTypeUserDefined else {
+                    throw HomeKitError.invalidRequest("Built-in scenes cannot be modified")
+                }
+
+                if let newName = params["name"] as? String {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        actionSet.updateName(newName) { error in
+                            if let error = error {
+                                continuation.resume(throwing: HomeKitError.sceneUpdateFailed(error))
+                            } else {
+                                continuation.resume()
+                            }
+                        }
+                    }
+                }
+
+                if let actionsParams = params["actions"] as? [[String: Any]] {
+                    guard !actionsParams.isEmpty else {
+                        throw HomeKitError.invalidRequest("actions must not be empty (delete the scene instead)")
+                    }
+                    // Replace: remove all existing actions, then add the new set
+                    for action in actionSet.actions {
+                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            actionSet.removeAction(action) { error in
+                                if let error = error {
+                                    continuation.resume(throwing: HomeKitError.sceneUpdateFailed(error))
+                                } else {
+                                    continuation.resume()
+                                }
+                            }
+                        }
+                    }
+                    try await addWriteActions(actionsParams, to: actionSet)
+                }
+
+                return SceneModel(from: actionSet)
+            }
+        }
+
+        throw HomeKitError.sceneNotFound(sceneId)
+    }
+
+    /// Add characteristic-write actions to an action set (shared by scene
+    /// create/update; automation create has its own inline copy with
+    /// automation-specific error wrapping).
+    private func addWriteActions(_ actionsParams: [[String: Any]], to actionSet: HMActionSet) async throws {
+        for actionParam in actionsParams {
+            guard let accessoryId = actionParam["accessoryId"] as? String,
+                  let characteristicType = actionParam["characteristicType"] as? String,
+                  let targetValue = actionParam["targetValue"] else {
+                continue
+            }
+            let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
+            let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
+            let writeAction = HMCharacteristicWriteAction(characteristic: characteristic, targetValue: convertedValue as! NSCopying)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                actionSet.addAction(writeAction) { error in
+                    if let error = error {
+                        continuation.resume(throwing: HomeKitError.sceneUpdateFailed(error))
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
+
     func deleteScene(sceneId: String) async throws {
         guard let uuid = UUID(uuidString: sceneId) else {
             throw HomeKitError.invalidId(sceneId)

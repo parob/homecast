@@ -306,12 +306,13 @@ struct CharacteristicModel {
 
 // MARK: - Scene Model
 
-struct SceneModel: Codable {
+struct SceneModel {
     let id: String
     let name: String
     let actionCount: Int
     let actionSetType: String
     let automationName: String?  // Non-nil if this scene is used by an automation
+    let actions: [AutomationActionModel]  // Characteristic writes (for edit UIs)
 
     init(from actionSet: HMActionSet, automationName: String? = nil) {
         self.id = actionSet.uniqueIdentifier.uuidString
@@ -319,6 +320,9 @@ struct SceneModel: Codable {
         self.actionCount = actionSet.actions.count
         self.actionSetType = actionSet.actionSetType
         self.automationName = automationName
+        self.actions = actionSet.actions.compactMap { action in
+            (action as? HMCharacteristicWriteAction<NSCopying>).map { AutomationActionModel(from: $0) }
+        }
     }
 
     func toJSON() -> JSONValue {
@@ -326,7 +330,8 @@ struct SceneModel: Codable {
             "id": .string(id),
             "name": .string(name),
             "actionCount": .int(actionCount),
-            "actionSetType": .string(actionSetType)
+            "actionSetType": .string(actionSetType),
+            "actions": .array(actions.map { $0.toJSON() })
         ]
         if let v = automationName { obj["automationName"] = .string(v) }
         return .object(obj)
@@ -991,6 +996,8 @@ enum HomeKitError: LocalizedError {
     case readFailed(Error)
     case writeFailed(Error)
     case sceneExecutionFailed(Error)
+    case sceneCreationFailed(Error)
+    case sceneUpdateFailed(Error)
     case sceneDeletionFailed(Error)
     case automationNotFound(String)
     case automationCreationFailed(Error)
@@ -1010,6 +1017,7 @@ enum HomeKitError: LocalizedError {
     private var wrappedError: Error? {
         switch self {
         case .readFailed(let error), .writeFailed(let error), .sceneExecutionFailed(let error),
+             .sceneCreationFailed(let error), .sceneUpdateFailed(let error),
              .sceneDeletionFailed(let error),
              .automationCreationFailed(let error), .automationUpdateFailed(let error),
              .automationDeletionFailed(let error):
@@ -1058,6 +1066,10 @@ enum HomeKitError: LocalizedError {
             return "Write failed: \(error.localizedDescription)"
         case .sceneExecutionFailed(let error):
             return "Scene execution failed: \(error.localizedDescription)"
+        case .sceneCreationFailed(let error):
+            return "Scene creation failed: \(error.localizedDescription)"
+        case .sceneUpdateFailed(let error):
+            return "Scene update failed: \(error.localizedDescription)"
         case .sceneDeletionFailed(let error):
             return "Scene deletion failed: \(error.localizedDescription)"
         case .automationNotFound(let id):
@@ -1098,6 +1110,10 @@ enum HomeKitError: LocalizedError {
             return "WRITE_FAILED"
         case .sceneExecutionFailed:
             return "SCENE_EXECUTION_FAILED"
+        case .sceneCreationFailed:
+            return "SCENE_CREATION_FAILED"
+        case .sceneUpdateFailed:
+            return "SCENE_UPDATE_FAILED"
         case .sceneDeletionFailed:
             return "SCENE_DELETION_FAILED"
         case .automationNotFound:

@@ -250,6 +250,18 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
             return try await executeScene(sceneId: sceneId)
 
+        case "scene.create":
+            guard let homeId = payload["homeId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("homeId")
+            }
+            return try await createScene(homeId: homeId, params: payload)
+
+        case "scene.update":
+            guard let sceneId = payload["sceneId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("sceneId")
+            }
+            return try await updateScene(sceneId: sceneId, params: payload)
+
         case "scene.delete":
             guard let sceneId = payload["sceneId"] as? String else {
                 throw HomeKitBridgeError.missingParameter("sceneId")
@@ -590,20 +602,7 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
     private func listScenes(homeId: String) async throws -> [[String: Any]] {
         await homeKitManager.waitForReady()
         let scenes = try homeKitManager.listScenes(homeId: homeId)
-        return scenes.map { scene in
-            var obj: [String: Any] = [
-                "id": scene.id,
-                "name": scene.name,
-                "actionCount": scene.actionCount,
-                "actionSetType": scene.actionSetType
-            ]
-            // Non-nil when the scene is an automation's action list — clients
-            // should route deletion through the automation, not the scene.
-            if let automationName = scene.automationName {
-                obj["automationName"] = automationName
-            }
-            return obj
-        }
+        return scenes.map { sceneDict($0) }
     }
 
     private func executeScene(sceneId: String) async throws -> [String: Any] {
@@ -622,6 +621,34 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             "success": true,
             "sceneId": sceneId
         ]
+    }
+
+    private func createScene(homeId: String, params: [String: Any]) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+        let scene = try await homeKitManager.createScene(homeId: homeId, params: params)
+        return sceneDict(scene)
+    }
+
+    private func updateScene(sceneId: String, params: [String: Any]) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+        let scene = try await homeKitManager.updateScene(sceneId: sceneId, params: params)
+        return sceneDict(scene)
+    }
+
+    private func sceneDict(_ scene: SceneModel) -> [String: Any] {
+        var obj: [String: Any] = [
+            "id": scene.id,
+            "name": scene.name,
+            "actionCount": scene.actionCount,
+            "actionSetType": scene.actionSetType,
+            "actions": scene.actions.map { $0.toJSON().toFoundation() }
+        ]
+        // Non-nil when the scene is an automation's action list — clients
+        // should route deletion through the automation, not the scene.
+        if let automationName = scene.automationName {
+            obj["automationName"] = automationName
+        }
+        return obj
     }
 
     private func listAutomations(homeId: String) async throws -> [String: Any] {
