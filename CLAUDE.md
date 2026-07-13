@@ -15,7 +15,8 @@ Homecast is a single product split across multiple repos. When working in any on
 | [parob/homecast](https://github.com/parob/homecast) | `homecast/` | Mac app (Swift) + this CLAUDE.md (PUBLIC, MIT) |
 | [parob/homecast-web](https://github.com/parob/homecast-web) | `homecast/app-web/` | Web app — nested inside homecast as a subdir (PUBLIC, MIT) |
 | [parob/homecast-cloud](https://github.com/parob/homecast-cloud) | `homecast-cloud/` | Cloud server (Python) + cloud UI + docs site (PRIVATE) |
-| [parob/homecast-hass](https://github.com/parob/homecast-hass) | `homecast-hass/` | Home Assistant integration (PUBLIC) |
+| [parob/homecast-hass](https://github.com/parob/homecast-hass) | `homecast-hass/` | Home Assistant integration, distributed via HACS (PUBLIC) |
+| [parob/pyhomecast](https://github.com/parob/pyhomecast) | `pyhomecast/` | Python client library used by the HA integration (PyPI, PUBLIC) |
 
 All repos live as siblings under `~/Documents/GitHub/`. The web app is a separate git repo checked out inside `homecast/app-web/`.
 
