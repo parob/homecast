@@ -716,6 +716,33 @@ class HomeKitManager: NSObject, ObservableObject {
         return home.actionSets.map { SceneModel(from: $0, automationName: actionSetToAutomation[$0.uniqueIdentifier]) }
     }
 
+    /// Leave a shared home (relay stops being a member).
+    ///
+    /// DANGER: HMHomeManager.removeHome DELETES a home this Apple ID owns —
+    /// and HomeKit exposes no public ownership flag (HMHomeAccessControl has
+    /// only isAdministrator). The guard is therefore operational:
+    /// - the server only sends home.leave for enrollment homes, which are
+    ///   invited/shared by construction, and
+    /// - fleet relay Macs must never hold self-created homes (macOS can
+    ///   auto-create a default home on first Home.app launch — verify none
+    ///   exists when provisioning a relay).
+    func leaveHome(homeId: String) async throws {
+        guard let uuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        print("[HomeKitManager] leaveHome: removing shared home '\(home.name)' (\(homeId)) from this account")
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            homeManager.removeHome(home) { error in
+                if let error = error {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to leave home: \(error.localizedDescription)"))
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
     func executeScene(sceneId: String) async throws -> ExecuteResult {
         guard let uuid = UUID(uuidString: sceneId) else {
             throw HomeKitError.invalidId(sceneId)
