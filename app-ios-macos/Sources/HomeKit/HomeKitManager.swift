@@ -408,6 +408,49 @@ class HomeKitManager: NSObject, ObservableObject {
         return home.rooms.map { RoomModel(from: $0) }
     }
 
+    /// Create a room. Needs no accessory — used for the Homecast enrollment
+    /// code challenge (a named, visible room carrying the verification code).
+    func createRoom(homeId: String, name: String) async throws -> RoomModel {
+        guard let uuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        let room: HMRoom = try await withCheckedThrowingContinuation { continuation in
+            home.addRoom(withName: name) { room, error in
+                if let error = error {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to add room: \(error.localizedDescription)"))
+                } else if let room = room {
+                    continuation.resume(returning: room)
+                } else {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to add room"))
+                }
+            }
+        }
+        return RoomModel(from: room)
+    }
+
+    /// Delete a room by ID. Only removes rooms with no accessories to reassign
+    /// (the challenge room is always empty).
+    func deleteRoom(homeId: String, roomId: String) async throws {
+        guard let hUuid = UUID(uuidString: homeId),
+              let home = homes.first(where: { $0.uniqueIdentifier == hUuid }) else {
+            throw HomeKitError.homeNotFound(homeId)
+        }
+        guard let rUuid = UUID(uuidString: roomId),
+              let room = home.rooms.first(where: { $0.uniqueIdentifier == rUuid }) else {
+            throw HomeKitError.invalidId(roomId)
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            home.removeRoom(room) { error in
+                if let error = error {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to remove room: \(error.localizedDescription)"))
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
     // MARK: - Zone Operations
 
     func listZones(homeId: String) throws -> [ZoneModel] {

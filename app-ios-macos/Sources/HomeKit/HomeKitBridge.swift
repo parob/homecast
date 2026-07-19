@@ -170,6 +170,24 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
             return try await listRooms(homeId: homeId)
 
+        case "room.create":
+            guard let homeId = payload["homeId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("homeId")
+            }
+            guard let name = payload["name"] as? String else {
+                throw HomeKitBridgeError.missingParameter("name")
+            }
+            return try await createRoom(homeId: homeId, name: name)
+
+        case "room.delete":
+            guard let homeId = payload["homeId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("homeId")
+            }
+            guard let roomId = payload["roomId"] as? String else {
+                throw HomeKitBridgeError.missingParameter("roomId")
+            }
+            return try await deleteRoom(homeId: homeId, roomId: roomId)
+
         // Zone operations
         case "zones.list":
             guard let homeId = payload["homeId"] as? String else {
@@ -415,6 +433,18 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 "accessoryCount": room.accessoryCount
             ]
         }
+    }
+
+    private func createRoom(homeId: String, name: String) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+        let room = try await homeKitManager.createRoom(homeId: homeId, name: name)
+        return ["id": room.id, "name": room.name, "accessoryCount": room.accessoryCount]
+    }
+
+    private func deleteRoom(homeId: String, roomId: String) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+        try await homeKitManager.deleteRoom(homeId: homeId, roomId: roomId)
+        return ["success": true]
     }
 
     private func listZones(homeId: String) async throws -> [[String: Any]] {
