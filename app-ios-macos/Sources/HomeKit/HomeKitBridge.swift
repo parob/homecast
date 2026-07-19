@@ -163,12 +163,6 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         case "homes.list":
             return try await listHomes()
 
-        case "home.leave":
-            guard let homeId = payload["homeId"] as? String else {
-                throw HomeKitBridgeError.missingParameter("homeId")
-            }
-            return try await leaveHome(homeId: homeId)
-
         // Room operations
         case "rooms.list":
             guard let homeId = payload["homeId"] as? String else {
@@ -409,12 +403,6 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 "isAdmin": home.isAdmin
             ]
         }
-    }
-
-    private func leaveHome(homeId: String) async throws -> [String: Any] {
-        await homeKitManager.waitForReady()
-        try await homeKitManager.leaveHome(homeId: homeId)
-        return ["success": true]
     }
 
     private func listRooms(homeId: String) async throws -> [[String: Any]] {
