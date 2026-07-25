@@ -5,6 +5,59 @@ import UIKit
 import UniformTypeIdentifiers
 import Network
 
+// MARK: - Host info
+
+/// Machine metadata the web layer can't read for itself.
+///
+/// Injected onto `window` at document start and forwarded to the cloud on the
+/// relay's WebSocket handshake. Until this existed a relay was anonymous to the
+/// server beyond its generated `device_id`, so the admin panel couldn't tell a
+/// stale build or an old macOS from a current one.
+///
+/// Values are sanitised because they get interpolated into a JS string literal.
+enum HostInfo {
+    /// e.g. "macOS 15.3.1". `operatingSystemVersionString` returns the noisier
+    /// "Version 15.3.1 (Build 24D70)", so build it from the components.
+    static var osVersion: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        let name: String
+        #if targetEnvironment(macCatalyst)
+        name = "macOS"
+        #else
+        name = UIDevice.current.systemName
+        #endif
+        let patch = v.patchVersion > 0 ? ".\(v.patchVersion)" : ""
+        return jsSafe("\(name) \(v.majorVersion).\(v.minorVersion)\(patch)")
+    }
+
+    /// Hardware identifier — "Macmini9,1" on Catalyst, "iPhone15,2" on iOS.
+    /// `hw.model` is the Mac's real model; on iOS it reports the same string
+    /// `uname` would, which is what we want.
+    static var deviceModel: String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "" }
+        var bytes = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &bytes, &size, nil, 0)
+        return jsSafe(String(cString: bytes))
+    }
+
+    /// The machine's name without the Bonjour `.local` suffix — matches how
+    /// LocalHTTPServer derives its advertised service name.
+    static var hostName: String {
+        jsSafe(ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: ""))
+    }
+
+    /// Strip anything that would break out of (or corrupt) a JS string literal.
+    private static func jsSafe(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+    }
+}
+
 // MARK: - Config
 
 enum AppConfig {
@@ -599,6 +652,12 @@ struct WebViewContainer: UIViewRepresentable {
         // Set platform detection flags and HomeKit bridge for the web app
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let appBuild = BuildInfo.gitHash
+        // Host metadata for the cloud relay handshake — JS can't read any of
+        // this itself. The relay sends it as WebSocket query params so the
+        // admin panel can tell which machine and build is serving a home.
+        let osVersion = HostInfo.osVersion
+        let deviceModel = HostInfo.deviceModel
+        let hostName = HostInfo.hostName
 
         #if targetEnvironment(macCatalyst)
         let platformScript = """
@@ -607,6 +666,10 @@ struct WebViewContainer: UIViewRepresentable {
         window.isHomeKitRelayCapable = true;
         window.homecastAppVersion = "\(appVersion)";
         window.homecastAppBuild = "\(appBuild)";
+        window.homecastOSVersion = "\(osVersion)";
+        window.homecastDeviceModel = "\(deviceModel)";
+        window.homecastHostName = "\(hostName)";
+        window.homecastPlatform = "macos";
 
         console.log('[Homecast] Mac app detected - HomeKit relay capable');
 
@@ -702,6 +765,10 @@ struct WebViewContainer: UIViewRepresentable {
         window.isHomecastIOSApp = true;
         window.homecastAppVersion = "\(appVersion)";
         window.homecastAppBuild = "\(appBuild)";
+        window.homecastOSVersion = "\(osVersion)";
+        window.homecastDeviceModel = "\(deviceModel)";
+        window.homecastHostName = "\(hostName)";
+        window.homecastPlatform = "ios";
 
         console.log('[Homecast] iOS app detected');
         """
