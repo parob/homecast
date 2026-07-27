@@ -461,6 +461,61 @@ class HomeKitManager: NSObject, ObservableObject {
         return home.zones.map { ZoneModel(from: $0) }
     }
 
+    // MARK: - Characteristic Writes
+
+    /// Ceiling for a single HomeKit write. HMCharacteristic.writeValue's
+    /// completion handler can simply never fire for an unreachable or wedged
+    /// accessory, and an unbounded await there holds the whole relay request
+    /// open until the cloud gives up at 30s — so one dead bulb stalls the
+    /// entire group it belongs to, and the client sees a timeout rather than
+    /// the lights that did respond.
+    /// `nonisolated` so the write helper below (which must run off the main
+    /// actor) can read it without hopping back — required under Swift 6.
+    nonisolated static let writeTimeoutSeconds: Double = 10.0
+
+    /// Write a characteristic, giving up after `seconds`. Returns false on
+    /// write failure or timeout.
+    ///
+    /// The underlying HomeKit write is deliberately left in flight — it can't
+    /// be cancelled, and in practice it often still lands once the accessory
+    /// answers. Bounding the *wait* is the point: it keeps one unresponsive
+    /// device from holding up every other write in the batch.
+    nonisolated static func writeValue(
+        _ characteristic: HMCharacteristic,
+        _ value: Any,
+        serviceName: String,
+        seconds: Double = HomeKitManager.writeTimeoutSeconds
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+            group.addTask {
+                do {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        characteristic.writeValue(value) { error in
+                            if let error = error {
+                                print("[HomeKit] ❌ Write failed for '\(serviceName)': \(error.localizedDescription)")
+                                continuation.resume(throwing: error)
+                            } else {
+                                print("[HomeKit] ✅ Write successful for '\(serviceName)'")
+                                continuation.resume()
+                            }
+                        }
+                    }
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                print("[HomeKit] ⏱️ Write timed out after \(seconds)s for '\(serviceName)' — leaving it in flight")
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
     // MARK: - Service Group Operations
 
     func listServiceGroups(homeId: String) throws -> [ServiceGroupModel] {
@@ -555,22 +610,7 @@ class HomeKitManager: NSObject, ObservableObject {
         let successCount = await withTaskGroup(of: Bool.self, returning: Int.self) { taskGroup in
             for (serviceName, characteristic, convertedValue) in writeTasks {
                 taskGroup.addTask {
-                    do {
-                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                            characteristic.writeValue(convertedValue) { error in
-                                if let error = error {
-                                    print("[HomeKit] ❌ Write failed for '\(serviceName)': \(error.localizedDescription)")
-                                    continuation.resume(throwing: error)
-                                } else {
-                                    print("[HomeKit] ✅ Write successful for '\(serviceName)'")
-                                    continuation.resume()
-                                }
-                            }
-                        }
-                        return true
-                    } catch {
-                        return false
-                    }
+                    await HomeKitManager.writeValue(characteristic, convertedValue, serviceName: serviceName)
                 }
             }
 
@@ -720,16 +760,19 @@ class HomeKitManager: NSObject, ObservableObject {
         let convertedValue = try CharacteristicMapper.convertValue(value, for: characteristic)
         print("[HomeKit] 📝 Writing value: \(value) -> converted: \(convertedValue) (type: \(type(of: convertedValue)))")
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            characteristic.writeValue(convertedValue) { error in
-                if let error = error {
-                    print("[HomeKit] ❌ Write failed: \(error.localizedDescription)")
-                    continuation.resume(throwing: HomeKitError.writeFailed(error))
-                } else {
-                    print("[HomeKit] ✅ Write successful!")
-                    continuation.resume()
-                }
-            }
+        // Bounded — an unreachable accessory can leave writeValue's completion
+        // handler unfired indefinitely, which used to hang the request until
+        // the cloud timed out at 30s.
+        let wrote = await HomeKitManager.writeValue(
+            characteristic, convertedValue, serviceName: accessory.name
+        )
+        guard wrote else {
+            throw HomeKitError.writeFailed(
+                NSError(domain: "Homecast", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(accessory.name) did not confirm the write within \(Int(HomeKitManager.writeTimeoutSeconds))s — it may be unreachable.",
+                ])
+            )
         }
         // Successful write is strong evidence the device is reachable, regardless of HomeKit's bit.
         recordSuccessfulRead(accessory)
