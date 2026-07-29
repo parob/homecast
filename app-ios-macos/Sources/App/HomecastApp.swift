@@ -1167,6 +1167,7 @@ struct WebViewContainer: UIViewRepresentable {
         deinit {
             reloadTimer?.invalidate()
             livenessTimer?.invalidate()
+            stallTimer?.invalidate()
             networkMonitor?.cancel()
         }
 
@@ -1188,6 +1189,44 @@ struct WebViewContainer: UIViewRepresentable {
                 let js = "window.__nativeWidth = \(width); console.log('[Homecast] nativeWidth=' + \(width) + ' innerWidth=' + window.innerWidth); window.dispatchEvent(new Event('nativeResize'))"
                 wv.evaluateJavaScript(js, completionHandler: nil)
                 print("[Homecast] Frame width: \(width)pt")
+            }
+        }
+
+        // MARK: - Main-thread stall detector
+
+        /// A main-thread timer fires late by exactly as long as the thread was
+        /// blocked. That is the cheapest way to measure the one thing we cannot
+        /// see from the server: whether the app's main thread — which is what
+        /// hands the WebView each request — was unavailable.
+        ///
+        /// Recorded here so the next occurrence of the stuck-relay fault arrives
+        /// with its cause attached, rather than being inferred from the outside
+        /// as it was the first time.
+        private static let stallTickSeconds: TimeInterval = 1.0
+        /// Lateness worth reporting. Below this is ordinary scheduling jitter.
+        private static let stallReportThreshold: TimeInterval = 3.0
+        private var stallTimer: Timer?
+        private var lastStallTick: Date?
+        private(set) var worstStallSeconds: TimeInterval = 0
+
+        private func startStallDetector() {
+            lastStallTick = Date()
+            stallTimer?.invalidate()
+            stallTimer = Timer.scheduledTimer(withTimeInterval: Coordinator.stallTickSeconds,
+                                              repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                let now = Date()
+                defer { self.lastStallTick = now }
+                guard let last = self.lastStallTick else { return }
+
+                let late = now.timeIntervalSince(last) - Coordinator.stallTickSeconds
+                guard late >= Coordinator.stallReportThreshold else { return }
+
+                self.worstStallSeconds = max(self.worstStallSeconds, late)
+                Log.warning("Main thread stalled",
+                            category: "watchdog",
+                            metadata: ["seconds": String(format: "%.1f", late),
+                                       "worstSeconds": String(format: "%.1f", self.worstStallSeconds)])
             }
         }
 
@@ -1215,6 +1254,7 @@ struct WebViewContainer: UIViewRepresentable {
         /// it natively when it stops answering.
         func beginLivenessWatch() {
             startLivenessWatchdog()
+            startStallDetector()
         }
 
         private func startLivenessWatchdog() {
@@ -1244,7 +1284,9 @@ struct WebViewContainer: UIViewRepresentable {
                     Log.warning("WebView unresponsive — reloading",
                                 category: "watchdog",
                                 metadata: ["reloads": String(livenessReloads),
-                                           "timeoutSeconds": String(Int(Coordinator.livenessTimeoutSeconds))])
+                                           "timeoutSeconds": String(Int(Coordinator.livenessTimeoutSeconds)),
+                                           // Was the main thread blocked, or was the page stuck on its own?
+                                           "worstMainThreadStallSeconds": String(format: "%.1f", worstStallSeconds)])
                     webView.reloadFromOrigin()
                 }
                 return
