@@ -1208,6 +1208,20 @@ struct WebViewContainer: UIViewRepresentable {
         private var stallTimer: Timer?
         private var lastStallTick: Date?
         private(set) var worstStallSeconds: TimeInterval = 0
+        private var lastStallAt: Date?
+        private var lastStallDuration: TimeInterval = 0
+        private var lastStallReportAt = Date.distantPast
+        /// At most one stall warning per this interval.
+        private static let stallReportIntervalSeconds: TimeInterval = 60
+
+        /// How badly the main thread stalled inside the last liveness window.
+        /// Used to tell "the page is stuck" apart from "the main thread was busy",
+        /// which look identical from the probe's point of view.
+        private func recentStallSeconds() -> TimeInterval {
+            guard let at = lastStallAt,
+                  Date().timeIntervalSince(at) <= Coordinator.livenessTimeoutSeconds * 2 else { return 0 }
+            return lastStallDuration
+        }
 
         private func startStallDetector() {
             lastStallTick = Date()
@@ -1223,10 +1237,19 @@ struct WebViewContainer: UIViewRepresentable {
                 guard late >= Coordinator.stallReportThreshold else { return }
 
                 self.worstStallSeconds = max(self.worstStallSeconds, late)
-                Log.warning("Main thread stalled",
-                            category: "watchdog",
-                            metadata: ["seconds": String(format: "%.1f", late),
-                                       "worstSeconds": String(format: "%.1f", self.worstStallSeconds)])
+                self.lastStallAt = now
+                self.lastStallDuration = late
+
+                // Rate limited: a main thread stalling constantly would otherwise
+                // ship a warning per second, which costs money and makes the very
+                // problem it is reporting worse.
+                if now.timeIntervalSince(self.lastStallReportAt) >= Coordinator.stallReportIntervalSeconds {
+                    self.lastStallReportAt = now
+                    Log.warning("Main thread stalled",
+                                category: "watchdog",
+                                metadata: ["seconds": String(format: "%.1f", late),
+                                           "worstSeconds": String(format: "%.1f", self.worstStallSeconds)])
+                }
             }
         }
 
@@ -1239,6 +1262,9 @@ struct WebViewContainer: UIViewRepresentable {
         private var livenessTimer: Timer?
         private var livenessOutstandingSince: Date?
         private var livenessReloads = 0
+        /// Reloads in a row before we stop trying. Past this the page is not
+        /// coming back and looping only guarantees nothing ever runs.
+        private static let maxConsecutiveReloads = 3
 
         /// Watch the WebView for the state where it is connected but not working.
         ///
@@ -1255,6 +1281,15 @@ struct WebViewContainer: UIViewRepresentable {
         func beginLivenessWatch() {
             startLivenessWatchdog()
             startStallDetector()
+        }
+
+        /// Everything we know about why the page might be stuck, for the report.
+        private func bridgeAndStallMetadata() -> [String: String] {
+            var meta = BridgeLoad.shared.snapshot()
+            meta["reloads"] = String(livenessReloads)
+            meta["worstMainThreadStallSeconds"] = String(format: "%.1f", worstStallSeconds)
+            meta["recentMainThreadStallSeconds"] = String(format: "%.1f", recentStallSeconds())
+            return meta
         }
 
         private func startLivenessWatchdog() {
@@ -1279,14 +1314,35 @@ struct WebViewContainer: UIViewRepresentable {
             if let since = livenessOutstandingSince {
                 if Date().timeIntervalSince(since) >= Coordinator.livenessTimeoutSeconds {
                     livenessOutstandingSince = nil
+
+                    // The probe's completion handler is delivered on the main
+                    // thread, so a blocked main thread looks exactly like a stuck
+                    // page. Reloading would not fix that — it needs the main
+                    // thread too — and would destroy in-flight work for nothing.
+                    // Report it and leave the page alone.
+                    if recentStallSeconds() >= Coordinator.livenessTimeoutSeconds * 0.5 {
+                        Log.warning("WebView probe unanswered, but the main thread was stalled — not reloading",
+                                    category: "watchdog",
+                                    metadata: bridgeAndStallMetadata())
+                        return
+                    }
+
+                    // Reloading has not helped: stop rather than loop forever.
+                    // A relay reloading every 25s is worse than a stuck one — it
+                    // never finishes starting, so no automation ever runs.
+                    guard livenessReloads < Coordinator.maxConsecutiveReloads else {
+                        Log.error("WebView still unresponsive after \(livenessReloads) reloads — giving up until the app is restarted",
+                                  category: "watchdog",
+                                  metadata: bridgeAndStallMetadata())
+                        stopLivenessWatchdog()
+                        return
+                    }
+
                     livenessReloads += 1
                     print("[Watchdog] WebView unresponsive for \(Int(Coordinator.livenessTimeoutSeconds))s — reloading (count: \(livenessReloads))")
                     Log.warning("WebView unresponsive — reloading",
                                 category: "watchdog",
-                                metadata: ["reloads": String(livenessReloads),
-                                           "timeoutSeconds": String(Int(Coordinator.livenessTimeoutSeconds)),
-                                           // Was the main thread blocked, or was the page stuck on its own?
-                                           "worstMainThreadStallSeconds": String(format: "%.1f", worstStallSeconds)])
+                                metadata: bridgeAndStallMetadata())
                     webView.reloadFromOrigin()
                 }
                 return
@@ -1297,7 +1353,10 @@ struct WebViewContainer: UIViewRepresentable {
             // whether the app's own state is healthy.
             webView.evaluateJavaScript("1") { [weak self] _, _ in
                 // Any answer at all — value or error — proves JS executed.
-                self?.livenessOutstandingSince = nil
+                guard let self = self else { return }
+                self.livenessOutstandingSince = nil
+                // Recovered: only consecutive failures should count towards the cap.
+                self.livenessReloads = 0
             }
         }
 

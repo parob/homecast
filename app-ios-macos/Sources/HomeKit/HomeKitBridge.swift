@@ -1,6 +1,53 @@
 import Foundation
 import WebKit
 
+/// How much work the native HomeKit bridge is carrying, and for how long.
+///
+/// The relay can sit connected but answering nothing, and from the server every
+/// signal looks healthy — so the app has to say for itself whether its bridge is
+/// backed up. Diagnosing that fault the first time took an evening of inference
+/// precisely because nothing here was measured.
+///
+/// Deliberately tiny: two counters and a date. It runs on every bridge call, so
+/// it must never be the thing that makes a call slow.
+@MainActor
+final class BridgeLoad {
+    static let shared = BridgeLoad()
+
+    private var inFlight: [Int: (method: String, started: Date)] = [:]
+    private var nextTicket = 0
+    /// Bridge calls completed since the last read, for a rate.
+    private var completed = 0
+    private var windowStarted = Date()
+
+    func begin(method: String) -> Int {
+        nextTicket &+= 1
+        inFlight[nextTicket] = (method, Date())
+        return nextTicket
+    }
+
+    func finish(_ ticket: Int) {
+        inFlight.removeValue(forKey: ticket)
+        completed &+= 1
+    }
+
+    /// A snapshot for the watchdog to attach to its report.
+    func snapshot() -> [String: String] {
+        let now = Date()
+        let oldest = inFlight.values.min(by: { $0.started < $1.started })
+        let elapsed = max(now.timeIntervalSince(windowStarted), 0.001)
+        let rate = Double(completed) / elapsed * 60.0
+
+        defer { completed = 0; windowStarted = now }
+        return [
+            "bridgePending": String(inFlight.count),
+            "bridgeOldestSeconds": oldest.map { String(format: "%.1f", now.timeIntervalSince($0.started)) } ?? "0",
+            "bridgeOldestMethod": oldest?.method ?? "-",
+            "bridgeCallsPerMin": String(Int(rate)),
+        ]
+    }
+}
+
 #if !targetEnvironment(macCatalyst)
 /// Dummy bridge for iOS - does nothing since HomeKit relay is Mac-only
 @MainActor
@@ -79,6 +126,8 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
 
             let startTime = CFAbsoluteTimeGetCurrent()
+            let ticket = BridgeLoad.shared.begin(method: method)
+            defer { BridgeLoad.shared.finish(ticket) }
 
             do {
                 let result = try await self.executeMethod(method, payload: payload ?? [:])
