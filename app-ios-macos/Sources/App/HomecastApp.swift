@@ -984,6 +984,8 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
+        // Watch for the connected-but-not-executing state; see the watchdog.
+        context.coordinator.beginLivenessWatch()
 
         // Enable Safari Web Inspector for debugging
         #if DEBUG
@@ -1164,6 +1166,7 @@ struct WebViewContainer: UIViewRepresentable {
 
         deinit {
             reloadTimer?.invalidate()
+            livenessTimer?.invalidate()
             networkMonitor?.cancel()
         }
 
@@ -1185,6 +1188,74 @@ struct WebViewContainer: UIViewRepresentable {
                 let js = "window.__nativeWidth = \(width); console.log('[Homecast] nativeWidth=' + \(width) + ' innerWidth=' + window.innerWidth); window.dispatchEvent(new Event('nativeResize'))"
                 wv.evaluateJavaScript(js, completionHandler: nil)
                 print("[Homecast] Frame width: \(width)pt")
+            }
+        }
+
+        // MARK: - WebView liveness watchdog
+
+        /// Seconds without a JS reply before the WebView is considered stuck.
+        private static let livenessTimeoutSeconds: TimeInterval = 25
+        /// How often to ask.
+        private static let livenessIntervalSeconds: TimeInterval = 20
+        private var livenessTimer: Timer?
+        private var livenessOutstandingSince: Date?
+        private var livenessReloads = 0
+
+        /// Watch the WebView for the state where it is connected but not working.
+        ///
+        /// The relay's cloud WebSocket is handled natively, so the socket stays up
+        /// and heartbeats keep flowing even when the page behind it has stopped
+        /// executing. The server therefore sees a healthy relay while every
+        /// request it forwards times out — observed in production for minutes at a
+        /// stretch, with reads and writes failing alike and only an app restart
+        /// clearing it. Remote reload cannot help, because that command is itself
+        /// JavaScript.
+        ///
+        /// So ask the page a question only a running page can answer, and reload
+        /// it natively when it stops answering.
+        func beginLivenessWatch() {
+            startLivenessWatchdog()
+        }
+
+        private func startLivenessWatchdog() {
+            livenessTimer?.invalidate()
+            livenessTimer = Timer.scheduledTimer(withTimeInterval: Coordinator.livenessIntervalSeconds,
+                                                 repeats: true) { [weak self] _ in
+                self?.checkWebViewLiveness()
+            }
+        }
+
+        private func stopLivenessWatchdog() {
+            livenessTimer?.invalidate()
+            livenessTimer = nil
+            livenessOutstandingSince = nil
+        }
+
+        private func checkWebViewLiveness() {
+            guard let webView = webView else { return }
+
+            // A probe is already outstanding: if it has been too long, the page is
+            // stuck. Reload rather than pile up more probes.
+            if let since = livenessOutstandingSince {
+                if Date().timeIntervalSince(since) >= Coordinator.livenessTimeoutSeconds {
+                    livenessOutstandingSince = nil
+                    livenessReloads += 1
+                    print("[Watchdog] WebView unresponsive for \(Int(Coordinator.livenessTimeoutSeconds))s — reloading (count: \(livenessReloads))")
+                    Log.warning("WebView unresponsive — reloading",
+                                category: "watchdog",
+                                metadata: ["reloads": String(livenessReloads),
+                                           "timeoutSeconds": String(Int(Coordinator.livenessTimeoutSeconds))])
+                    webView.reloadFromOrigin()
+                }
+                return
+            }
+
+            livenessOutstandingSince = Date()
+            // Deliberately trivial: this measures whether JS runs at all, not
+            // whether the app's own state is healthy.
+            webView.evaluateJavaScript("1") { [weak self] _, _ in
+                // Any answer at all — value or error — proves JS executed.
+                self?.livenessOutstandingSince = nil
             }
         }
 
