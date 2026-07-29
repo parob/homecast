@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E1000001A /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000001F /* NotificationService.swift */; };
+		E1000030A /* HomecastNotificationService.appex in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = E1000000P /* HomecastNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		42271B042F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */; };
 		42271B052F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */; };
 		42792F432F3386C200FFF6F0 /* ModeButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */; };
@@ -64,6 +66,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		E1000040P /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A0000000P /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E1000000T;
+			remoteInfo = HomecastNotificationService;
+		};
 		A1000040P /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A0000000P /* Project object */;
@@ -81,6 +90,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				A1000030A /* MenuBarPlugin.bundle in Embed PlugIns */,
+				E1000030A /* HomecastNotificationService.appex in Embed PlugIns */,
 			);
 			name = "Embed PlugIns";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -88,6 +98,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E1000000P /* HomecastNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HomecastNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1000001F /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		E1000002F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitBridge.swift; sourceTree = "<group>"; };
 		42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButtonGroup.swift; sourceTree = "<group>"; };
 		42BCDD2C2FA7725000692926 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
@@ -149,6 +162,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		E1000061P /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000060P /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -169,6 +189,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		E1000000G /* NotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				E1000001F /* NotificationService.swift */,
+				E1000002F /* Info.plist */,
+			);
+			path = NotificationService;
+			sourceTree = "<group>";
+		};
 		A0000001G = {
 			isa = PBXGroup;
 			children = (
@@ -188,6 +217,7 @@
 				C1000000G /* Server */,
 				D1000000G /* Purchases */,
 				A0000009G /* MenuBarPlugin */,
+				E1000000G /* NotificationService */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -221,6 +251,7 @@
 			children = (
 				A3000000P /* Homecast.app */,
 				A2000000P /* MenuBarPlugin.bundle */,
+				E1000000P /* HomecastNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -324,6 +355,23 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		E1000000T /* HomecastNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E1000080L /* Build configuration list for PBXNativeTarget "HomecastNotificationService" */;
+			buildPhases = (
+				E1000070P /* Sources */,
+				E1000061P /* Frameworks */,
+				E1000062P /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HomecastNotificationService;
+			productName = HomecastNotificationService;
+			productReference = E1000000P /* HomecastNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		A1000000T /* Homecast */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A1000080L /* Build configuration list for PBXNativeTarget "Homecast" */;
@@ -338,6 +386,7 @@
 			);
 			dependencies = (
 				A1000041D /* PBXTargetDependency */,
+				E1000041D /* PBXTargetDependency */,
 			);
 			name = Homecast;
 			productName = Homecast;
@@ -392,11 +441,19 @@
 			targets = (
 				A1000000T /* Homecast */,
 				A2000000T /* MenuBarPlugin */,
+				E1000000T /* HomecastNotificationService */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		E1000062P /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000062P /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -431,6 +488,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		E1000070P /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1000001A /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000070P /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -493,6 +558,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		E1000041D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E1000000T /* HomecastNotificationService */;
+			targetProxy = E1000040P /* PBXContainerItemProxy */;
+		};
 		A1000041D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			platformFilter = maccatalyst;
@@ -513,6 +583,50 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		E1000081C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 21;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Debug;
+		};
+		E1000082C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 21;
+				DEVELOPMENT_TEAM = 3HMH4559WD;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Release;
+		};
 		A0000081C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -763,6 +877,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		E1000080L /* Build configuration list for PBXNativeTarget "HomecastNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1000081C /* Debug */,
+				E1000082C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A0000080L /* Build configuration list for PBXProject "Homecast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
