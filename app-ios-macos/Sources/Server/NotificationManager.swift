@@ -96,7 +96,8 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         // returned by the time this resolves.
         if let icon = data?["icon"] as? String, !icon.isEmpty {
             Task {
-                if let staged = await NotificationIcon.stage(icon),
+                let iconColor = data?["iconColor"] as? String
+                if let staged = await NotificationIcon.stage(icon, color: iconColor),
                    let attachment = try? UNNotificationAttachment(identifier: "icon", url: staged, options: nil) {
                     // The system MOVES the staged file into its own attachment
                     // store, so the path is single-use by design.
@@ -248,6 +249,30 @@ private enum NotificationIcon {
         "night": "moon.fill",
     ]
 
+    /// Tile gradients, mirroring NOTIFICATION_ICON_COLORS in the web app so the
+    /// banner drawn here and the PNG fetched on a phone are the same colour.
+    /// An unknown name falls back to the default rather than to no icon.
+    static let gradientForColor: [String: (UIColor, UIColor)] = [
+        "blue": (UIColor(red: 0.231, green: 0.510, blue: 0.965, alpha: 1),
+                 UIColor(red: 0.146, green: 0.388, blue: 0.922, alpha: 1)),
+        "red": (UIColor(red: 0.937, green: 0.267, blue: 0.267, alpha: 1),
+                UIColor(red: 0.863, green: 0.149, blue: 0.149, alpha: 1)),
+        "amber": (UIColor(red: 0.961, green: 0.620, blue: 0.043, alpha: 1),
+                  UIColor(red: 0.851, green: 0.467, blue: 0.024, alpha: 1)),
+        "green": (UIColor(red: 0.133, green: 0.773, blue: 0.369, alpha: 1),
+                  UIColor(red: 0.086, green: 0.639, blue: 0.290, alpha: 1)),
+        "teal": (UIColor(red: 0.078, green: 0.722, blue: 0.651, alpha: 1),
+                 UIColor(red: 0.051, green: 0.596, blue: 0.533, alpha: 1)),
+        "purple": (UIColor(red: 0.659, green: 0.333, blue: 0.969, alpha: 1),
+                   UIColor(red: 0.576, green: 0.200, blue: 0.918, alpha: 1)),
+        "pink": (UIColor(red: 0.925, green: 0.282, blue: 0.600, alpha: 1),
+                 UIColor(red: 0.859, green: 0.153, blue: 0.467, alpha: 1)),
+        "slate": (UIColor(red: 0.392, green: 0.455, blue: 0.545, alpha: 1),
+                  UIColor(red: 0.278, green: 0.333, blue: 0.412, alpha: 1)),
+    ]
+
+    static let defaultColor = "blue"
+
     static let fallbackSymbol = "bell.fill"
     static let tileSize: CGFloat = 256
     static let downloadTimeout: TimeInterval = 5
@@ -255,15 +280,16 @@ private enum NotificationIcon {
 
     /// Write the icon to a temp file, or nil if it can't be had. Never throws:
     /// an icon is decoration, and no failure here should cost a notification.
-    static func stage(_ icon: String) async -> URL? {
+    static func stage(_ icon: String, color: String?) async -> URL? {
         if icon.lowercased().hasPrefix("https://") {
+            // A custom image is the author's own; there is nothing to recolour.
             return await download(icon)
         }
-        return renderTile(symbolForSlug[icon] ?? fallbackSymbol)
+        return renderTile(symbolForSlug[icon] ?? fallbackSymbol, color: color)
     }
 
     /// Draw an SF Symbol as a white glyph on the brand tile, matching the PNGs.
-    private static func renderTile(_ symbolName: String) -> URL? {
+    private static func renderTile(_ symbolName: String, color: String?) -> URL? {
         let size = tileSize
         let config = UIImage.SymbolConfiguration(pointSize: size * 0.52, weight: .semibold)
         // A symbol name can be unavailable on an older OS than the one the map
@@ -277,10 +303,9 @@ private enum NotificationIcon {
             let rect = CGRect(x: 0, y: 0, width: size, height: size)
             UIBezierPath(roundedRect: rect, cornerRadius: size * 0.22).addClip()
 
-            let colors = [
-                UIColor(red: 0.231, green: 0.510, blue: 0.965, alpha: 1).cgColor, // #3B82F6
-                UIColor(red: 0.146, green: 0.388, blue: 0.922, alpha: 1).cgColor, // #2563EB
-            ] as CFArray
+            let stops = gradientForColor[color ?? defaultColor]
+                ?? gradientForColor[defaultColor]!
+            let colors = [stops.0.cgColor, stops.1.cgColor] as CFArray
             if let gradient = CGGradient(
                 colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]
             ) {
