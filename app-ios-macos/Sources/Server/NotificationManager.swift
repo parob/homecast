@@ -89,6 +89,27 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             }
         }
 
+        // An icon is optional, and getting one must never be a reason a
+        // notification doesn't appear. A built-in slug renders locally and costs
+        // nothing; a URL costs a bounded download, after which we post either
+        // way. The caller isn't kept waiting for it — HomeKitBridge has already
+        // returned by the time this resolves.
+        if let icon = data?["icon"] as? String, !icon.isEmpty {
+            Task {
+                if let staged = await NotificationIcon.stage(icon),
+                   let attachment = try? UNNotificationAttachment(identifier: "icon", url: staged, options: nil) {
+                    // The system MOVES the staged file into its own attachment
+                    // store, so the path is single-use by design.
+                    content.attachments = [attachment]
+                }
+                Self.post(content)
+            }
+        } else {
+            Self.post(content)
+        }
+    }
+
+    private static func post(_ content: UNMutableNotificationContent) {
         let request = UNNotificationRequest(
             identifier: "homecast-notify-\(UUID().uuidString)",
             content: content,
@@ -164,6 +185,173 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
 
 extension Notification.Name {
     static let notificationActionTapped = Notification.Name("homecast.notificationActionTapped")
+}
+
+// MARK: - Notification icons
+
+/// Turns a Notify action's icon into a file on disk, ready to attach.
+///
+/// Deliberately outside `NotificationManager`, which is `@MainActor`: rendering
+/// and downloading have no business on the main thread, and static state reached
+/// from a nonisolated context is an error under Swift 6.
+private enum NotificationIcon {
+
+    /// Slug → SF Symbol, mirroring `notificationIcons.ts` in the web app.
+    ///
+    /// The web app rasterises the same set to PNGs, because APNs and Android can
+    /// only be handed a URL. Here there is no network involved, so the symbol is
+    /// drawn on the spot — and both paths end up looking alike because both put
+    /// a white glyph on the same blue tile.
+    ///
+    /// A slug missing from this map is not an error. A relay running an older
+    /// build than the automation that made it should still show a notification
+    /// with an icon, so unknown slugs fall back to a bell rather than to nothing.
+    static let symbolForSlug: [String: String] = [
+        // Devices
+        "light": "lightbulb.fill",
+        "switch": "power",
+        "outlet": "powerplug.fill",
+        "thermostat": "thermometer.medium",
+        "fan": "fan.fill",
+        "air": "wind",
+        "humidity": "humidity.fill",
+        "blinds": "blinds.horizontal.closed",
+        "garage": "door.garage.closed",
+        "camera": "video.fill",
+        "doorbell": "bell.badge.fill",
+        "speaker": "hifispeaker.fill",
+        "irrigation": "drop.circle.fill",
+        // Status
+        "notification": "bell.fill",
+        "alert": "exclamationmark.triangle.fill",
+        "success": "checkmark.circle.fill",
+        "error": "xmark.circle.fill",
+        "info": "info.circle.fill",
+        "motion": "figure.walk.motion",
+        "leak": "drop.fill",
+        "smoke": "flame.fill",
+        "siren": "light.beacon.max.fill",
+        "offline": "wifi.slash",
+        "battery": "battery.25",
+        "energy": "bolt.fill",
+        // Home and time
+        "home": "house.fill",
+        "door": "door.left.hand.closed",
+        "door-open": "door.left.hand.open",
+        "lock": "lock.fill",
+        "unlock": "lock.open.fill",
+        "security": "shield.fill",
+        "key": "key.fill",
+        "person": "person.fill",
+        "schedule": "clock.fill",
+        "day": "sun.max.fill",
+        "night": "moon.fill",
+    ]
+
+    static let fallbackSymbol = "bell.fill"
+    static let tileSize: CGFloat = 256
+    static let downloadTimeout: TimeInterval = 5
+    static let maxBytes = 2 * 1024 * 1024
+
+    /// Write the icon to a temp file, or nil if it can't be had. Never throws:
+    /// an icon is decoration, and no failure here should cost a notification.
+    static func stage(_ icon: String) async -> URL? {
+        if icon.lowercased().hasPrefix("https://") {
+            return await download(icon)
+        }
+        return renderTile(symbolForSlug[icon] ?? fallbackSymbol)
+    }
+
+    /// Draw an SF Symbol as a white glyph on the brand tile, matching the PNGs.
+    private static func renderTile(_ symbolName: String) -> URL? {
+        let size = tileSize
+        let config = UIImage.SymbolConfiguration(pointSize: size * 0.52, weight: .semibold)
+        // A symbol name can be unavailable on an older OS than the one the map
+        // was written against, which reads as nil rather than as a crash.
+        let symbol = UIImage(systemName: symbolName, withConfiguration: config)
+            ?? UIImage(systemName: fallbackSymbol, withConfiguration: config)
+        guard let symbol else { return nil }
+
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+        let image = renderer.image { ctx in
+            let rect = CGRect(x: 0, y: 0, width: size, height: size)
+            UIBezierPath(roundedRect: rect, cornerRadius: size * 0.22).addClip()
+
+            let colors = [
+                UIColor(red: 0.231, green: 0.510, blue: 0.965, alpha: 1).cgColor, // #3B82F6
+                UIColor(red: 0.146, green: 0.388, blue: 0.922, alpha: 1).cgColor, // #2563EB
+            ] as CFArray
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]
+            ) {
+                ctx.cgContext.drawLinearGradient(
+                    gradient, start: .zero, end: CGPoint(x: size, y: size), options: []
+                )
+            }
+
+            let glyph = symbol.withTintColor(.white, renderingMode: .alwaysOriginal)
+            let box = glyph.size
+            glyph.draw(in: CGRect(
+                x: (size - box.width) / 2,
+                y: (size - box.height) / 2,
+                width: box.width,
+                height: box.height
+            ))
+        }
+
+        guard let png = image.pngData() else { return nil }
+        return writeTemp(png, ext: "png")
+    }
+
+    /// Fetch a caller-supplied icon URL. Bounded on time, size and type: this
+    /// runs on the relay Mac and an automation can point it anywhere.
+    private static func download(_ urlString: String) async -> URL? {
+        guard let url = URL(string: urlString), url.scheme?.lowercased() == "https" else { return nil }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = downloadTimeout
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
+
+            let mime = (http.mimeType ?? "").lowercased()
+            guard mime.hasPrefix("image/") else {
+                NSLog("[NotificationIcon] Not an image (%@)", mime)
+                return nil
+            }
+            guard data.count <= maxBytes else {
+                NSLog("[NotificationIcon] Too large (%d bytes)", data.count)
+                return nil
+            }
+
+            // UNNotificationAttachment infers the type from the file extension,
+            // so give it one it recognises rather than whatever the URL ended in.
+            let ext: String
+            if mime.contains("png") { ext = "png" }
+            else if mime.contains("gif") { ext = "gif" }
+            else { ext = "jpg" }
+
+            return writeTemp(data, ext: ext)
+        } catch {
+            NSLog("[NotificationIcon] Download failed: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    private static func writeTemp(_ data: Data, ext: String) -> URL? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("homecast-notification-icons", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("\(UUID().uuidString).\(ext)")
+            try data.write(to: url)
+            return url
+        } catch {
+            NSLog("[NotificationIcon] Could not stage icon: %@", error.localizedDescription)
+            return nil
+        }
+    }
 }
 
 #else
