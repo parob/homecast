@@ -62,6 +62,13 @@ struct HomeModel: Codable {
     /// Whether this Mac's Apple ID can edit the home in Apple Home
     /// ("Add & Edit Accessories") — required for automation create/edit.
     let isAdmin: Bool
+    /// This Mac's HomeKit member identity within the home. A home's
+    /// uniqueIdentifier FLIP-FLOPS between two deterministic UUIDv5 values;
+    /// the working theory is that homed switches between two member contexts.
+    /// Reporting the member id alongside the home id lets the cloud confirm
+    /// (or kill) that theory on the next flip — the unification plan's
+    /// unfinished confirmation step.
+    let currentUserId: String
 
     init(from home: HMHome) {
         self.id = home.uniqueIdentifier.uuidString
@@ -70,6 +77,7 @@ struct HomeModel: Codable {
         self.roomCount = home.rooms.count
         self.accessoryCount = home.accessories.count
         self.isAdmin = home.homeAccessControl(for: home.currentUser).isAdministrator
+        self.currentUserId = home.currentUser.uniqueIdentifier.uuidString
     }
 
     func toJSON() -> JSONValue {
@@ -79,7 +87,8 @@ struct HomeModel: Codable {
             "isPrimary": .bool(isPrimary),
             "roomCount": .int(roomCount),
             "accessoryCount": .int(accessoryCount),
-            "isAdmin": .bool(isAdmin)
+            "isAdmin": .bool(isAdmin),
+            "currentUserId": .string(currentUserId)
         ])
     }
 }

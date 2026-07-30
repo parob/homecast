@@ -289,21 +289,18 @@ The Notify action node delivers notifications via 2 configurable channels + auto
 
 | Channel | Mechanism | Recipient | Configurable |
 |---------|-----------|-----------|-------------|
-| Relay alert | `UNUserNotificationCenter` on relay Mac | Relay owner (instant, no internet) | Always on |
-| Push | Web Push (FCM) to browsers + APNs to Mac/iOS apps | You + home members | Toggle in settings |
+| Relay alert | Community: local `UNUserNotificationCenter`. Cloud: APNs round trip to the relay Mac | Relay owner | Always on |
+| Push | APNs to Mac/iOS apps + FCM to the Android app (NO browser web push — that path was removed) | You + home members | Toggle in settings |
 | Email | Maileroo | You + home members | Toggle in settings (off by default) |
-
-Server deduplicates: relay Mac's APNs token is skipped (it already showed the local alert).
 
 **Key files:**
 
 | File | Purpose |
 |------|---------|
-| `app-web/public/firebase-messaging-sw.js` | FCM service worker (background push) |
-| `app-web/src/hooks/usePushNotifications.ts` | Permission flow, FCM token registration |
-| `app-web/src/lib/firebase.ts` | Firebase config (project `homecast-483609`) |
+| `app-web/src/hooks/useAndroidPush.ts` | Android FCM token registration (the only web-side push code) |
 | `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (global prefs, devices, history) |
 | `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote notifications |
+| `app-ios-macos/Sources/NotificationService/` | Notification Service Extension (icon attachments) |
 
 **Notification preference hierarchy** (most specific wins): automation > home > global > defaults (push=on, email=off). UI shows 2 toggles only (Push + Email). Relay alert is always on.
 
