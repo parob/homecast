@@ -948,8 +948,9 @@ struct WebViewContainer: UIViewRepresentable {
         // Watch for dark/light background changes and sync the WebView background
         // color so CSS backdrop-blur doesn't pick up white at viewport edges.
         // Observes the root div's class for 'bg-black' (set by MainLayout when
-        // there's a dark background image).
-        #if targetEnvironment(macCatalyst)
+        // there's a dark background image). Runs on Mac AND iOS: on iOS the
+        // webview backdrop shows through at the safe areas (landscape notch),
+        // and without this it stayed hardcoded black in light mode.
         config.userContentController.addUserScript(WKUserScript(source: """
         (function() {
             var last = null, pending = false;
@@ -971,8 +972,6 @@ struct WebViewContainer: UIViewRepresentable {
             check();
         })();
         """, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-
-        #endif
 
         // iOS text selection prevention is handled by CSS (html.ios-app in index.css
         // sets user-select:none and -webkit-touch-callout:none). Do NOT use
