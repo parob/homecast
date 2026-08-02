@@ -15,9 +15,6 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     @Published private(set) var isAuthorized = false
     @Published private(set) var apnsToken: String?
 
-    /// Category identifier for notifications with action buttons
-    private static let categoryId = "homecast.automation.notify"
-
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
@@ -61,32 +58,8 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         content.body = message
         content.sound = .default
 
-        // Store data for action handling
         if let data = data {
             content.userInfo = data
-        }
-
-        // Register action buttons if present
-        if let actions = data?["actions"] as? [[String: String]] {
-            let notificationActions = actions.prefix(3).compactMap { action -> UNNotificationAction? in
-                guard let actionId = action["action"], let actionTitle = action["title"] else { return nil }
-                return UNNotificationAction(
-                    identifier: actionId,
-                    title: actionTitle,
-                    options: .foreground
-                )
-            }
-
-            if !notificationActions.isEmpty {
-                let category = UNNotificationCategory(
-                    identifier: Self.categoryId,
-                    actions: notificationActions,
-                    intentIdentifiers: [],
-                    options: []
-                )
-                UNUserNotificationCenter.current().setNotificationCategories([category])
-                content.categoryIdentifier = Self.categoryId
-            }
         }
 
         // An icon is optional, and getting one must never be a reason a
@@ -148,29 +121,12 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Handle notification taps and action button presses.
+    /// Handle notification taps.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let actionIdentifier = response.actionIdentifier
-        let userInfo = response.notification.request.content.userInfo
-
-        if actionIdentifier != UNNotificationDefaultActionIdentifier &&
-           actionIdentifier != UNNotificationDismissActionIdentifier {
-            // User tapped an action button — this will be forwarded to the automation engine
-            NSLog("[NotificationManager] Action tapped: %@", actionIdentifier)
-            NotificationCenter.default.post(
-                name: .notificationActionTapped,
-                object: nil,
-                userInfo: [
-                    "action": actionIdentifier,
-                    "data": userInfo,
-                ]
-            )
-        }
-
         completionHandler()
     }
 
@@ -182,10 +138,6 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     ) {
         completionHandler([.banner, .sound])
     }
-}
-
-extension Notification.Name {
-    static let notificationActionTapped = Notification.Name("homecast.notificationActionTapped")
 }
 
 // MARK: - Notification icons

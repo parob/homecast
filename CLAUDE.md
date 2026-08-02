@@ -285,26 +285,26 @@ Actions support `onError: 'stop' | 'continue' | 'retry'`:
 
 ### Push Notifications (Cloud Only)
 
-The Notify action node delivers notifications via 2 configurable channels + automatic relay alert:
+The Notify action node delivers push only (email notifications were removed):
 
 | Channel | Mechanism | Recipient | Configurable |
 |---------|-----------|-----------|-------------|
-| Relay alert | Community: local `UNUserNotificationCenter`. Cloud: APNs round trip to the relay Mac | Relay owner | Always on |
-| Push | APNs to Mac/iOS apps + FCM to the Android app (NO browser web push — that path was removed) | You + home members | Toggle in settings |
-| Email | Maileroo | You + home members | Toggle in settings (off by default) |
+| Relay alert | Community: local `UNUserNotificationCenter`. Cloud: APNs round trip to the relay Mac, with a local-banner fallback when the cloud WS is down | Relay owner | Always on |
+| Push | APNs to Mac/iOS apps + FCM to the Android app (NO browser web push — that path was removed) | You + home members | Per-device mutes |
+
+**Per-device mutes** replace the old account-wide preference hierarchy: a `NotificationMute` row (user, device_fingerprint, scope device/home/automation) means muted; default is everything on. Settings → Notifications configures **the device it is open on** — master toggle, per-home toggles, and per-automation toggles for automations containing a Notify action (detected by `src/automation/utils/actionWalker.ts`). Enforcement is server-side at push-token selection. Device identity is a stable localStorage fingerprint (`app-web/src/lib/device-identity.ts`) — never derive it from the push token.
 
 **Key files:**
 
 | File | Purpose |
 |------|---------|
+| `app-web/src/lib/device-identity.ts` | Stable per-device fingerprint (macos-/android- localStorage UUID) |
 | `app-web/src/hooks/useAndroidPush.ts` | Android FCM token registration (the only web-side push code) |
-| `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (global prefs, devices, history) |
+| `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (this-device mutes, history) |
 | `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote notifications |
 | `app-ios-macos/Sources/NotificationService/` | Notification Service Extension (icon attachments) |
 
-**Notification preference hierarchy** (most specific wins): automation > home > global > defaults (push=on, email=off). UI shows 2 toggles only (Push + Email). Relay alert is always on.
-
-**Rate limits:** 30 push/hr per automation, 200 push/day per user, 5 email/hr per automation, 50 email/day per user.
+**Rate limits:** 30 push/hr per automation, 200 push/day per user.
 
 **Bridge methods:** `notification.show`, `notification.requestPermission`, `notification.getAPNsToken`
 
