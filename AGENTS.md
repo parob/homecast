@@ -111,7 +111,7 @@ Mac app connects as MQTT client to user-configured broker(s). Per-home, stored i
 
 Managed broker at `mqtt.homecast.cloud` (EMQX on GCE). Per-home `mqtt_enabled` toggle. Auth via API access token as MQTT password (username blank). Custom brokers stored in DB via GraphQL.
 
-MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer. Each row shows an accessory-type icon + live values; expanding a row renders the real Dashboard `AccessoryWidget` (via `mqtt-browser/widget-adapter.ts`, which builds a synthetic HomeKitAccessory from the flat MQTT payload) alongside a live JSON editor. Auto-connects via cross-subdomain cookie.
+MQTT Browser at `mqtt.homecast.cloud` — real-time topic viewer with a master–detail split: a home → room → group → accessory tree on the left (group members nest under an always-available chevron, independent of selection), and an inspector for the selected topic — the real Dashboard `AccessoryWidget` (via `mqtt-browser/widget-adapter.ts`, which builds a synthetic HomeKitAccessory from the flat MQTT payload) plus a live JSON editor. The inspector is a sticky right pane on desktop (hidden when nothing is selected; ✕/Esc deselects) and a bottom drawer on mobile. Auto-connects via cross-subdomain cookie.
 
 **Dev mode:** append `?mock=1` (e.g. `http://localhost:8081/mqtt?mock=1`) to seed realistic fake topics (light/fan/thermostat/lock/sensor/group across two homes) — no broker, login, or relay needed. Publishes mutate local state so controls are interactive offline.
 
@@ -190,7 +190,9 @@ Messages use this JSON format:
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
 | `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`; `?mock=1` dev mode) |
 | `app-web/src/pages/mqtt-browser/widget-adapter.ts` | MQTT payload ↔ synthetic HomeKitAccessory (drives the real widgets in the browser) |
-| `app-web/src/pages/mqtt-browser/InlineRowControls.tsx` | Accessory-type icon for MQTT browser rows |
+| `app-web/src/pages/mqtt-browser/topic-tree.ts` | Pure home/room/group tree builder + slug→topic resolution (unit-tested) |
+| `app-web/src/pages/mqtt-browser/TreePane.tsx` | MQTT browser tree pane (home/room/group sections, `TreeRow.tsx` rows) |
+| `app-web/src/pages/mqtt-browser/InspectorPanel.tsx` | Selected-topic inspector (widget + publish editor; pane/sheet variants) |
 | `app-web/src/components/settings/HomeDetailView.tsx` | Per-home MQTT broker toggle + custom brokers |
 
 ## Advanced Automation Engine
