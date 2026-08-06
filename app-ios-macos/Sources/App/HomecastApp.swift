@@ -162,8 +162,11 @@ struct HomecastApp: App {
 struct RootView: View {
     var body: some View {
         #if targetEnvironment(macCatalyst)
+        // No minimum here: the window's own sizeRestrictions (AppDelegate,
+        // 480x400) are the floor. Asking for a taller minimum than the window
+        // allows made SwiftUI centre the overflow, so between 400 and 600pt of
+        // window height the top of the page — header, menus — was clipped off.
         ContentView()
-            .frame(minWidth: 400, minHeight: 600)
             .ignoresSafeArea()
         #else
         ContentView()
