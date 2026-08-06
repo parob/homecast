@@ -286,6 +286,17 @@ enum CharacteristicMapper {
 
         // Battery
         "battery": HMCharacteristicTypeBatteryLevel,
+
+        // Virtual (engine-owned) accessories. These are not HomeKit types —
+        // HomeKit has no enum, no countdown and no free text — so they map to
+        // their own characteristic names rather than an HMCharacteristicType.
+        // A boolean helper needs no entry: it already rides on power_state.
+        "number": "virtual_number",
+        "count": "virtual_count",
+        "mode": "virtual_mode",
+        "timer": "virtual_timer",
+        "text": "virtual_text",
+        "datetime": "virtual_datetime",
     ]
 
     /// Reverse map: HomeKit type UUID → simple name (built lazily)
