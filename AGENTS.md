@@ -97,11 +97,19 @@ homecast/{home}/{room}/{accessory}/availability # "online" or "offline"
 homecast/{home}/{room}/{group}                  # service group state
 homecast/{home}/{room}/{group}/set              # control all devices in group
 homecast/{home}/{room}/{group}/members          # JSON array of member accessory slugs
+homecast/{home}/{accessory}                     # accessory that belongs to the home, not a room
+homecast/{home}/{accessory}/set                 # ... and its command topic, one level up too
 homecast/{home}/status                          # home online/offline (LWT)
 homeassistant/{component}/homecast_{id}/config  # HA auto-discovery
 ```
 
 Slugs: `{name}-{first 4 hex of UUID}` (e.g., `county-hall-2d10`, `kitchen-dfee`).
+
+An accessory with no room publishes directly under the home rather than inside a
+room segment — a virtual accessory (engine-owned, roomless by design) or one in
+HomeKit's default room, which `home.rooms` does not enumerate. Roomless service
+groups already used that shape. Both bridges subscribe at both depths, and the
+MQTT browser renders home-level rows above the rooms.
 
 ### Community Mode
 

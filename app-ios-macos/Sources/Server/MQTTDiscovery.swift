@@ -39,10 +39,17 @@ struct MQTTDiscovery {
 
     /// Generate HA discovery configs for an accessory.
     /// Returns array of (topic, payload) tuples to publish as retained messages.
+    ///
+    /// State topics are the accessory's base topic, following the
+    /// Zigbee2MQTT convention Homecast publishes under: the base topic carries
+    /// state and `/set` carries commands. These pointed at a `{base}/state`
+    /// topic that the bridge has never published to, so every discovered entity
+    /// sat permanently unknown in Home Assistant.
     func generateConfigs(
         accessory: [String: Any],
         topicPrefix: String,
-        topicPath: String,          // e.g. "beach-house-a7f2/room/living-room/desk-lamp"
+        topicPath: String,          // "beach-house-a7f2/living-room-c31a/desk-lamp-77b0",
+                                    // or "beach-house-a7f2/desk-lamp-77b0" with no room
         discoveryPrefix: String     // e.g. "homeassistant"
     ) -> [(topic: String, payload: Data)] {
         guard let accId = accessory["id"] as? String,
@@ -66,7 +73,7 @@ struct MQTTDiscovery {
         var config: [String: Any] = [
             "name": accName,
             "unique_id": nodeId,
-            "state_topic": "\(topicPrefix)/\(topicPath)/state",
+            "state_topic": "\(topicPrefix)/\(topicPath)",
             "availability_topic": "\(topicPrefix)/\(topicPath)/availability",
             "payload_available": "online",
             "payload_not_available": "offline",
@@ -132,7 +139,7 @@ struct MQTTDiscovery {
 
         case "cover":
             config["command_topic"] = "\(topicPrefix)/\(topicPath)/set"
-            config["position_topic"] = "\(topicPrefix)/\(topicPath)/state"
+            config["position_topic"] = "\(topicPrefix)/\(topicPath)"
             config["set_position_topic"] = "\(topicPrefix)/\(topicPath)/set"
             config["position_template"] = "{{ value_json.position }}"
             config["set_position_template"] = "{\"target\":{{ position }}}"
@@ -144,9 +151,9 @@ struct MQTTDiscovery {
 
         case "climate":
             config["temperature_command_topic"] = "\(topicPrefix)/\(topicPath)/set"
-            config["current_temperature_topic"] = "\(topicPrefix)/\(topicPath)/state"
+            config["current_temperature_topic"] = "\(topicPrefix)/\(topicPath)"
             config["current_temperature_template"] = "{{ value_json.current_temp }}"
-            config["temperature_state_topic"] = "\(topicPrefix)/\(topicPath)/state"
+            config["temperature_state_topic"] = "\(topicPrefix)/\(topicPath)"
             config["temperature_state_template"] = "{{ value_json.heat_target | default(value_json.cool_target, true) }}"
 
         case "binary_sensor":
@@ -191,7 +198,7 @@ struct MQTTDiscovery {
 
         case "alarm_control_panel":
             config["command_topic"] = "\(topicPrefix)/\(topicPath)/set"
-            config["state_topic"] = "\(topicPrefix)/\(topicPath)/state"
+            config["state_topic"] = "\(topicPrefix)/\(topicPath)"
             config["value_template"] = "{{ value_json.alarm_state }}"
             config["command_template"] = "{\"alarm_target\":\"{{ action }}\"}"
 

@@ -274,6 +274,7 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         // Subscribe to command topics for this home's slug
         if let homeSlug = homeSlugs[homeId] {
             client.subscribe(topic: "\(prefix)/\(homeSlug)/+/+/set")
+            client.subscribe(topic: "\(prefix)/\(homeSlug)/+/set")
             client.subscribe(topic: "\(prefix)/\(homeSlug)/scene/+/execute")
         }
         NSLog("[MQTTBridge] Broker '%@' connected, subscribed to commands", config.name)
@@ -288,20 +289,45 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
 
     // MARK: - Slug Map Building
 
+    /// Prelude injected before every HomeKit query this bridge makes.
+    ///
+    /// `__homecast_relay_action` is the web app's own action executor — the one
+    /// the WebSocket, REST and MCP paths all go through. It returns the same
+    /// accessories those surfaces see, which includes the engine-owned helper
+    /// accessories that `window.homekit` (the raw native bridge, a layer below)
+    /// knows nothing about. It falls back to `window.homekit` so an older
+    /// bundle still publishes HomeKit's own accessories.
+    ///
+    /// The two differ in shape — the executor wraps its list in a named key,
+    /// the native bridge returns the bare array — so unwrapping happens here,
+    /// once, rather than at each call site.
+    private static let jsListHelper = """
+    window.__hcMqttList = window.__hcMqttList || async function(action, payload, key) {
+        var r = (typeof window.__homecast_relay_action === 'function')
+            ? await window.__homecast_relay_action(action, payload)
+            : await window.homekit.call(action, payload);
+        if (Array.isArray(r)) return r;
+        if (r && Array.isArray(r[key])) return r[key];
+        return [];
+    };
+    """
+
     func buildSlugMap() {
         guard let webView = webView else { return }
 
         let js = """
         (async function() {
             try {
-                const homes = await window.homekit.call('homes.list', {});
+                \(Self.jsListHelper)
+                const homes = await window.__hcMqttList('homes.list', {}, 'homes');
                 const result = [];
                 for (const home of homes) {
-                    const rooms = await window.homekit.call('rooms.list', { homeId: home[0] });
-                    const accessories = await window.homekit.call('accessories.list', { homeId: home[0], includeValues: true });
+                    const rooms = await window.__hcMqttList('rooms.list', { homeId: home.id }, 'rooms');
+                    const accessories = await window.__hcMqttList(
+                        'accessories.list', { homeId: home.id, includeValues: true }, 'accessories');
                     result.push({
-                        id: home[0], name: home[1],
-                        rooms: rooms.map(r => ({ id: r[0], name: r[1] })),
+                        id: home.id, name: home.name,
+                        rooms: rooms.map(r => ({ id: r.id, name: r.name })),
                         accessories: accessories
                     });
                 }
@@ -359,12 +385,17 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
             if let accessories = home["accessories"] as? [[String: Any]] {
                 for accessory in accessories {
                     guard let accId = accessory["id"] as? String,
-                          let accName = accessory["name"] as? String,
-                          let roomId = accessory["roomId"] as? String,
-                          let roomInfo = roomSlugs[roomId] else { continue }
+                          let accName = accessory["name"] as? String else { continue }
+
+                    // An accessory with no room — a helper accessory, or one in
+                    // HomeKit's default room, which `home.rooms` does not list —
+                    // belongs to the home itself, so it publishes directly under
+                    // the home topic. Previously it was dropped from the map
+                    // entirely and never reached MQTT at all.
+                    let roomSlug = (accessory["roomId"] as? String).flatMap { roomSlugs[$0]?.slug }
 
                     let accSlug = makeSlug(name: accName, id: accId)
-                    let path = "\(homeSlug)/\(roomInfo.slug)/\(accSlug)"
+                    let path = roomSlug.map { "\(homeSlug)/\($0)/\(accSlug)" } ?? "\(homeSlug)/\(accSlug)"
                     accessoryMap[path] = accId
                     reverseAccessoryMap[accId] = path
                     accessoryHomeMap[accId] = homeId
@@ -467,7 +498,9 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         let js = """
         (async function() {
             try {
-                const accessories = await window.homekit.call('accessories.list', { homeId: '\(homeId)', includeValues: true });
+                \(Self.jsListHelper)
+                const accessories = await window.__hcMqttList(
+                    'accessories.list', { homeId: '\(homeId)', includeValues: true }, 'accessories');
                 return JSON.stringify(accessories);
             } catch (e) {
                 return JSON.stringify({ error: e.message || String(e) });
@@ -527,7 +560,9 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         let js = """
         (async function() {
             try {
-                const accessories = await window.homekit.call('accessories.list', { homeId: '\(homeId)', includeValues: true });
+                \(Self.jsListHelper)
+                const accessories = await window.__hcMqttList(
+                    'accessories.list', { homeId: '\(homeId)', includeValues: true }, 'accessories');
                 return JSON.stringify(accessories);
             } catch (e) {
                 return JSON.stringify({ error: e.message || String(e) });
@@ -573,8 +608,10 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         let prefix = config.topicPrefix
         let parts = topic.components(separatedBy: "/")
 
-        // {prefix}/{home}/{room}/{accessory}/set
-        if parts.count == 5 && parts[0] == prefix && parts[4] == "set" {
+        // {prefix}/{home}/{room}/{accessory}/set, and the roomless
+        // {prefix}/{home}/{accessory}/set for accessories that publish state
+        // directly under the home.
+        if (parts.count == 5 || parts.count == 4) && parts[0] == prefix && parts[parts.count - 1] == "set" {
             handleSetCommand(topicParts: parts, payload: payload)
         }
         // {prefix}/{home}/scene/{scene}/execute
@@ -584,7 +621,11 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleSetCommand(topicParts: [String], payload: Data) {
-        let path = "\(topicParts[1])/\(topicParts[2])/\(topicParts[3])"
+        // Everything between the topic prefix and the trailing "set" — which is
+        // "{home}/{room}/{accessory}" or, for a home-level accessory,
+        // "{home}/{accessory}". Either way it is exactly the path the publish
+        // side stored in accessoryMap.
+        let path = topicParts[1..<(topicParts.count - 1)].joined(separator: "/")
         guard let accessoryId = accessoryMap[path] else {
             NSLog("[MQTTBridge] Unknown accessory path: %@", path)
             return
@@ -626,7 +667,8 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
 
         let js = """
         (async function() {
-            const scenes = await window.homekit.call('scenes.list', { homeId: '\(homeId)' });
+            \(Self.jsListHelper)
+            const scenes = await window.__hcMqttList('scenes.list', { homeId: '\(homeId)' }, 'scenes');
             return JSON.stringify(scenes);
         })();
         """
@@ -636,12 +678,11 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
                 guard let self = self,
                       let jsonString = result as? String,
                       let data = jsonString.data(using: .utf8),
-                      let scenes = try? JSONSerialization.jsonObject(with: data) as? [[Any]] else { return }
+                      let scenes = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
 
                 for scene in scenes {
-                    guard scene.count >= 2,
-                          let sceneId = scene[0] as? String,
-                          let sceneName = scene[1] as? String else { continue }
+                    guard let sceneId = scene["id"] as? String,
+                          let sceneName = scene["name"] as? String else { continue }
 
                     let slug = self.makeSlug(name: sceneName, id: sceneId)
                     if slug == sceneSlug {
