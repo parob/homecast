@@ -400,12 +400,27 @@ class HomeKitManager: NSObject, ObservableObject {
 
     // MARK: - Room Operations
 
+    /// Rooms in a home, including the default room.
+    ///
+    /// `home.rooms` deliberately excludes `roomForEntireHome()`, but accessories
+    /// assigned to it still report its identifier as their `roomId`. Every
+    /// caller joins accessories to rooms on that id, so leaving it out left
+    /// those accessories pointing at a room nobody could resolve: they showed as
+    /// "Unknown Room" in REST and got hoisted to the home's top level in MQTT.
+    /// It is a real room with a real name — Apple just keeps it out of the list.
+    ///
+    /// Appended last so the user's own rooms keep their existing order.
     func listRooms(homeId: String) throws -> [RoomModel] {
         guard let uuid = UUID(uuidString: homeId),
               let home = homes.first(where: { $0.uniqueIdentifier == uuid }) else {
             throw HomeKitError.homeNotFound(homeId)
         }
-        return home.rooms.map { RoomModel(from: $0) }
+        var rooms = home.rooms.map { RoomModel(from: $0) }
+        let defaultRoom = home.roomForEntireHome()
+        if !rooms.contains(where: { $0.id == defaultRoom.uniqueIdentifier.uuidString }) {
+            rooms.append(RoomModel(from: defaultRoom))
+        }
+        return rooms
     }
 
     /// Create a room. Needs no accessory — used for the Homecast enrollment
