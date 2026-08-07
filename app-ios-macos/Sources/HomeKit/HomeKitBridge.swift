@@ -479,7 +479,8 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             [
                 "id": room.id,
                 "name": room.name,
-                "accessoryCount": room.accessoryCount
+                "accessoryCount": room.accessoryCount,
+                "isDefault": room.isDefault
             ]
         }
     }

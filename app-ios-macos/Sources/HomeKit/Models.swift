@@ -99,18 +99,25 @@ struct RoomModel: Codable {
     let id: String
     let name: String
     let accessoryCount: Int
+    /// True for `roomForEntireHome()`. Consumers that address a room by a
+    /// stable name need to know which one it is: its HomeKit name is
+    /// localized, and a slug derived from its id churns on a UUID rotation.
+    /// MQTT publishes it as `default` on the strength of this flag.
+    let isDefault: Bool
 
-    init(from room: HMRoom) {
+    init(from room: HMRoom, isDefault: Bool = false) {
         self.id = room.uniqueIdentifier.uuidString
         self.name = room.name
         self.accessoryCount = room.accessories.count
+        self.isDefault = isDefault
     }
 
     func toJSON() -> JSONValue {
         .object([
             "id": .string(id),
             "name": .string(name),
-            "accessoryCount": .int(accessoryCount)
+            "accessoryCount": .int(accessoryCount),
+            "isDefault": .bool(isDefault)
         ])
     }
 }

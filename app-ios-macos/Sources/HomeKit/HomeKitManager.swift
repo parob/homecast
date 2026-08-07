@@ -418,7 +418,7 @@ class HomeKitManager: NSObject, ObservableObject {
         var rooms = home.rooms.map { RoomModel(from: $0) }
         let defaultRoom = home.roomForEntireHome()
         if !rooms.contains(where: { $0.id == defaultRoom.uniqueIdentifier.uuidString }) {
-            rooms.append(RoomModel(from: defaultRoom))
+            rooms.append(RoomModel(from: defaultRoom, isDefault: true))
         }
         return rooms
     }
