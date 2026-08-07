@@ -261,7 +261,7 @@ Output schemas are defined in `NODE_OUTPUT_SCHEMAS` in `constants.ts`.
 | Webhook | trigger | `webhook` | HTTP webhook trigger |
 | Set Device | action | `set_characteristic` | Control a device |
 | Run Scene | action | `execute_scene` | Execute HomeKit scene |
-| Set Virtual Accessory | action | `virtual` | Change a virtual accessory (mode, switch, counter, timer) |
+| Set Virtual Accessory | action | `virtual` | Change a virtual accessory (switch, mode, counter, timer, number, text, date) |
 | Delay | action | `delay` | Wait for duration |
 | Notify | action | `notify` | Push/email/local notification (with action buttons) |
 | HTTP Request | action | `fire_webhook` | HTTP request (response captured as output) |
