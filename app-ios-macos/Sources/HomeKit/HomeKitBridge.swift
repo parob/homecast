@@ -31,6 +31,36 @@ final class BridgeLoad {
         completed &+= 1
     }
 
+    /// Methods that legitimately sit unanswered because they are waiting on a
+    /// person rather than a device — a system permission prompt has no deadline.
+    /// They still count towards the load figure, but they must never be read as
+    /// a wedged bridge, or the watchdog would reload the page out from under
+    /// someone in the middle of answering a prompt.
+    private static let userBlockingMethods: Set<String> = ["notification.requestPermission"]
+
+    /// The oldest in-flight call that could indicate a wedged bridge, if any.
+    ///
+    /// A pure read: unlike `snapshot()` it has no side effects, so the watchdog
+    /// can poll it every tick without disturbing the calls-per-minute window.
+    func oldestWedgeable(now: Date = Date()) -> (method: String, seconds: TimeInterval)? {
+        guard let oldest = inFlight.values
+            .filter({ !BridgeLoad.userBlockingMethods.contains($0.method) })
+            .min(by: { $0.started < $1.started })
+        else { return nil }
+        return (oldest.method, now.timeIntervalSince(oldest.started))
+    }
+
+    /// Forget everything in flight.
+    ///
+    /// Called when the page is torn down: those calls would answer into a
+    /// WebView that no longer exists, so carrying their age across the reload
+    /// would make the fresh page look wedged from the moment it loads — and the
+    /// watchdog would reload it again, forever. The underlying Swift tasks are
+    /// left alone; they cannot be cancelled, and their results now go nowhere.
+    func abandonInFlight() {
+        inFlight.removeAll()
+    }
+
     /// A snapshot for the watchdog to attach to its report.
     func snapshot() -> [String: String] {
         let now = Date()
