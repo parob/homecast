@@ -541,7 +541,17 @@ class FocusableWebView: WKWebView {
         }
     }
 
-    // Handle Tab key to move between form fields
+    /// Handle Tab key to move between form fields.
+    ///
+    /// Return is deliberately **not** handled here. Swallowing a key means
+    /// WebKit never sees it, so the page gets no `keydown` at all — and the web
+    /// app is full of fields that finish on Enter (a virtual accessory's text
+    /// value, search boxes, dialogs). Those worked in a browser and did nothing
+    /// in this app, which is exactly the shape of a key that never arrived.
+    ///
+    /// Nothing is lost by letting it through: WebKit already clicks a focused
+    /// button on Return and already submits a field's form, which is all the
+    /// interception did, and it does it after the page has had its say.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
 
@@ -562,20 +572,6 @@ class FocusableWebView: WKWebView {
                     if (next >= focusable.length) next = 0;
                     if (current) current.blur();
                     if (focusable[next]) setTimeout(function() { focusable[next].focus(); }, 0);
-                })();
-                """
-                evaluateJavaScript(js, completionHandler: nil)
-                handled = true
-            } else if key.keyCode == .keyboardReturnOrEnter {
-                // Enter key - submit form or click button
-                let js = """
-                (function() {
-                    var el = document.activeElement;
-                    if (el.tagName === 'BUTTON' || el.type === 'submit') {
-                        el.click();
-                    } else if (el.form) {
-                        el.form.requestSubmit();
-                    }
                 })();
                 """
                 evaluateJavaScript(js, completionHandler: nil)
@@ -1268,18 +1264,47 @@ struct WebViewContainer: UIViewRepresentable {
         /// coming back and looping only guarantees nothing ever runs.
         private static let maxConsecutiveReloads = 3
 
-        /// Watch the WebView for the state where it is connected but not working.
+        /// A native call outstanding this long means the bridge has stopped
+        /// answering, not that a device is slow.
+        ///
+        /// Comfortably past everything with a real ceiling: Swift bounds a
+        /// characteristic write at 10s, the web app bounds any bridge call at
+        /// 20s, and the cloud gives up on a request at 30s. Anything still in
+        /// flight past 45s is not late, it is gone.
+        private static let bridgeWedgeSeconds: TimeInterval = 45
+        private var bridgeReloads = 0
+        /// Set once we stop reloading for a wedged bridge, so the give-up notice
+        /// is logged once rather than every tick.
+        private var bridgeGaveUp = false
+
+        /// Consecutive liveness checks skipped because the main thread was
+        /// stalled. Deferring is meant to ride out a momentary stall.
+        private var stallDeferrals = 0
+        private static let maxStallDeferrals = 3
+
+        /// Watch for the state where the relay is connected but not working.
         ///
         /// The relay's cloud WebSocket is handled natively, so the socket stays up
-        /// and heartbeats keep flowing even when the page behind it has stopped
-        /// executing. The server therefore sees a healthy relay while every
-        /// request it forwards times out — observed in production for minutes at a
-        /// stretch, with reads and writes failing alike and only an app restart
-        /// clearing it. Remote reload cannot help, because that command is itself
-        /// JavaScript.
+        /// and heartbeats keep flowing regardless of what has gone wrong above it.
+        /// The server therefore sees a healthy relay while every request it
+        /// forwards times out — observed in production for minutes at a stretch,
+        /// with reads and writes failing alike.
         ///
-        /// So ask the page a question only a running page can answer, and reload
-        /// it natively when it stops answering.
+        /// There are two ways to reach that state and they need different tests:
+        ///
+        /// - **The page stopped executing.** Ask it a question only a running page
+        ///   can answer (`evaluateJavaScript`), and reload when it stops answering.
+        ///
+        /// - **The page is fine but the bridge beneath it stopped answering.** The
+        ///   JS probe cannot see this — it comes back instantly, because JavaScript
+        ///   is not what broke. The 2026-08-09 occurrence was this one: pure-JS
+        ///   actions replied in 32ms for the whole twelve-minute outage while every
+        ///   HomeKit-backed action timed out. So also ask `BridgeLoad` how long its
+        ///   oldest native call has been outstanding.
+        ///
+        /// Reloading is the cure for both, and it works remotely too — `app.reload`
+        /// cleared the bridge fault twice in production, answering in ~32ms and
+        /// restoring service about three seconds later.
         func beginLivenessWatch() {
             startLivenessWatchdog()
             startStallDetector()
@@ -1311,6 +1336,20 @@ struct WebViewContainer: UIViewRepresentable {
         private func checkWebViewLiveness() {
             guard let webView = webView else { return }
 
+            // Check the bridge before the page. The page can be executing
+            // perfectly while the native bridge underneath it has stopped
+            // answering — observed in production, with pure-JS actions replying
+            // in 32ms while every HomeKit-backed one timed out for twelve
+            // minutes. The JS probe below is blind to that by construction: it
+            // asks whether JavaScript runs, and JavaScript was never what broke.
+            if let wedged = BridgeLoad.shared.oldestWedgeable(),
+               wedged.seconds >= Coordinator.bridgeWedgeSeconds {
+                reloadForWedgedBridge(webView, method: wedged.method, seconds: wedged.seconds)
+                return
+            }
+            bridgeReloads = 0
+            bridgeGaveUp = false
+
             // A probe is already outstanding: if it has been too long, the page is
             // stuck. Reload rather than pile up more probes.
             if let since = livenessOutstandingSince {
@@ -1323,10 +1362,22 @@ struct WebViewContainer: UIViewRepresentable {
                     // thread too — and would destroy in-flight work for nothing.
                     // Report it and leave the page alone.
                     if recentStallSeconds() >= Coordinator.livenessTimeoutSeconds * 0.5 {
-                        Log.warning("WebView probe unanswered, but the main thread was stalled — not reloading",
-                                    category: "watchdog",
-                                    metadata: bridgeAndStallMetadata())
-                        return
+                        stallDeferrals += 1
+                        if stallDeferrals <= Coordinator.maxStallDeferrals {
+                            Log.warning("WebView probe unanswered, but the main thread was stalled — not reloading (\(stallDeferrals)/\(Coordinator.maxStallDeferrals))",
+                                        category: "watchdog",
+                                        metadata: bridgeAndStallMetadata())
+                            return
+                        }
+
+                        // Deferring was meant to ride out a momentary stall. A
+                        // main thread that is still stalling several windows
+                        // later is not momentary, and holding off indefinitely
+                        // leaves the relay dead — the exact outcome the deferral
+                        // was there to avoid. Fall through and reload.
+                        Log.error("WebView probe unanswered through \(Coordinator.maxStallDeferrals) main-thread stalls — reloading anyway",
+                                  category: "watchdog",
+                                  metadata: bridgeAndStallMetadata())
                     }
 
                     // Reloading has not helped: stop rather than loop forever.
@@ -1359,7 +1410,48 @@ struct WebViewContainer: UIViewRepresentable {
                 self.livenessOutstandingSince = nil
                 // Recovered: only consecutive failures should count towards the cap.
                 self.livenessReloads = 0
+                self.stallDeferrals = 0
             }
+        }
+
+        /// Reload the page because the native bridge stopped answering.
+        ///
+        /// Reloading is the cure we have evidence for: in the two occurrences on
+        /// record the relay started serving again about three seconds after its
+        /// page was reloaded, having served nothing for the twelve minutes before.
+        private func reloadForWedgedBridge(_ webView: WKWebView, method: String, seconds: TimeInterval) {
+            var meta = bridgeAndStallMetadata()
+            meta["wedgedMethod"] = method
+            meta["wedgedSeconds"] = String(format: "%.1f", seconds)
+
+            // Reloading has not helped: stop rather than loop forever. The
+            // watchdog keeps running, so if the bridge frees up on its own the
+            // counter resets and this arms again.
+            guard bridgeReloads < Coordinator.maxConsecutiveReloads else {
+                if !bridgeGaveUp {
+                    bridgeGaveUp = true
+                    Log.error("HomeKit bridge still wedged after \(bridgeReloads) reloads — giving up until it frees or the app is restarted",
+                              category: "watchdog",
+                              metadata: meta)
+                }
+                return
+            }
+
+            bridgeReloads += 1
+            print("[Watchdog] HomeKit bridge wedged on \(method) for \(Int(seconds))s — reloading (count: \(bridgeReloads))")
+            Log.warning("HomeKit bridge wedged — reloading",
+                        category: "watchdog",
+                        metadata: meta)
+
+            // Before the reload, not after: the calls in flight answer into a
+            // page that is about to stop existing, and carrying their age over
+            // would make the new page look wedged on arrival.
+            BridgeLoad.shared.abandonInFlight()
+            // Any probe outstanding against the old page is void. Left set, it
+            // would age past the liveness timeout and earn a second reload for
+            // a page that has already been replaced.
+            livenessOutstandingSince = nil
+            webView.reloadFromOrigin()
         }
 
         @objc private func handleReload() {
