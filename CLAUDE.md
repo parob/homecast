@@ -79,7 +79,7 @@ Your Mac                         LAN / Tunnel          External
 | `DELETE /rest/scenes/:id` | Delete a scene by ID |
 | `POST /rest/scene` | Execute a scene by name (`{home, name}`) |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
-| `POST /mcp` | MCP endpoint (tools: `get_state`, `set_state`, `run_scene`, `create_scene`, `update_scene`, `delete_scene`, `get_automations`, `create_automation`, `update_automation`, `delete_automation`) |
+| `POST /mcp` | MCP endpoint (17 tools). Devices/scenes: `get_state`, `set_state`, `run_scene`, `create_scene`, `update_scene`, `delete_scene`. **HomeKit** automations: `get_automations`, `create_automation`, `update_automation`, `delete_automation`. **Homecast engine** automations: `get_hc_automations`, `create_hc_automation`, `update_hc_automation`, `delete_hc_automation`, `create_virtual_accessory`, `update_virtual_accessory`, `delete_virtual_accessory` |
 | `WebSocket :5657` | Real-time updates |
 
 `/rest/*` and `/mcp` are handled by JS (`local-rest.ts`, `local-mcp.ts`) via the Swift→JS bridge. `/health` and `/config.json` are served directly by `LocalHTTPServer.swift` (they respond before the web app is loaded) and return `{mode, version, port, wsPort, mqtt}`.
@@ -192,7 +192,9 @@ Messages use this JSON format:
 | `app-web/src/server/local-db.ts` | IndexedDB persistence layer |
 | `app-web/src/server/local-auth.ts` | Local authentication (PBKDF2 + JWT) |
 | `app-web/src/server/local-rest.ts` | REST API endpoints |
-| `app-web/src/server/local-mcp.ts` | MCP endpoint |
+| `app-web/src/server/local-mcp.ts` | MCP endpoint (tool defs for both automation engines) |
+| `app-web/src/server/local-automations.ts` | HomeKit-native automation MCP handlers |
+| `app-web/src/server/local-hc-automations.ts` | Homecast-engine automation + virtual accessory MCP handlers |
 | `app-web/src/server/local-broadcast.ts` | Event broadcasting to clients |
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
