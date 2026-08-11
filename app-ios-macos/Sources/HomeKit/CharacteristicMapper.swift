@@ -121,6 +121,24 @@ enum CharacteristicMapper {
         "smoke_detected": HMCharacteristicTypeSmokeDetected,
         "carbon_monoxide_detected": HMCharacteristicTypeCarbonMonoxideDetected,
         "carbon_dioxide_detected": HMCharacteristicTypeCarbonDioxideDetected,
+        // Environment sensors. These were missing entirely, and
+        // fromHomeKitType's fallback returns the raw UUID unchanged (the
+        // constants are dotless UUID strings, so components(separatedBy:)
+        // is a no-op) — every lux/air-quality/leak/door event reached
+        // clients named by UUID, which no profile, widget, or automation
+        // could match. History made the gap visible: four allow-listed
+        // characteristic types could never be delivered.
+        "current_ambient_light_level": "0000006B-0000-1000-8000-0026BB765291",
+        "air_quality": "00000095-0000-1000-8000-0026BB765291",
+        "leak_detected": "00000070-0000-1000-8000-0026BB765291",
+        "current_door_state": "0000000E-0000-1000-8000-0026BB765291",
+        "carbon_monoxide_level": "00000090-0000-1000-8000-0026BB765291",
+        "carbon_monoxide_peak_level": "00000091-0000-1000-8000-0026BB765291",
+        "carbon_dioxide_level": "00000093-0000-1000-8000-0026BB765291",
+        "carbon_dioxide_peak_level": "00000094-0000-1000-8000-0026BB765291",
+        "pm2_5_density": "000000C6-0000-1000-8000-0026BB765291",
+        "pm10_density": "000000C7-0000-1000-8000-0026BB765291",
+        "voc_density": "000000C8-0000-1000-8000-0026BB765291",
 
         // Battery
         "battery_level": HMCharacteristicTypeBatteryLevel,
@@ -162,7 +180,10 @@ enum CharacteristicMapper {
         "firmware_revision": "00000052-0000-1000-8000-0026BB765291",
         "hardware_revision": HMCharacteristicTypeHardwareVersion,
         "configured_name": "000000E3-0000-1000-8000-0026BB765291",
-        "label_index": "00000090-0000-1000-8000-0026BB765291",
+        // 0xCB is ServiceLabelIndex. This previously said 0x90 — which is
+        // CarbonMonoxideLevel — so CO sensors' ppm readings were serialised
+        // as "label_index" in every dump and event.
+        "label_index": "000000CB-0000-1000-8000-0026BB765291",
         "label_namespace": "000000CD-0000-1000-8000-0026BB765291",
         "version": "00000037-0000-1000-8000-0026BB765291",
         "accessory_flags": "000000A6-0000-1000-8000-0026BB765291",
@@ -390,6 +411,12 @@ enum CharacteristicMapper {
         // Explicit canonical preferences where the alphabetic winner isn't what
         // we want downstream. Keep this list short — only entries with aliases.
         map[HMCharacteristicTypePowerState] = "power_state"
+        // E863F10D has two aliases and the alphabetic winner was
+        // eve_current_consumption — a name nothing downstream knows, so Eve
+        // plugs' wattage never matched the eve_energy_watt history profile.
+        // (E863F10C's alphabetic winner, eve_energy_kwh, is already the
+        // canonical name — no pin needed.)
+        map["E863F10D-079E-48FF-8F27-9C2605A29F52"] = "eve_energy_watt"
         return map
     }()
 
