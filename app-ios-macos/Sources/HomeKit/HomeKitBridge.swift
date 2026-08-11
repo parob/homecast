@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// How much work the native HomeKit bridge is carrying, and for how long.
 ///
@@ -479,6 +482,30 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
 
         case "notification.getAPNsToken":
             return ["token": NotificationManager.shared.apnsToken as Any]
+
+        // File export. A blob download from an <a download> silently does
+        // nothing in WKWebView unless the host implements WKDownloadDelegate,
+        // which is why Export CSV appeared broken in the app. The web app
+        // probes file.canSave and routes here when it answers yes.
+        case "file.canSave":
+            #if canImport(UIKit)
+            return ["canSave": true]
+            #else
+            return ["canSave": false]
+            #endif
+
+        case "file.save":
+            #if canImport(UIKit)
+            guard let filename = payload["filename"] as? String else {
+                throw HomeKitBridgeError.missingParameter("filename")
+            }
+            guard let contents = payload["contents"] as? String else {
+                throw HomeKitBridgeError.missingParameter("contents")
+            }
+            return try await saveFile(filename: filename, contents: contents)
+            #else
+            throw HomeKitBridgeError.operationFailed("File export is not available here")
+            #endif
 
         default:
             throw HomeKitBridgeError.unknownMethod(method)
@@ -967,6 +994,39 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         }
     }
 
+    #if canImport(UIKit)
+    /// Write text to a temp file and present the system export sheet.
+    ///
+    /// Mac Catalyst has no NSSavePanel, so the document picker in export mode
+    /// is the supported route — it gives the user Downloads, iCloud, anywhere.
+    /// The temp file is the picker's source; the OS copies it to the chosen
+    /// destination.
+    @MainActor
+    private func saveFile(filename: String, contents: String) async throws -> [String: Any] {
+        let safeName = filename
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+                ?? scene.windows.first?.rootViewController else {
+            throw HomeKitBridgeError.operationFailed("No window to present the export sheet")
+        }
+
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        // Presented from whatever is topmost — settings is itself a sheet.
+        var presenter = root
+        while let presented = presenter.presentedViewController { presenter = presented }
+        presenter.present(picker, animated: true)
+        return ["success": true]
+    }
+    #endif
+
     private func getEnvironment() -> [String: Any] {
         if AppConfig.isCommunity {
             return ["environment": "community"]
@@ -1140,9 +1200,12 @@ enum HomeKitBridgeError: LocalizedError {
     case unknownMethod(String)
     case missingParameter(String)
     case invalidPayload
+    case operationFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .operationFailed(let reason):
+            return reason
         case .unknownMethod(let method):
             return "Unknown method: \(method)"
         case .missingParameter(let param):
@@ -1160,6 +1223,8 @@ enum HomeKitBridgeError: LocalizedError {
             return "MISSING_PARAMETER"
         case .invalidPayload:
             return "INVALID_PAYLOAD"
+        case .operationFailed:
+            return "OPERATION_FAILED"
         }
     }
 }
