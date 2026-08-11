@@ -1872,8 +1872,33 @@ extension HomeKitManager: HMHomeManagerDelegate {
         }
     }
 
+    /// Every characteristic history is allowed to record. A type that is not
+    /// subscribed here gets no HAP notification and no periodic re-read, so it
+    /// only ever changes on a full accessory reload — which is why a Nest
+    /// Protect reported its low-battery flag (in this set) and never its smoke
+    /// or CO state (not). Derived from the mapper by name so the two cannot
+    /// drift; app-web's swift-key-chars pin fails if a profiled type is
+    /// missing from it.
+    private static let historyBackedTypes: [String] = [
+        "smoke_detected", "carbon_monoxide_detected", "carbon_dioxide_detected",
+        "leak_detected", "obstruction_detected",
+        "current_ambient_light_level", "air_quality",
+        "carbon_monoxide_level", "carbon_monoxide_peak_level",
+        "carbon_dioxide_level", "carbon_dioxide_peak_level",
+        "pm2_5_density", "pm10_density", "voc_density",
+        "lock_current_state", "security_system_current_state", "security_system_target_state",
+        "current_heater_cooler_state", "current_humidifier_dehumidifier_state",
+        "current_fan_state", "current_air_purifier_state",
+        "water_level", "charging_state", "mute", "volume",
+        "current_tilt_angle", "eve_air_pressure",
+        "eve_energy_watt", "eve_energy_kwh", "eve_voltage", "eve_ampere",
+    ]
+
     /// Important characteristic types to refresh (controls and sensors, not info)
-    private static let keyCharacteristicTypes: Set<String> = [
+    private static let keyCharacteristicTypes: Set<String> = Set(baseKeyCharacteristicTypes)
+        .union(historyBackedTypes.map { CharacteristicMapper.toHomeKitType($0) })
+
+    private static let baseKeyCharacteristicTypes: [String] = [
         HMCharacteristicTypePowerState,
         HMCharacteristicTypeBrightness,
         HMCharacteristicTypeHue,
