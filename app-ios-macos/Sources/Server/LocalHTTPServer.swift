@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 import Network
 
@@ -401,7 +402,8 @@ class LocalHTTPServer {
 
         // Static file serving
         if method == "GET" {
-            serveStaticFile(path: path, on: connection)
+            let acceptsGzip = (headers["accept-encoding"] ?? "").lowercased().contains("gzip")
+            serveStaticFile(path: path, on: connection, acceptsGzip: acceptsGzip)
             return
         }
 
@@ -410,7 +412,7 @@ class LocalHTTPServer {
 
     // MARK: - Static File Serving
 
-    private func serveStaticFile(path: String, on connection: NWConnection) {
+    private func serveStaticFile(path: String, on connection: NWConnection, acceptsGzip: Bool = false) {
         guard let webDistPath = webDistPath else {
             sendResponse(on: connection, status: 503, body: "Web app not bundled")
             return
@@ -432,14 +434,14 @@ class LocalHTTPServer {
 
         if fileManager.fileExists(atPath: filePath) {
             // Serve the file
-            serveFile(atPath: filePath, on: connection)
+            serveFile(atPath: filePath, on: connection, acceptsGzip: acceptsGzip)
         } else {
             // SPA fallback: serve index.html for routes without file extensions
             let ext = (sanitized as NSString).pathExtension
             if ext.isEmpty {
                 let indexPath = webDistPath + "/index.html"
                 if fileManager.fileExists(atPath: indexPath) {
-                    serveFile(atPath: indexPath, on: connection)
+                    serveFile(atPath: indexPath, on: connection, acceptsGzip: acceptsGzip)
                 } else {
                     sendResponse(on: connection, status: 404, body: "Not Found")
                 }
@@ -449,7 +451,7 @@ class LocalHTTPServer {
         }
     }
 
-    private func serveFile(atPath path: String, on connection: NWConnection) {
+    private func serveFile(atPath path: String, on connection: NWConnection, acceptsGzip: Bool = false) {
         guard var data = FileManager.default.contents(atPath: path) else {
             sendResponse(on: connection, status: 500, body: "Internal Server Error")
             return
@@ -468,13 +470,43 @@ class LocalHTTPServer {
             }
         }
 
+        // Vite content-hashes everything under /assets/, so those URLs are
+        // immutable and can be cached hard. Only index.html must stay fresh —
+        // it is what points at the current hashes. Previously js was no-cache
+        // too, so every launch re-read the whole bundle.
+        let isHashedAsset = path.contains("/assets/") && ext != "html"
+        let cacheControl: String
+        if ext == "html" {
+            cacheControl = "no-cache"
+        } else if isHashedAsset {
+            cacheControl = "public, max-age=31536000, immutable"
+        } else {
+            cacheControl = "public, max-age=3600"
+        }
+
+        // Compress text-ish payloads. The Mac's own WKWebView barely notices
+        // (loopback), but every LAN client — the phone or browser this mode
+        // exists to serve — was pulling the bundle uncompressed over WiFi.
+        // Images/fonts are already compressed, so skip them.
+        var contentEncoding: String? = nil
+        if acceptsGzip, Self.compressibleExtensions.contains(ext), data.count >= 1024,
+           let gzipped = Self.gzip(data) {
+            data = gzipped
+            contentEncoding = "gzip"
+        }
+
         // Build HTTP response
         var headerLines = [
             "HTTP/1.1 200 OK",
             "Content-Type: \(contentType)",
             "Content-Length: \(data.count)",
-            "Cache-Control: \(ext == "html" || ext == "js" ? "no-cache" : "public, max-age=3600")",
+            "Cache-Control: \(cacheControl)",
         ]
+        if let contentEncoding = contentEncoding {
+            headerLines.append("Content-Encoding: \(contentEncoding)")
+            // Caches must not hand a gzipped body to a client that didn't ask.
+            headerLines.append("Vary: Accept-Encoding")
+        }
         headerLines.append(contentsOf: corsHeaders().map { "\($0.key): \($0.value)" })
         headerLines.append("Connection: close")
         headerLines.append("")
@@ -490,6 +522,58 @@ class LocalHTTPServer {
             }
             connection.cancel()
         })
+    }
+
+    // MARK: - gzip
+
+    /// Extensions worth compressing. Everything else on disk (png/jpg/woff2/…)
+    /// is already compressed and would only get bigger.
+    private static let compressibleExtensions: Set<String> = [
+        "html", "js", "css", "json", "svg", "txt", "xml", "map",
+    ]
+
+    /// CRC-32 (IEEE), needed for the gzip trailer.
+    private static let crcTable: [UInt32] = (0..<256).map { i -> UInt32 in
+        var c = UInt32(i)
+        for _ in 0..<8 {
+            c = (c & 1) != 0 ? (0xEDB8_8320 ^ (c >> 1)) : (c >> 1)
+        }
+        return c
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var c: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            c = crcTable[Int((c ^ UInt32(byte)) & 0xFF)] ^ (c >> 8)
+        }
+        return c ^ 0xFFFF_FFFF
+    }
+
+    /// Wrap raw DEFLATE (which is what COMPRESSION_ZLIB emits here) in a gzip
+    /// container: 10-byte header, payload, then CRC32 and ISIZE little-endian.
+    /// Returns nil if compression fails or doesn't actually save anything.
+    private static func gzip(_ data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+
+        let capacity = data.count + 64
+        let destination = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+        defer { destination.deallocate() }
+
+        let compressedSize: Int = data.withUnsafeBytes { raw -> Int in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+            return compression_encode_buffer(destination, capacity, base, data.count, nil, COMPRESSION_ZLIB)
+        }
+        guard compressedSize > 0 else { return nil }
+
+        var out = Data([0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF])
+        out.append(destination, count: compressedSize)
+
+        var crc = crc32(data).littleEndian
+        withUnsafeBytes(of: &crc) { out.append(contentsOf: $0) }
+        var size = UInt32(truncatingIfNeeded: data.count).littleEndian
+        withUnsafeBytes(of: &size) { out.append(contentsOf: $0) }
+
+        return out.count < data.count ? out : nil
     }
 
     // MARK: - WebSocket (NWProtocolWebSocket)
