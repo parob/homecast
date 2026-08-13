@@ -42,5 +42,21 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Defaults FCM applies when a message doesn't name a channel or icon.
+             Without the icon, Android falls back to the launcher icon, which it
+             then flattens by alpha — a full-bleed launcher icon renders as a
+             solid white square in the status bar. ic_stat_homecast is the mark
+             as a white silhouette on transparent, which is the only shape
+             Android can tint correctly. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="homecast_default" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_homecast" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/homecast_notification" />
     </application>
 </manifest>

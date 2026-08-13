@@ -9,6 +9,7 @@ import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.view.WindowInsetsController
+import org.json.JSONObject
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -18,11 +19,50 @@ class MainActivity : TauriActivity() {
 
     private var webViewRef: WebView? = null
     @Volatile private var homeUrl: String? = null
+    /** Notification payload waiting for the web app to come up and collect it. */
+    @Volatile private var pendingPushOpen: String? = null
     private val permissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
         evalJs("window.__homecastOnPushPermission && window.__homecastOnPushPermission($granted)")
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        HomecastNotifications.ensureChannel(this)
+        // Cold start from a notification tap: the WebView doesn't exist yet and
+        // React is nowhere near mounted, so stash the payload for the web app to
+        // collect via consumePendingPushOpen() once it is ready.
+        capturePushOpen(intent)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // launchMode is singleTask, so a tap while the app is already running
+        // arrives here rather than through onCreate.
+        setIntent(intent)
+        capturePushOpen(intent)
+        pendingPushOpen?.let { payload ->
+            evalJs("window.__homecastOnPushOpen && window.__homecastOnPushOpen($payload)")
+            pendingPushOpen = null
+        }
+    }
+
+    /** Pull the notification's data payload off the launch intent, if any. */
+    private fun capturePushOpen(intent: android.content.Intent?) {
+        val extras = intent?.extras ?: return
+        val json = JSONObject()
+        for (key in extras.keySet()) {
+            // FCM's own plumbing rides along on the same extras; it is noise to
+            // the web app and must not be mistaken for automation payload.
+            if (key.startsWith("google.") || key.startsWith("gcm.") ||
+                key == "from" || key == "collapse_key" || key == "message_type"
+            ) continue
+            val value = extras.get(key)
+            if (value is String) json.put(key, value)
+        }
+        if (json.length() > 0) pendingPushOpen = json.toString()
     }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -165,6 +205,20 @@ class MainActivity : TauriActivity() {
 
         @JavascriptInterface
         fun deviceModel(): String = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+        /**
+         * The payload of the notification this launch came from, or null.
+         *
+         * Read-and-clear, and a pull rather than a push, because a cold start
+         * races the WebView and the React mount — the same reason
+         * getCachedFcmToken() exists.
+         */
+        @JavascriptInterface
+        fun consumePendingPushOpen(): String? {
+            val payload = pendingPushOpen
+            pendingPushOpen = null
+            return payload
+        }
     }
 
     companion object {

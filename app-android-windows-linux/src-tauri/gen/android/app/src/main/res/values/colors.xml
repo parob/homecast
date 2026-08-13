@@ -8,4 +8,6 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="ic_launcher_background">#FF3478F6</color>
+    <!-- Tint Android applies to the status-bar notification icon and accents. -->
+    <color name="homecast_notification">#FF3478F6</color>
 </resources>

@@ -2,12 +2,18 @@ import Foundation
 import UIKit
 import UserNotifications
 
-#if targetEnvironment(macCatalyst)
-
 /// Manages local and remote push notifications for Homecast.
 ///
 /// Local notifications: shown immediately when the relay's automation engine fires a Notify action.
 /// Remote notifications: APNs token registration for receiving push from the cloud server.
+///
+/// Built for every platform the app ships on. Nothing here is Mac-specific —
+/// `UNUserNotificationCenter` and `UIApplication.registerForRemoteNotifications`
+/// are the same on iPhone and iPad, and the web app reaches all of it through
+/// the `notification.*` methods on the `window.homekit` bridge, which iOS has
+/// too. This file is compiled into the app target only (SDKROOT iphoneos), so
+/// the unconditional `import UIKit` above is safe — unlike HomeKitBridge.swift,
+/// it is not also built into the macOS-SDK MenuBarPlugin.
 @MainActor
 class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
@@ -40,9 +46,18 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     }
 
     /// Check current authorization status.
+    ///
+    /// Re-registers when permission is already granted. AppDelegate calls this at
+    /// launch, so a returning user's APNs token is warm before the web app asks
+    /// for it — otherwise the first `getAPNsToken` after every cold start answers
+    /// nil and the caller pays several rounds of its backoff poll waiting for a
+    /// token the OS would have handed over immediately.
     func checkAuthorizationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         isAuthorized = settings.authorizationStatus == .authorized
+        if isAuthorized {
+            registerForRemoteNotifications()
+        }
     }
 
     // MARK: - Local Notifications (Relay → macOS banner)
@@ -330,21 +345,3 @@ private enum NotificationIcon {
         }
     }
 }
-
-#else
-
-// iOS stub — push notification support will be added when iOS app is ready
-@MainActor
-class NotificationManager: NSObject, ObservableObject {
-    static let shared = NotificationManager()
-    var isAuthorized = false
-    var apnsToken: String?
-
-    func requestPermission() async -> Bool { false }
-    func checkAuthorizationStatus() async {}
-    func showLocalNotification(title: String?, message: String, data: [String: Any]? = nil) {}
-    func didRegisterForRemoteNotifications(deviceToken: Data) {}
-    func didFailToRegisterForRemoteNotifications(error: Error) {}
-}
-
-#endif

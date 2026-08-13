@@ -19,3 +19,14 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# The @JavascriptInterface bridges the web app calls into. AGP's default rules
+# already keep these, but release builds minify (isMinifyEnabled = true) and a
+# stripped method fails silently at runtime rather than at build time — the web
+# app just sees an undefined function. State the requirement explicitly.
+-keepclassmembers class cloud.homecast.app.MainActivity$PushBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keepclassmembers class cloud.homecast.app.MainActivity$StatusBarBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
