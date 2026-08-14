@@ -44,8 +44,24 @@ enum HostInfo {
 
     /// The machine's name without the Bonjour `.local` suffix — matches how
     /// LocalHTTPServer derives its advertised service name.
+    ///
+    /// **Never `ProcessInfo.hostName` on iOS.** It performs a *blocking*
+    /// reverse-DNS resolution (`-[NSHost blockingResolveUntil:]`), and this is
+    /// read from `makeUIView`, on the main thread, during scene creation. On a
+    /// phone that resolution stalled for the full 19.96s scene-create budget
+    /// and the app was killed with 0x8BADF00D before it ever drew — 20s of wall
+    /// clock for 0.587s of CPU, i.e. purely blocked. Macs answer from the local
+    /// hostname without a round trip and macOS has no scene watchdog, so that
+    /// path keeps the real name.
     static var hostName: String {
-        jsSafe(ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: ""))
+        #if targetEnvironment(macCatalyst)
+        return jsSafe(ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: ""))
+        #else
+        // Non-blocking, and a better answer for a phone anyway. iOS 16+ returns
+        // the model name rather than the user-chosen one without a special
+        // entitlement, which is all the admin panel needs to tell devices apart.
+        return jsSafe(UIDevice.current.name)
+        #endif
     }
 
     /// Strip anything that would break out of (or corrupt) a JS string literal.

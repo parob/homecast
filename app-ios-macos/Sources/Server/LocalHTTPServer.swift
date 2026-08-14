@@ -42,7 +42,12 @@ class LocalHTTPServer {
     private(set) var isRunning = false
 
     // Bonjour service name (unique per Mac)
-    private let serviceName: String
+    /// Bonjour service name. Lazy on purpose: `ProcessInfo.hostName` performs a
+    /// blocking reverse-DNS resolution that has taken ~20s on a phone, and both
+    /// callers construct this server on the main thread. Only `.network`
+    /// exposure advertises, so a loopback server on iOS must never pay for it.
+    private lazy var serviceName: String = ProcessInfo.processInfo.hostName
+        .replacingOccurrences(of: ".local", with: "")
 
     // MIME type mapping
     private static let mimeTypes: [String: String] = [
@@ -99,10 +104,6 @@ class LocalHTTPServer {
             print("[LocalHTTPServer] Warning: web-dist not found in bundle")
             self.webDistPath = nil
         }
-
-        // Use hostname for unique Bonjour service name
-        self.serviceName = ProcessInfo.processInfo.hostName
-            .replacingOccurrences(of: ".local", with: "")
     }
 
     /// Callback fired when the server is ready (port bound).
