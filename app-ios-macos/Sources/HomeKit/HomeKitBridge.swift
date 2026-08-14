@@ -81,8 +81,16 @@ final class BridgeLoad {
     }
 }
 
-#if !targetEnvironment(macCatalyst)
-/// Dummy bridge for iOS - does nothing since HomeKit relay is Mac-only
+#if !canImport(HomeKit)
+/// Stub for platforms without HomeKit.
+///
+/// This file is compiled into two targets: the app (SDKROOT iphoneos, so iOS
+/// **and** Mac Catalyst — both have HomeKit) and MenuBarPlugin (SDKROOT macosx,
+/// which does not). The gate is `canImport(HomeKit)` rather than a platform
+/// check because availability of the framework is the actual requirement — a
+/// `targetEnvironment(macCatalyst)` gate happened to work only because it
+/// excluded plain macOS as a side effect, and it also excluded iOS, where the
+/// bridge works perfectly well.
 @MainActor
 class HomeKitBridge: NSObject, ObservableObject {
     func attach(webView: WKWebView) {}
@@ -92,7 +100,9 @@ class HomeKitBridge: NSObject, ObservableObject {
 #else
 
 import HomeKit
+#if targetEnvironment(macCatalyst)
 import ServiceManagement
+#endif
 
 /// Bridge exposing HomeKit operations to JavaScript in the WebView.
 /// Handles all PROTOCOL.md actions via the webkit message handler system.
@@ -241,6 +251,13 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
 
     private func executeMethod(_ method: String, payload: [String: Any]) async throws -> Any {
         switch method {
+        // Capability probe. Deliberately does NOT wait for readiness — it is
+        // the call the web app makes to decide whether Local Mode is even
+        // offerable, so it has to answer promptly even when HomeKit is denied
+        // or still loading. Everything else here waits; this one reports.
+        case "homekit.status":
+            return homeKitStatus()
+
         // Home operations
         case "homes.list":
             return try await listHomes()
@@ -971,14 +988,50 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         return ["success": true]
     }
 
+    // MARK: - Capability
+
+    /// Can this device serve HomeKit itself, and if not, why not?
+    ///
+    /// The web app needs to tell three states apart before it promises the user
+    /// anything: permission refused, permission granted but no homes on this
+    /// Apple ID, and ready. They look identical from an empty accessory list,
+    /// and only the last one should offer Local Mode.
+    private func homeKitStatus() -> [String: Any] {
+        let status = homeKitManager.authorizationStatus
+        let authorized = status.contains(.authorized)
+        let restricted = status.contains(.restricted)
+
+        // `.determined` means HomeKit has finished deciding, not that it said
+        // yes — so "still deciding" is the absence of that flag, and the web
+        // app should wait rather than conclude anything.
+        let decided = status.contains(.determined)
+
+        return [
+            "ready": homeKitManager.isReady,
+            "authorized": authorized,
+            "restricted": restricted,
+            "determined": decided,
+            "homeCount": homeKitManager.listHomes().count,
+        ]
+    }
+
     // MARK: - Settings Operations
 
+    // Launch-at-login is the one Mac-only capability in this bridge:
+    // ServiceManagement has no iOS counterpart, and an iPhone has no concept of
+    // launching at login. iOS reports it as permanently off rather than failing
+    // the call, so a shared settings screen can ask without branching.
     private func getLaunchAtLogin() -> [String: Any] {
+        #if targetEnvironment(macCatalyst)
         let status = SMAppService.mainApp.status
         return ["launchAtLogin": status == .enabled]
+        #else
+        return ["launchAtLogin": false, "supported": false]
+        #endif
     }
 
     private func setLaunchAtLogin(enabled: Bool) -> [String: Any] {
+        #if targetEnvironment(macCatalyst)
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -992,6 +1045,9 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             let status = SMAppService.mainApp.status
             return ["success": false, "launchAtLogin": status == .enabled]
         }
+        #else
+        return ["success": false, "launchAtLogin": false, "supported": false]
+        #endif
     }
 
     #if canImport(UIKit)
@@ -1163,10 +1219,15 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         }
         pushEvent(type: "characteristic.updated", payload: payload)
 
-        // Forward to menu bar plugin for real-time updates
+        // Forward to menu bar plugin for real-time updates. Mac-only: the menu
+        // bar surface lives in AppDelegate's macCatalyst block, and there is no
+        // menu bar to update on iPhone. The pushEvent above is the part the web
+        // app consumes, and it runs on both.
+        #if targetEnvironment(macCatalyst)
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.forwardCharacteristicUpdate(accessoryId: accessoryId, type: characteristicType, value: value)
         }
+        #endif
     }
 
     func accessoryReachabilityDidUpdate(accessoryId: String, isReachable: Bool, context: AccessoryEventContext) {
@@ -1183,10 +1244,12 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         }
         pushEvent(type: "accessory.reachability", payload: payload)
 
-        // Forward to menu bar plugin for real-time updates
+        // Mac-only, for the same reason as characteristicDidUpdate above.
+        #if targetEnvironment(macCatalyst)
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.forwardReachabilityUpdate(accessoryId: accessoryId, isReachable: isReachable)
         }
+        #endif
     }
 
     func homesDidUpdate() {
@@ -1229,4 +1292,4 @@ enum HomeKitBridgeError: LocalizedError {
     }
 }
 
-#endif // targetEnvironment(macCatalyst)
+#endif // canImport(HomeKit)

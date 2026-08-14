@@ -34,14 +34,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         // Initialize HomeKit manager
         homeKitManager = HomeKitManager()
 
-        // Initialize HomeKit bridge for WebView relay mode
-        // On Mac, this enables the full relay functionality
-        // On iOS, this is a no-op dummy bridge
-        #if targetEnvironment(macCatalyst)
+        // Initialize the HomeKit bridge that backs the WebView.
+        //
+        // Both iOS and Mac Catalyst get the real bridge: the Mac uses it to act
+        // as the relay, and iPhone/iPad use it for Local Mode, where the device
+        // in your hand serves its own HomeKit because no relay can.
         homeKitBridge = HomeKitBridge(homeKitManager: homeKitManager)
-        #else
-        homeKitBridge = HomeKitBridge()
-        #endif
 
         // Initialize connection manager (handles auth credentials)
         connectionManager = ConnectionManager()

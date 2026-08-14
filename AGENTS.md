@@ -198,12 +198,18 @@ Messages use this JSON format:
 | `app-web/src/server/local-broadcast.ts` | Event broadcasting to clients |
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
+| `app-web/src/server/local-mode.ts` | Local Mode policy — pure, unit-tested (when to serve HomeKit from this device) |
+| `app-web/src/server/local-mode-controller.ts` | Local Mode runtime: tick, write publisher, observation keep-alive |
+| `app-web/src/server/local-identity.ts` | This device's live HomeKit UUIDs ↔ the account's stable hc_ids |
+| `app-web/src/components/layout/LocalModeBadge.tsx` | The "Local Mode" badge (left of the search icon) |
 | `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`; `?mock=1` dev mode) |
 | `app-web/src/pages/mqtt-browser/widget-adapter.ts` | MQTT payload ↔ synthetic HomeKitAccessory (drives the real widgets in the browser) |
 | `app-web/src/pages/mqtt-browser/topic-tree.ts` | Pure home/room/group tree builder + slug→topic resolution (unit-tested) |
 | `app-web/src/pages/mqtt-browser/TreePane.tsx` | MQTT browser tree pane (home/room/group sections, `TreeRow.tsx` rows) |
 | `app-web/src/pages/mqtt-browser/InspectorPanel.tsx` | Selected-topic inspector (widget + publish editor; pane/sheet variants) |
-| `app-web/src/components/settings/HomeDetailView.tsx` | Per-home MQTT broker toggle + custom brokers |
+| `app-web/src/components/settings/HomeDetailView.tsx` | One home's settings: live-home poll + router over its sub-sections |
+| `app-web/src/components/settings/home/` | The per-home sub-pages (overview, actions, notifications, MQTT, mobile row list) |
+| `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
 
 ## Advanced Automation Engine
 
@@ -313,7 +319,9 @@ The Notify action node delivers push only (email notifications were removed):
 |------|---------|
 | `app-web/src/lib/device-identity.ts` | Stable per-device fingerprint (macos-/android- localStorage UUID) |
 | `app-web/src/hooks/useAndroidPush.ts` | Android FCM token registration (the only web-side push code) |
-| `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (this-device mutes, history) |
+| `app-web/src/components/settings/NotificationsSection.tsx` | Settings UI (this-device master mute, test send, history) |
+| `app-web/src/components/settings/home/HomeNotificationsSection.tsx` | Per-home + per-automation mutes, on the home's own page |
+| `app-web/src/hooks/useNotificationMutes.ts` | Shared mute state for both screens (one Apollo cache entry) |
 | `app-ios-macos/Sources/Server/NotificationManager.swift` | Local + remote notifications |
 | `app-ios-macos/Sources/NotificationService/` | Notification Service Extension (icon attachments) |
 
@@ -366,6 +374,40 @@ When in Community mode:
 - GraphQL operations route to `local-graphql.ts` (IndexedDB-backed)
 - `communityLocalLink` in Apollo Client bypasses HTTP on the relay Mac
 
+## Local Mode
+
+When the relay can't serve a home, a device with its own Apple Home access serves
+it directly. Targets iPhone/iPad and **non-relay** Macs; the relay Mac never uses it.
+
+**Two capability flags, and they are not interchangeable:**
+
+| Flag | Means | Set on |
+|------|-------|--------|
+| `window.isHomeKitRelayCapable` | "can **be** the relay" — drives relay claim, relay duties, `RelayStatusBadge`, the Settings relay pane, the `mac_` device-id prefix | Mac only |
+| `window.isHomeKitLocalCapable` | "can serve **its own** HomeKit" | Mac **and** iOS |
+
+Setting the first on an iPhone would make phones claim relay duty and suppress genuine
+offline warnings. Use `isLocalCapable()` (`native/homekit-bridge.ts`) for Local Mode.
+
+**Rules that are load-bearing:**
+- **Never start the automation engine in Local Mode.** `setRelayWritePublisher` is separable
+  from `initAutomationEngine`; two engines fire every automation more than once. Local Mode
+  registers a *trimmed* publisher — `emitBroadcast` only, no LAN broadcast, no local history.
+- **Re-claim the write publisher each tick.** `stopRelayDuties` nulls it unconditionally.
+- **Re-arm observation on `visibilitychange`.** iOS suspends the WebView, so the 30s
+  keep-alive stops and native observation (90s ceiling) lapses.
+- **`homes.list` stays with the cloud** while the cloud is reachable (it dedupes
+  cloud-managed homes); answered locally only when the cloud is unreachable. Hence
+  `local-mode.ts` has its own action policy rather than reusing `SERVER_ONLY_ACTIONS`.
+- **Do NOT widen `communityLocalLink`** — for a cloud user the local IndexedDB is empty, and
+  `local-graphql.ts` writes, so offline edits would land somewhere with no path back.
+
+**Identity.** A phone's HomeKit context mints different live UUIDs than the relay's, while
+cloud storage is keyed by hc_id. `reconcileLocalTopology` (GraphQL) →
+`homecast/identity/match.py::match_topology` resolves them. It **cannot mint and cannot
+stale** — it reuses `reconcile_kind`'s extracted `load_match_context()`/`pick_match()` and
+implements no writing at all.
+
 ## Cloud Features (`@homecast/cloud`)
 
 Cloud-specific UI components (admin panel, billing, cloud relay management) live in the `homecast-cloud` repo's `app-web/` package. The Vite alias `@homecast/cloud` resolves to `src/cloud/index.ts` if present (copied in by CI during cloud builds), otherwise falls back to `src/cloud-stub.ts` which exports `CLOUD_AVAILABLE = false`.
@@ -398,8 +440,20 @@ To promote to production:
 
 ### Verify deployment
 
+**`version.json` reports the `homecast-cloud` commit, not the web content** — it can be
+unchanged by a web deploy, or change without one. To prove *specific code* shipped, grep the
+served bundle for a symbol only your change introduces:
+
 ```bash
-# Check what's deployed
+ENTRY=$(curl -s https://homecast.cloud/ | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
+curl -s "https://homecast.cloud$ENTRY" | grep -c "YourNewSymbol"   # 1 = shipped
+```
+
+Lazy route chunks aren't linked from `index.html` — find the chunk name inside the entry JS
+first (e.g. `grep -oE 'Dashboard-[A-Za-z0-9_-]+\.js'`), then fetch that.
+
+```bash
+# version.json = homecast-cloud SHA (useful for the server, not the web bundle)
 curl -s https://homecast.cloud/version.json
 curl -s https://staging.homecast.cloud/version.json
 
@@ -416,6 +470,74 @@ cd ~/Documents/GitHub/homecast-cloud && gh run list --workflow "Deploy Web App t
 | **Community** | Bundled in Mac app | N/A (all local) | Serves from `localhost:5656`, uses bundled `web-dist/` |
 
 The Mac app's environment is set via `AppConfig.isStaging` (UserDefaults) and `AppConfig.isCommunity`. The relay MUST be connected to the same environment that the client (HA, browser) is using.
+
+## Releasing the apps
+
+The web app and server deploy continuously (above). The **apps do not** — they ship through
+Apple and Google review, on their own version numbers.
+
+### Never trust the local version number
+
+Both stores reject a build whose number doesn't exceed everything previously uploaded, and
+both local files drift from reality. Query the store, every time:
+
+```bash
+# Apple — highest build ever uploaded, across BOTH platforms (they share a numbering train)
+#   ASC API, ES256 JWT from ~/.appstoreconnect/private_keys/AuthKey_MCT467448G.p8
+#   issuer 69a6de76-2a9a-47e3-e053-5b8c7c11a4d1, app id 6759559232
+#   GET /v1/builds?filter[app]=6759559232&sort=-uploadedDate&include=preReleaseVersion
+
+# Google — live versionCode per track (needs PLAY_JSON_KEY, see scripts/play/README.md)
+#   POST .../edits then GET .../edits/{id}/tracks
+```
+
+`app-android-windows-linux/src-tauri/gen/android/tauri.properties` is **not** regenerated by a
+normal build and goes stale — it read `1.0.1 / 1000001` while Play production was actually
+serving `1001001`. Tauri's versionCode is `major*1000000 + minor*1000 + patch`.
+
+### Mac + iOS (App Store / TestFlight)
+
+1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `Homecast.xcodeproj/project.pbxproj`.
+   They appear **6× each** (3 targets × Debug/Release). `grep -c` to confirm the count rather
+   than trusting this number — every new target adds two more, and an app-extension version that
+   doesn't match the app gets the upload **rejected**. Finish with `plutil -lint project.pbxproj`.
+2. Bundle the web app: `./scripts/bundle-web-app.sh`. ⚠️ That script builds from your **working
+   tree**. If it contains unfinished work, that work ships inside the binary for Community-mode
+   users. To bundle only committed code, build in a clean worktree and copy `dist/` to
+   `Resources/web-dist/` yourself:
+   ```bash
+   git -C app-web worktree add --detach /tmp/web-clean origin/main
+   ln -s "$PWD/app-web/node_modules" /tmp/web-clean/node_modules
+   (cd /tmp/web-clean && npm run build)
+   rm -rf app-ios-macos/Resources/web-dist && cp -r /tmp/web-clean/dist app-ios-macos/Resources/web-dist
+   ```
+3. Archive **each platform separately, never in parallel** — concurrent `xcodebuild archive`
+   runs share DerivedData and corrupt each other's intermediates:
+   `-destination 'generic/platform=macOS,variant=Mac Catalyst'` then `'generic/platform=iOS'`.
+   Delete any stale `build/*.xcarchive` first so you can't export yesterday's build.
+4. Export with `ExportOptions.plist` (`app-store`, team `3HMH4559WD`), then upload with
+   `xcrun altool --upload-app -t <macos|ios> --apiKey MCT467448G --apiIssuer <ISSUER>`.
+5. TestFlight needs nothing further for internal testers. The App Store needs the
+   appStoreVersion → build → localization → reviewSubmission dance via the ASC API.
+
+**Only the native Swift code needs a release.** In cloud mode the app loads its UI from
+`homecast.cloud`, so web fixes reach installed apps without one — but the WKWebView keeps its
+old bundle until the **app restarts**, so "I deployed and nothing changed" usually means the
+relay hasn't been restarted.
+
+**CI builds Mac Catalyst only**, so iOS-only breakage ships green. Build both locally.
+
+### Android (Play)
+
+```bash
+cd app-android-windows-linux
+export PLAY_JSON_KEY=~/.config/play/homecast-play-publisher.json
+PLAY_TRACK=internal PLAY_NOTES="..." npm run play:release   # default track is internal
+```
+
+See `scripts/play/README.md` for credential setup. Do **not** run `tauri android init` — it
+regenerates `MainActivity.kt` and `AndroidManifest.xml`, both of which are hand-edited and
+committed.
 
 ## License
 

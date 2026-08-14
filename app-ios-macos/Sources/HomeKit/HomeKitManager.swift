@@ -31,7 +31,6 @@ class HomeKitManager: NSObject, ObservableObject {
     @Published private(set) var isReady: Bool = false
     @Published private(set) var authorizationStatus: HMHomeManagerAuthorizationStatus = .determined
 
-    private var readyContinuations: [CheckedContinuation<Void, Never>] = []
 
     /// Delegate for characteristic change notifications
     weak var delegate: HomeKitManagerDelegate?
@@ -375,13 +374,42 @@ class HomeKitManager: NSObject, ObservableObject {
         }
     }
 
-    /// Wait for HomeKit to be ready (homes loaded)
-    func waitForReady() async {
-        if isReady { return }
+    /// How long any one bridge call will wait for HomeKit to load its homes.
+    ///
+    /// Generous, because a cold HomeKit on a large home genuinely takes
+    /// seconds — but finite, because the alternative is worse (see below).
+    static let readyTimeout: TimeInterval = 20
 
-        await withCheckedContinuation { continuation in
-            readyContinuations.append(continuation)
+    /// Wait for HomeKit to be ready (homes loaded), giving up after
+    /// `readyTimeout`. Returns whether it actually became ready.
+    ///
+    /// This used to await a continuation with no deadline, which was safe only
+    /// because the Mac relay's HomeKit always answers eventually. It is not
+    /// safe on iPhone: if the user declines Home access,
+    /// `homeManagerDidUpdateHomes` never fires, the continuation never
+    /// resolves, and every bridge call hangs forever. The wedge watchdog reads
+    /// that as a frozen WebView and reloads the page — on a loop, out from
+    /// under whatever the user was doing.
+    ///
+    /// Giving up instead lets the call fail as an ordinary HomeKit error
+    /// (`homeNotFound`, or an empty home list), which the web app can render
+    /// as a calm empty state.
+    ///
+    /// Polls rather than racing the continuation against a timer: a race would
+    /// leave the stored continuation dangling when the deadline won, and
+    /// resuming it later would trap.
+    @discardableResult
+    func waitForReady() async -> Bool {
+        if isReady { return true }
+
+        let deadline = Date().addingTimeInterval(HomeKitManager.readyTimeout)
+        while !isReady && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        if !isReady {
+            print("[HomeKit] ⚠️ Not ready after \(Int(HomeKitManager.readyTimeout))s (authorization: \(authorizationStatus.rawValue)) — proceeding anyway")
+        }
+        return isReady
     }
 
     // MARK: - Home Operations
@@ -1850,12 +1878,6 @@ extension HomeKitManager: HMHomeManagerDelegate {
                     }
                 }
             }
-
-            // Resume any waiting continuations
-            for continuation in readyContinuations {
-                continuation.resume()
-            }
-            readyContinuations.removeAll()
 
             // Notify menu bar plugin that HomeKit data is now available for preloading
             NotificationCenter.default.post(name: .homeKitDidBecomeReady, object: nil)

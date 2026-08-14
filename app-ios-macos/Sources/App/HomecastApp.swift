@@ -658,20 +658,11 @@ struct WebViewContainer: UIViewRepresentable {
         let deviceModel = HostInfo.deviceModel
         let hostName = HostInfo.hostName
 
-        #if targetEnvironment(macCatalyst)
-        let platformScript = """
-        window.isHomecastApp = true;
-        window.isHomecastMacApp = true;
-        window.isHomeKitRelayCapable = true;
-        window.homecastAppVersion = "\(appVersion)";
-        window.homecastAppBuild = "\(appBuild)";
-        window.homecastOSVersion = "\(osVersion)";
-        window.homecastDeviceModel = "\(deviceModel)";
-        window.homecastHostName = "\(hostName)";
-        window.homecastPlatform = "macos";
-
-        console.log('[Homecast] Mac app detected - HomeKit relay capable');
-
+        // The JS half of the HomeKit bridge, shared by every platform that has
+        // HomeKit. It used to live only in the Catalyst branch; iPhone and iPad
+        // need exactly the same object for Local Mode, and keeping one copy is
+        // the only way the two stay identical.
+        let homeKitBridgeScript = """
         // HomeKit bridge setup
         window.__homekit_callbacks = {};
         window.__homekit_event_handlers = [];
@@ -726,7 +717,29 @@ struct WebViewContainer: UIViewRepresentable {
             }
         };
 
-        console.log('[Homecast] HomeKit bridge ready for relay mode');
+        console.log('[Homecast] HomeKit bridge ready');
+        """
+
+        #if targetEnvironment(macCatalyst)
+        let platformScript = """
+        window.isHomecastApp = true;
+        window.isHomecastMacApp = true;
+        // "can BE the relay" — drives relay claim, relay duties, the relay
+        // status badge and the Settings relay pane. Mac only, deliberately.
+        window.isHomeKitRelayCapable = true;
+        // "can serve HomeKit from this device" — the Local Mode capability.
+        // Both flags are true here; on iPhone only the second one is.
+        window.isHomeKitLocalCapable = true;
+        window.homecastAppVersion = "\(appVersion)";
+        window.homecastAppBuild = "\(appBuild)";
+        window.homecastOSVersion = "\(osVersion)";
+        window.homecastDeviceModel = "\(deviceModel)";
+        window.homecastHostName = "\(hostName)";
+        window.homecastPlatform = "macos";
+
+        console.log('[Homecast] Mac app detected - HomeKit relay capable');
+
+        \(homeKitBridgeScript)
 
         // ── Native relay WebSocket bridge ────────────────────────────────
         // The web app's ServerWebSocket can use window.NativeRelayWebSocket
@@ -762,6 +775,10 @@ struct WebViewContainer: UIViewRepresentable {
         let platformScript = """
         window.isHomecastApp = true;
         window.isHomecastIOSApp = true;
+        // NOT isHomeKitRelayCapable: an iPhone must never claim relay duty or
+        // suppress the genuine relay-offline warning. It can serve its own
+        // HomeKit, which is a different and smaller claim.
+        window.isHomeKitLocalCapable = true;
         window.homecastAppVersion = "\(appVersion)";
         window.homecastAppBuild = "\(appBuild)";
         window.homecastOSVersion = "\(osVersion)";
@@ -769,7 +786,9 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "ios";
 
-        console.log('[Homecast] iOS app detected');
+        console.log('[Homecast] iOS app detected - HomeKit local capable');
+
+        \(homeKitBridgeScript)
         """
         #endif
         config.userContentController.addUserScript(WKUserScript(
@@ -992,10 +1011,11 @@ struct WebViewContainer: UIViewRepresentable {
         }
         #endif
 
-        // Attach HomeKit bridge to WebView (Mac only)
-        #if targetEnvironment(macCatalyst)
+        // Attach the HomeKit bridge on every platform that has HomeKit: the Mac
+        // uses it to serve as the relay, iPhone/iPad for Local Mode.
         homeKitBridge.attach(webView: webView)
 
+        #if targetEnvironment(macCatalyst)
         // Attach native relay WebSocket bridge
         context.coordinator.relayWSBridge.attach(webView: webView)
 
@@ -1606,17 +1626,15 @@ struct WebViewContainer: UIViewRepresentable {
                     }
                 }
             case "homekit":
-                // Route HomeKit bridge calls (Mac only)
-                #if targetEnvironment(macCatalyst)
+                // Route HomeKit bridge calls. Available on iPhone/iPad as well
+                // as the Mac — an iOS device with Home access serves its own
+                // HomeKit in Local Mode.
                 let method = body["method"] as? String
                 let payload = body["payload"] as? [String: Any]
                 let callbackId = body["callbackId"] as? String
                 Task { @MainActor in
                     self.homeKitBridge.handle(method: method, payload: payload, callbackId: callbackId)
                 }
-                #else
-                print("[WebView] HomeKit bridge not available on iOS")
-                #endif
             case "purchase":
                 // Route StoreKit IAP calls (App Store builds)
                 let method = body["method"] as? String
