@@ -91,5 +91,28 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- WebKit runs service workers only in an app that declares app-bound
+	     domains, and the web app's service worker is what makes the apps open
+	     instantly and work offline.
+
+	     Declaring this key flips the default for the whole process: any web
+	     view that does not set limitsNavigationsToAppBoundDomains loses script
+	     injection, user scripts and message handlers — which is the entire
+	     native bridge. So every web view we create opts in, and every
+	     top-level origin we navigate to has to appear below.
+
+	     Only the top-level frame is checked, so api.homecast.cloud, the MQTT
+	     broker and a Community relay on the LAN need no entry — they are only
+	     ever fetch/WebSocket targets. localhost is here because Community mode
+	     serves the bundled web app from LocalHTTPServer. Content the app loads
+	     itself (file URLs, data URLs, HTML strings — the offline error page) is
+	     always treated as app-bound and needs no entry either. Limit is 10. -->
+	<key>WKAppBoundDomains</key>
+	<array>
+		<string>homecast.cloud</string>
+		<string>www.homecast.cloud</string>
+		<string>staging.homecast.cloud</string>
+		<string>localhost</string>
+	</array>
 </dict>
 </plist>

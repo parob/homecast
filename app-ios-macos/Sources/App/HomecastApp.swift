@@ -90,17 +90,18 @@ enum AppConfig {
     }
 
     /// Base URL for the web app (changes based on mode).
+    ///
+    /// Community on iOS serves the *UI* from this device's own loopback server
+    /// and points only its API calls at the Mac relay. It used to load the UI
+    /// from the relay itself, which made the top-level origin a user-typed LAN
+    /// address — impossible to name in WKAppBoundDomains, and every top-level
+    /// origin has to be nameable now that the app declares that key (see
+    /// Info.plist). localhost is nameable; the relay stays reachable because
+    /// only top-level frames are checked, never fetch or WebSocket targets.
+    /// The web app already models this split as Community *client* mode.
     static var webBaseURL: String {
         if isCommunity {
-            #if targetEnvironment(macCatalyst)
             return "http://localhost:\(localServerPort)"
-            #else
-            // iOS: connect to the user's Mac relay
-            if let addr = relayAddress {
-                return "http://\(addr)"
-            }
-            return "http://localhost:\(localServerPort)" // fallback
-            #endif
         }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
@@ -185,8 +186,20 @@ struct ContentView: View {
     @State private var showRelayConnect = false
     @State private var webViewId = UUID()
 
+    /// Where the WebView starts on a cold launch.
+    ///
+    /// Landing on /login when we already hold a keychain token costs a whole
+    /// render cycle: React boots on the login route, reads the token, then
+    /// client-side redirects to /portal — so the dashboard chunk only starts
+    /// downloading after the login route has already mounted. Going straight
+    /// to /portal skips that. A stale token still lands correctly: Dashboard
+    /// bounces to /login on its own when the session doesn't check out.
+    ///
+    /// Community mode keeps /login — that page doubles as the first-run relay
+    /// setup flow, which has nothing to do with holding a token.
     private var webViewURL: URL {
-        return URL(string: "\(AppConfig.webBaseURL)/login")!
+        let path = (!AppConfig.isCommunity && connectionManager.authToken != nil) ? "/portal" : "/login"
+        return URL(string: "\(AppConfig.webBaseURL)\(path)")!
     }
 
     var body: some View {
@@ -200,7 +213,7 @@ struct ContentView: View {
                     #if targetEnvironment(macCatalyst)
                     LocalHTTPServer.shared?.stop()
                     LocalHTTPServer.shared = nil
-                    let server = LocalHTTPServer()
+                    let server = LocalHTTPServer(exposure: .network)
                     server.onReady = {
                         showModeSelector = false
                     }
@@ -208,7 +221,16 @@ struct ContentView: View {
                     LocalHTTPServer.shared = server
                     return
                     #else
-                    // iOS: show native relay address input
+                    // iOS: start the loopback server that will host the web app,
+                    // then show the native relay address input. Starting it here
+                    // rather than on connect gives it the whole time the user
+                    // spends typing an address to come up, so the WebView never
+                    // races it.
+                    if LocalHTTPServer.shared == nil {
+                        let server = LocalHTTPServer(exposure: .loopback)
+                        server.start()
+                        LocalHTTPServer.shared = server
+                    }
                     showRelayConnect = true
                     showModeSelector = false
                     return
@@ -605,9 +627,31 @@ struct WebViewContainer: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
 
-        // The initial page load bypasses local cache (reloadIgnoringLocalCacheData)
-        // so the HTML is always fresh after app-web deploys. Subresource requests
-        // (Vite's content-hashed /assets/*) still use disk cache for fast loads.
+        // Opt in to app-bound domains. This is not optional once
+        // WKAppBoundDomains is in Info.plist: declaring that key puts every
+        // web view that *doesn't* opt in into a restricted mode with no
+        // script injection and no message handlers, which would take the
+        // native bridge — HomeKit, notifications, purchases, openUrl — with
+        // it. Opting in is what restores those, and it's also what lets
+        // WebKit run the web app's service worker.
+        //
+        // The cost is that every top-level navigation must be to a domain
+        // listed in Info.plist. That holds for both modes: cloud loads
+        // homecast.cloud, Community loads localhost. Subresources, fetch and
+        // WebSockets are unrestricted — only the top-level frame is checked.
+        if #available(iOS 14.0, macCatalyst 14.0, *) {
+            config.limitsNavigationsToAppBoundDomains = true
+        }
+
+        // The initial page load uses the default cache policy on purpose.
+        //
+        // It used to pass .reloadIgnoringLocalCacheData to keep the HTML fresh
+        // after an app-web deploy. That isn't needed — index.html is served
+        // `cache-control: no-cache`, so WebKit revalidates it anyway and a
+        // deploy still lands — and it cost us twice: every cold start paid a
+        // full document fetch before rendering, and a cache-bypassing load
+        // skips the service worker entirely, which is what makes the app
+        // start instantly and work offline.
 
         // Suppress autofill/suggestions to avoid WebKit warnings during focus changes
         if #available(iOS 16.0, macCatalyst 16.0, *) {
@@ -809,12 +853,21 @@ struct WebViewContainer: UIViewRepresentable {
             forMainFrameOnly: false
         ))
 
-        // iOS community mode: inject client state so web app knows it's connected to a relay
+        // iOS community mode: inject client state so web app knows it's connected to a relay.
+        //
+        // The mode and address are now load-bearing rather than informational.
+        // The page used to be served *by* the relay, so config.ts's "API is on
+        // the same origin" branch happened to be right. Now the page comes
+        // from this device's own loopback server, so the relay has to be named
+        // explicitly — otherwise resolveApiBase() falls through to its local
+        // dev fallback and the app talks to nothing.
         #if !targetEnvironment(macCatalyst)
         if AppConfig.isCommunity, let addr = AppConfig.relayAddress {
             let communityScript = """
             window.__HOMECAST_COMMUNITY__ = true;
             localStorage.setItem('cookie-consent', 'granted');
+            localStorage.setItem('homecast-mode', 'client');
+            localStorage.setItem('homecast-relay-address', '\(addr)');
             console.log('[Homecast] iOS community client — relay: \(addr)');
             """
             config.userContentController.addUserScript(WKUserScript(
@@ -1064,7 +1117,7 @@ struct WebViewContainer: UIViewRepresentable {
         #endif
 
         NSLog("[Homecast] Loading URL: %@", url.absoluteString)
-        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+        webView.load(URLRequest(url: url))
         return webView
     }
 
@@ -1505,11 +1558,17 @@ struct WebViewContainer: UIViewRepresentable {
 
             // Clear all website data (cache, cookies, etc.) for this domain
             let dataStore = WKWebsiteDataStore.default()
+            // FetchCache is the Cache Storage API the service worker precaches
+            // into; ServiceWorkerRegistrations is the worker itself. Without
+            // the latter the old worker survives a "hard" refresh and keeps
+            // answering from its own cache — which would make this command
+            // quietly stop doing what it says.
             let dataTypes = Set([
                 WKWebsiteDataTypeDiskCache,
                 WKWebsiteDataTypeMemoryCache,
                 WKWebsiteDataTypeOfflineWebApplicationCache,
-                WKWebsiteDataTypeFetchCache
+                WKWebsiteDataTypeFetchCache,
+                WKWebsiteDataTypeServiceWorkerRegistrations
             ])
 
             dataStore.fetchDataRecords(ofTypes: dataTypes) { records in

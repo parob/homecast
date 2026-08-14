@@ -7,9 +7,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     @Published var homeKitBridge: HomeKitBridge!
     private var menuBarPlugin: AnyObject?
 
-    /// Local HTTP server for Community mode (Mac only)
-    #if targetEnvironment(macCatalyst)
+    /// Local HTTP server for Community mode. On the Mac it serves the LAN; on
+    /// iOS it hosts this device's own copy of the web app on loopback.
     var localHTTPServer: LocalHTTPServer?
+
+    /// MQTT bridge — Mac only. It's the relay that publishes HomeKit state.
+    #if targetEnvironment(macCatalyst)
     var mqttBridge: MQTTBridge?
     #endif
 
@@ -44,14 +47,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         // Initialize connection manager (handles auth credentials)
         connectionManager = ConnectionManager()
 
-        // Load menu bar plugin on Mac
-        #if targetEnvironment(macCatalyst)
-        loadMenuBarPlugin()
-
-        // Start local HTTP server if Community mode is enabled
+        // Start local HTTP server if Community mode is enabled.
+        //
+        // Both platforms now, for different reasons. The Mac serves external
+        // clients — browsers, Home Assistant, the iOS app — which is what
+        // Community mode *is*. iOS serves only itself, hosting the bundled web
+        // app so its top-level origin is localhost rather than a user-typed
+        // LAN address; see AppConfig.webBaseURL. Hence the exposure split.
         if AppConfig.isCommunity {
             startLocalServer()
         }
+
+        // Load menu bar plugin on Mac
+        #if targetEnvironment(macCatalyst)
+        loadMenuBarPlugin()
 
         // Listen for sleep/wake to restart the local server
         NotificationCenter.default.addObserver(
@@ -65,7 +74,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             NotificationCenter.default.post(name: .reloadWebView, object: nil)
         }
 
-        // Listen for Community mode toggle
+        #endif
+
+        // Listen for Community mode toggle. Both platforms — on iOS the
+        // server is what hosts the UI, so leaving it stopped after a switch
+        // into Community mode would leave the WebView with nothing to load.
         NotificationCenter.default.addObserver(
             forName: .environmentDidChange,
             object: nil,
@@ -76,6 +89,22 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             } else {
                 self?.stopLocalServer()
             }
+        }
+
+        // iOS suspends the app in the background and the listener stops
+        // accepting with it. Re-establish before the WebView resumes,
+        // otherwise the first request after a foreground lands on a dead
+        // socket and the user gets the offline page for no reason.
+        #if !targetEnvironment(macCatalyst)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard AppConfig.isCommunity else { return }
+            guard let server = self?.localHTTPServer, !server.isRunning else { return }
+            Log.info("foregrounded with local server down — restarting", category: "lifecycle")
+            server.restart()
         }
         #endif
 
@@ -109,27 +138,40 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
     // MARK: - Local Server Lifecycle
 
-    #if targetEnvironment(macCatalyst)
     func startLocalServer() {
         guard localHTTPServer == nil else { return }
-        let server = LocalHTTPServer()
+
+        // The Mac is the relay: it serves the LAN and advertises over Bonjour.
+        // iOS hosts only its own UI, so it stays on loopback — a phone has no
+        // external clients, and putting its HomeKit endpoints on Wi-Fi would
+        // be a security regression rather than a feature. Loopback also keeps
+        // us clear of the iOS Local Network permission prompt.
+        #if targetEnvironment(macCatalyst)
+        let server = LocalHTTPServer(exposure: .network)
+        #else
+        let server = LocalHTTPServer(exposure: .loopback)
+        #endif
         server.start()
         localHTTPServer = server
         LocalHTTPServer.shared = server
 
+        #if targetEnvironment(macCatalyst)
         // Initialize MQTT bridge (auto-connects saved brokers from UserDefaults)
         let bridge = MQTTBridge()
         mqttBridge = bridge
         bridge.loadAndConnectSavedBrokers()
+        #endif
     }
 
     func stopLocalServer() {
+        #if targetEnvironment(macCatalyst)
         mqttBridge = nil
+        #endif
         localHTTPServer?.stop()
         localHTTPServer = nil
+        LocalHTTPServer.shared = nil
         print("[Homecast] Community mode: local server stopped")
     }
-    #endif
 
     // MARK: - Scene Configuration
 

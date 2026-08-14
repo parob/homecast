@@ -67,7 +67,31 @@ class LocalHTTPServer {
         "map": "application/json",
     ]
 
-    init() {
+    /// How far the server is reachable.
+    ///
+    /// The two callers want opposite things, and the difference is a security
+    /// boundary rather than a preference — `/rest/*` controls HomeKit.
+    enum Exposure {
+        /// Reachable from the LAN and advertised over Bonjour. The Mac in
+        /// Community mode: serving browsers, Home Assistant and the iOS app is
+        /// the entire point of that mode.
+        case network
+
+        /// Loopback only, no Bonjour, no WebSocket listener. iOS uses this
+        /// purely to host the bundled web app at a stable origin that can be
+        /// named in WKAppBoundDomains. Nothing off-device may reach it: a
+        /// phone has no external clients, and binding its HomeKit control
+        /// endpoints to Wi-Fi would be a straight security regression.
+        /// Staying off Bonjour also avoids triggering the iOS Local Network
+        /// permission prompt, which we'd have no way to justify.
+        case loopback
+    }
+
+    let exposure: Exposure
+
+    init(exposure: Exposure = .network) {
+        self.exposure = exposure
+
         // Resolve bundled web app path
         if let path = Bundle.main.path(forResource: "web-dist", ofType: nil) {
             self.webDistPath = path
@@ -92,12 +116,17 @@ class LocalHTTPServer {
             do {
                 let params = NWParameters.tcp
                 params.allowLocalEndpointReuse = true
+                if exposure == .loopback {
+                    params.requiredInterfaceType = .loopback
+                }
 
                 let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: candidatePort)!)
-                listener.service = NWListener.Service(
-                    name: serviceName,
-                    type: "_homecast._tcp"
-                )
+                if exposure == .network {
+                    listener.service = NWListener.Service(
+                        name: serviceName,
+                        type: "_homecast._tcp"
+                    )
+                }
 
                 listener.stateUpdateHandler = { [weak self] state in
                     switch state {
@@ -105,7 +134,14 @@ class LocalHTTPServer {
                         self?.isRunning = true
                         self?.port = candidatePort
                         NSLog("[LocalHTTPServer] Listening on port %d", candidatePort)
-                        DispatchQueue.main.async { self?.onReady?() }
+                        DispatchQueue.main.async {
+                            // webBaseURL is built from this. Without the sync
+                            // it stayed at 5656 while the listener had fallen
+                            // through to 5657, and the WebView would load
+                            // nothing at all.
+                            AppConfig.localServerPort = candidatePort
+                            self?.onReady?()
+                        }
                     case .failed(let error):
                         print("[LocalHTTPServer] Listener failed: \(error)")
                         self?.isRunning = false
@@ -122,7 +158,12 @@ class LocalHTTPServer {
 
                 listener.start(queue: queue)
                 self.listener = listener
-                startWSListener(httpPort: candidatePort)
+                // A loopback server exists only to serve the app's own UI.
+                // The WebSocket listener is for external clients, which by
+                // definition can't reach it.
+                if exposure == .network {
+                    startWSListener(httpPort: candidatePort)
+                }
                 return // Success — stop trying ports
             } catch {
                 print("[LocalHTTPServer] Port \(candidatePort) unavailable: \(error)")
