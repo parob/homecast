@@ -997,21 +997,27 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
     /// Apple ID, and ready. They look identical from an empty accessory list,
     /// and only the last one should offer Local Mode.
     private func homeKitStatus() -> [String: Any] {
-        let status = homeKitManager.authorizationStatus
-        let authorized = status.contains(.authorized)
-        let restricted = status.contains(.restricted)
+        // Live, not the cached copy: the cache only moves when the
+        // authorization delegate fires, and it does not fire when permission
+        // was already granted on a previous launch.
+        let status = homeKitManager.liveAuthorizationStatus
+        let homeCount = homeKitManager.listHomes().count
 
-        // `.determined` means HomeKit has finished deciding, not that it said
-        // yes — so "still deciding" is the absence of that flag, and the web
-        // app should wait rather than conclude anything.
-        let decided = status.contains(.determined)
+        // `HMHomeManagerAuthorizationStatusDetermined` is named the opposite of
+        // its meaning — Apple's header says it "indicates the user has not yet
+        // made a choice". So this flag being SET means undecided.
+        let undecided = status.contains(.determined)
 
         return [
             "ready": homeKitManager.isReady,
-            "authorized": authorized,
-            "restricted": restricted,
-            "determined": decided,
-            "homeCount": homeKitManager.listHomes().count,
+            "authorized": homeKitManager.isHomeDataAuthorized,
+            "restricted": status.contains(.restricted),
+            // Kept in the shape the web app already reads, but now actually
+            // meaning "HomeKit has settled": either it says the user chose, or
+            // it has handed us homes, which settles it either way.
+            "determined": !undecided || homeCount > 0,
+            "homeCount": homeCount,
+            "rawStatus": status.rawValue,
         ]
     }
 

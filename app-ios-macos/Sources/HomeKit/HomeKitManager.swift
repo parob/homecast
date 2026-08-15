@@ -31,6 +31,32 @@ class HomeKitManager: NSObject, ObservableObject {
     @Published private(set) var isReady: Bool = false
     @Published private(set) var authorizationStatus: HMHomeManagerAuthorizationStatus = .determined
 
+    /// The authorization HomeKit reports *right now*.
+    ///
+    /// `authorizationStatus` above is a cache that only moves when
+    /// `didUpdateAuthorizationStatus` fires — and it does not fire when nothing
+    /// changed, which is exactly the common case: permission was granted on a
+    /// previous launch, so this launch sees no change and keeps the seeded
+    /// `.determined`. Reading the manager directly is the only way to get the
+    /// truth on a cold start.
+    var liveAuthorizationStatus: HMHomeManagerAuthorizationStatus {
+        homeManager.authorizationStatus
+    }
+
+    /// Whether this device can actually read home data.
+    ///
+    /// Beware `HMHomeManagerAuthorizationStatusDetermined`: Apple's own header
+    /// says it "indicates the user has **not yet** made a choice", so the flag
+    /// named `.determined` means *un*determined. Reading it as "has decided"
+    /// gets the logic exactly backwards.
+    ///
+    /// Homes are the tiebreaker rather than the flags: if HomeKit has handed us
+    /// a home, we are authorized, whatever the bits say. That keeps a slow or
+    /// unreported status from being misreported as a refusal.
+    var isHomeDataAuthorized: Bool {
+        if !homeManager.homes.isEmpty { return true }
+        return homeManager.authorizationStatus.contains(.authorized)
+    }
 
     /// Delegate for characteristic change notifications
     weak var delegate: HomeKitManagerDelegate?
@@ -64,6 +90,26 @@ class HomeKitManager: NSObject, ObservableObject {
 
     /// Periodic refresh to catch missed delegate callbacks
     private var periodicRefreshTask: Task<Void, Never>?
+
+    /// A one-off catch-up pass, run when a client attaches. See
+    /// `scheduleCatchUpRefresh()` for why that moment in particular.
+    private var catchUpRefreshTask: Task<Void, Never>?
+
+    /// When the last full key-characteristic pass finished, and whether one is
+    /// running now. A pass costs one HAP read per key characteristic on every
+    /// accessory, so the three things that can trigger it — launch, a client
+    /// attaching, the 60s timer — have to coalesce rather than stack up.
+    private var lastFullRefreshAt: Date?
+    private var isRefreshing = false
+
+    /// A client attaching this soon after a completed pass gets that pass's
+    /// result instead of provoking another one.
+    private let catchUpMinInterval: TimeInterval = 15
+
+    /// When a client last confirmed it is listening, and how long a gap in that
+    /// counts as "this process was not running". Clients send every 30s.
+    private var lastKeepAliveAt: Date?
+    private let keepAliveGapTolerance: TimeInterval = 120
 
     /// How long to wait for confirmation before stopping observation (seconds)
     private let observationTimeout: TimeInterval = 90
@@ -102,6 +148,14 @@ class HomeKitManager: NSObject, ObservableObject {
         // Reset timeout even if already observing
         resetObservationTimeout()
 
+        // Catch up on whatever happened while nobody was watching.
+        //
+        // Deliberately before the `isObserving` guard: this fires on every
+        // client attach, including the second one and including a re-arm after
+        // an iOS suspension, and those are precisely the cases where we are
+        // already observing but our picture of the home is old.
+        scheduleCatchUpRefresh()
+
         guard !isObserving else { return }
         isObserving = true
 
@@ -123,6 +177,19 @@ class HomeKitManager: NSObject, ObservableObject {
     /// Reset the observation timeout (call when server confirms listeners exist)
     func resetObservationTimeout() {
         observationTimeoutTask?.cancel()
+
+        // The keep-alive doubles as a liveness signal for *us*. Clients send it
+        // every 30s, so a much longer gap means this process was not running:
+        // a slept Mac, a backgrounded iPhone. Everything that happened in the
+        // gap happened without us watching, which is the relaunch case wearing
+        // a different hat — and the timeout task that would normally have
+        // noticed was suspended right along with everything else.
+        let now = Date()
+        if let last = lastKeepAliveAt, now.timeIntervalSince(last) > keepAliveGapTolerance {
+            print("[HomeKit] ⏳ \(Int(now.timeIntervalSince(last)))s since the last keep-alive — catching up")
+            scheduleCatchUpRefresh()
+        }
+        lastKeepAliveAt = now
 
         guard isObserving else { return }
 
@@ -190,6 +257,44 @@ class HomeKitManager: NSObject, ObservableObject {
         }
     }
 
+    /// Re-read everything once, now, because a client just started listening.
+    ///
+    /// HomeKit only tells us about changes while we are subscribed, and we are
+    /// only subscribed while the app is running. A light switched off in the
+    /// Apple Home app — or by hand, or by a HomeKit automation — while Homecast
+    /// was closed therefore produces no event we will ever see: on the next
+    /// launch HomeKit simply hands us the new value as if it had always been so.
+    ///
+    /// Detecting that means re-reading and comparing, and *when* we do it is the
+    /// whole difficulty. Reading in the background at launch is too early: it
+    /// corrects HomeKit's own cache in silence, and once corrected the
+    /// difference is gone for good — the 60s periodic pass then compares the new
+    /// value against itself, finds nothing, and a client that fetched the
+    /// accessory list a moment earlier keeps the old value it was handed for a
+    /// further five minutes.
+    ///
+    /// A client attaching is the moment that cannot be too early: it is by
+    /// definition after that client's own view was formed, and a relaunch, a
+    /// foreground and a second browser all look like it from here.
+    private func scheduleCatchUpRefresh() {
+        guard catchUpRefreshTask == nil else { return }
+        if let last = lastFullRefreshAt, Date().timeIntervalSince(last) < catchUpMinInterval { return }
+
+        catchUpRefreshTask = Task { @MainActor in
+            defer { self.catchUpRefreshTask = nil }
+            // Wait out a pass already in flight rather than dropping ours — the
+            // startup fill is the likeliest thing to be running when the first
+            // client of a launch attaches, and this pass is the entire reason
+            // that client will see the truth.
+            while self.isRefreshing {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            // Bigger batches than the periodic poll: this one is racing the
+            // first screen, the same way the startup read used to.
+            await self.refreshAndBroadcastChanges(batchSize: 50, label: "Catch-up refresh")
+        }
+    }
+
     /// Periodically refresh key characteristics and broadcast any changes.
     /// Safety net for when enableNotification-based HAP subscriptions are lost.
     private func startPeriodicRefresh() {
@@ -248,7 +353,30 @@ class HomeKitManager: NSObject, ObservableObject {
     /// (devices HomeKit last failed to reach stay flagged as unreachable even after they recover).
     /// Probing them lets HomeKit re-establish contact and fire accessoryDidUpdateReachability.
     /// Reads to genuinely-offline devices fail fast and are swallowed by `try?` below.
-    private func refreshAndBroadcastChanges() async {
+    ///
+    /// - Parameters:
+    ///   - batchSize: how many reads to have in flight at once. Small for the
+    ///     background poll so it doesn't crowd out a user's tap; larger when
+    ///     somebody is waiting on the result.
+    ///   - onlyUnread: restrict to characteristics HomeKit has no cached value
+    ///     for at all. Those are the only ones safe to read at launch, because
+    ///     reading them cannot destroy evidence of a change nobody has seen —
+    ///     see `refreshKeyCharacteristics()`.
+    ///   - label: what to call this pass in the log.
+    @discardableResult
+    private func refreshAndBroadcastChanges(
+        batchSize: Int = 15,
+        onlyUnread: Bool = false,
+        label: String = "Periodic refresh"
+    ) async -> Int {
+        guard !isRefreshing else { return 0 }
+        isRefreshing = true
+        defer {
+            isRefreshing = false
+            // A partial pass must not suppress the catch-up that follows it.
+            if !onlyUnread { lastFullRefreshAt = Date() }
+        }
+
         let allAccessories = homes.flatMap { $0.accessories }
 
         // Collect characteristics with their current cached values
@@ -257,6 +385,7 @@ class HomeKitManager: NSObject, ObservableObject {
             for service in accessory.services {
                 if service.serviceType == HMServiceTypeAccessoryInformation { continue }
                 for characteristic in service.characteristics {
+                    if onlyUnread && characteristic.value != nil { continue }
                     if characteristic.properties.contains(HMCharacteristicPropertyReadable),
                        Self.keyCharacteristicTypes.contains(characteristic.characteristicType) {
                         toRefresh.append((characteristic, accessory, characteristic.value))
@@ -265,11 +394,10 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        guard !toRefresh.isEmpty else { return }
+        guard !toRefresh.isEmpty else { return 0 }
 
-        // Read in batches, detect changes, and fire events
-        // Keep batch size small to avoid overwhelming HomeKit devices
-        let batchSize = 15
+        // Read in batches, detect changes, and fire events.
+        // Batches keep us from overwhelming HomeKit devices — see `batchSize`.
         var changedCount = 0
         for batch in stride(from: 0, to: toRefresh.count, by: batchSize) {
             let end = min(batch + batchSize, toRefresh.count)
@@ -297,17 +425,17 @@ class HomeKitManager: NSObject, ObservableObject {
                     // Successful read — record evidence of liveness (may flip effective reachability
                     // from false → true and fire the delegate if HomeKit still reports unreachable).
                     recordSuccessfulRead(accessory)
-                    if !Self.valuesEqual(oldValue, newValue) {
-                        changedCount += 1
-                        let value = newValue ?? NSNull()
-                        if let context = findAccessoryContext(accessory) {
-                            delegate?.characteristicDidUpdate(
-                                accessoryId: accessoryId,
-                                characteristicType: charType,
-                                value: value,
-                                context: context
-                            )
-                        }
+                    guard !Self.valuesEqual(oldValue, newValue) else { continue }
+
+                    changedCount += 1
+                    let value = newValue ?? NSNull()
+                    if let context = findAccessoryContext(accessory) {
+                        delegate?.characteristicDidUpdate(
+                            accessoryId: accessoryId,
+                            characteristicType: charType,
+                            value: value,
+                            context: context
+                        )
                     }
                 }
             }
@@ -327,10 +455,11 @@ class HomeKitManager: NSObject, ObservableObject {
             print("[HomeKit] 🔴 Refresh: \(failedAccessories.count) accessor(y|ies) had ALL reads fail → \(failedNames.prefix(5).joined(separator: ", "))")
         }
         if changedCount > 0 {
-            print("[HomeKit] 🔄 Periodic refresh found \(changedCount) changed characteristic(s) across \(succeededAccessories.count)/\(attemptedAccessories.count) responsive accessories")
+            print("[HomeKit] 🔄 \(label) found \(changedCount) changed characteristic(s) across \(succeededAccessories.count)/\(attemptedAccessories.count) responsive accessories")
         } else {
-            print("[HomeKit] ✓ Periodic refresh: \(succeededAccessories.count)/\(attemptedAccessories.count) accessories responded, no changes")
+            print("[HomeKit] ✓ \(label): \(succeededAccessories.count)/\(attemptedAccessories.count) accessories responded, no changes")
         }
+        return changedCount
     }
 
     private static func valuesEqual(_ a: Any?, _ b: Any?) -> Bool {
@@ -1954,50 +2083,31 @@ extension HomeKitManager: HMHomeManagerDelegate {
         HMCharacteristicTypeOutletInUse,
     ]
 
-    /// Refresh only key characteristics for UI display (skips info services).
-    /// Intentionally does NOT filter by isReachable — see refreshAndBroadcastChanges() for rationale.
+    /// Fill in key characteristics HomeKit has no value for, as soon as it hands
+    /// us its homes, so the first screen has something real to draw.
+    ///
+    /// Deliberately limited to characteristics with **no cached value at all**.
+    /// It used to re-read every key characteristic, and that is where the
+    /// "closed the app, changed a light, reopened, still shows the old state"
+    /// bug lived: reading corrects HomeKit's own cache in silence, and once
+    /// corrected there is no difference left for anything to notice. The
+    /// periodic pass then compared the new value against itself and reported
+    /// nothing, while a client that had fetched the accessory list moments
+    /// earlier held the old value for a further five minutes.
+    ///
+    /// Reading a characteristic that has no value cannot destroy that evidence,
+    /// because there was nothing to contradict. Correcting values that a client
+    /// may already have been handed belongs to `scheduleCatchUpRefresh()`,
+    /// which runs when a client attaches and so cannot get in front of it.
+    ///
+    /// Larger batches than the periodic poll — HomeKit handles concurrent reads
+    /// well, and this one is racing the first screen.
     func refreshKeyCharacteristics() async {
-        let allAccessories = homes.flatMap { $0.accessories }
-
-        // Collect all key characteristics to read
-        var characteristicsToRead: [HMCharacteristic] = []
-        for accessory in allAccessories {
-            for service in accessory.services {
-                // Skip info service - those values rarely change
-                if service.serviceType == HMServiceTypeAccessoryInformation {
-                    continue
-                }
-                for characteristic in service.characteristics {
-                    if characteristic.properties.contains(HMCharacteristicPropertyReadable),
-                       Self.keyCharacteristicTypes.contains(characteristic.characteristicType) {
-                        characteristicsToRead.append(characteristic)
-                    }
-                }
-            }
-        }
-
-        // Read in larger batches - HomeKit handles concurrent reads well
-        let batchSize = 50
-        for batch in stride(from: 0, to: characteristicsToRead.count, by: batchSize) {
-            let end = min(batch + batchSize, characteristicsToRead.count)
-            let batchChars = Array(characteristicsToRead[batch..<end])
-
-            await withTaskGroup(of: Void.self) { group in
-                for characteristic in batchChars {
-                    group.addTask {
-                        try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                            characteristic.readValue { error in
-                                if let error = error {
-                                    continuation.resume(throwing: error)
-                                } else {
-                                    continuation.resume()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        await refreshAndBroadcastChanges(
+            batchSize: 50,
+            onlyUnread: true,
+            label: "Startup fill"
+        )
     }
 
     /// Refresh info characteristics (manufacturer, serial, model, firmware) at a slower rate
