@@ -137,6 +137,58 @@ Auth depends on which broker is being used:
 - **Cloud mode (`mqtt.homecast.cloud`):** Homecast API access token (`hc_...`) as the password, username blank.
 - **Port:** 8883 (TLS) or 1883 in both modes.
 
+## Finding a relay
+
+The Mac advertises `_homecast._tcp` over Bonjour whenever the Community server
+is running, and every client browses for it: iOS via `NWBrowser`
+(`RelayDiscovery.swift`), Android via the system `NsdManager` behind a
+`@JavascriptInterface` bridge in `MainActivity.kt`, Windows/Linux via `mdns-sd`
+behind the `discover_relays` Tauri command, and Home Assistant via its own
+zeroconf. Discovery only ever *offers* a relay — selection is always an
+explicit tap, and the manual address field is never hidden.
+
+### TXT record
+
+The SRV record carries the HTTP port and the instance name is the display name,
+so TXT carries only what a browser cannot otherwise learn:
+
+| Key | Meaning |
+|-----|---------|
+| `v` | TXT schema version (`1`) |
+| `id` | Stable relay id, kept in UserDefaults. Survives renames and new DHCP leases — clients key "the relay I paired with" on this, **not** the name |
+| `ws` | WebSocket port. **Not derivable** — the WS listener does not advertise |
+| `md` | `community` |
+| `vs` | App version |
+| `au` | `1` when the relay requires a login. Unknown reads as `0`, so an unreported relay is flagged rather than trusted |
+
+`au` is pushed down from the web app (the setting lives in IndexedDB, which
+Swift cannot read) through the `advertise` bridge action, and mirrored on
+`/health` as `authEnabled`.
+
+Ports are tried in a **stride-2 ladder** — 5656, 5658, 5660… — because the WS
+listener binds HTTP+1, and a contiguous ladder would hand the next HTTP attempt
+the port WS just took. HTTP and WS bind as a pair; if either fails the pair is
+torn down and the ladder moves on.
+
+### Addresses are origins, not host:port
+
+Every client stores a full origin (`http://192.168.1.5:5656`,
+`https://home.example.com`), so a relay reached over a mesh VPN, a tunnel or a
+public HTTPS host works the same as one on the LAN. A stored value with no
+scheme is read as `http://` — that is what older installs meant.
+
+The WebSocket URL follows from the origin's shape (`config.ts` `communityWsUrl`):
+
+| Origin | WebSocket |
+|--------|-----------|
+| explicit port (LAN, VPN) | same host, the reported `wsPort`, else HTTP+1 |
+| no port (443/80 — proxied) | **same-origin `/ws`** |
+
+The proxied case is a deployment contract: the front end must route `/ws` to
+the WS port and everything else to the HTTP port. `NWListener` cannot serve
+HTTP and WebSocket on one port, so the two-port split is not going away without
+hand-rolling RFC 6455.
+
 ## Relay Protocol (WebSocket)
 
 Messages use this JSON format:
@@ -180,6 +232,7 @@ Messages use this JSON format:
 |------|---------|
 | `app-ios-macos/Sources/Server/LocalHTTPServer.swift` | NWListener HTTP + WS server |
 | `app-ios-macos/Sources/Server/LocalNetworkBridge.swift` | Swift ↔ JS bridge for external clients |
+| `app-ios-macos/Sources/Server/RelayDiscovery.swift` | NWBrowser — finds relays on the LAN (iOS; no-op on the Mac) |
 | `app-ios-macos/Sources/Server/MQTTBridge.swift` | HomeKit ↔ MQTT bridge (state publish, command subscribe) |
 | `app-ios-macos/Sources/Server/MQTTClient.swift` | MQTT 3.1.1 client (NWConnection-based) |
 | `app-ios-macos/Sources/Server/MQTTDiscovery.swift` | Home Assistant MQTT auto-discovery config generator |

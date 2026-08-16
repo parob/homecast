@@ -72,6 +72,35 @@
         margin-bottom: 6px;
       }
       .input-row { display: flex; gap: 8px; }
+      /* Relays found on the network, above the manual field. Discovery is
+         additive — this block simply stays empty when nothing is found. */
+      .relay-list { margin-bottom: 12px; }
+      .relay-list:empty { display: none; }
+      .relay {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        text-align: left;
+        background: #0a0a0a;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        color: #fafafa;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .relay:hover { border-color: #555; }
+      .relay-name { font-weight: 500; }
+      .relay-meta { font-size: 12px; color: #888; margin-top: 2px; }
+      .relay-warn { color: #fbbf24; }
+      .discovery-status {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 10px;
+      }
+      .discovery-status:empty { display: none; }
       .server-form input {
         flex: 1;
         background: #0a0a0a;
@@ -96,6 +125,27 @@
       }
       .btn:hover { background: #e5e5e5; }
       .btn:disabled { opacity: 0.5; cursor: default; }
+      .warn-box {
+        display: none;
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid #78350f;
+        background: #1c1204;
+        border-radius: 8px;
+        font-size: 12px;
+        color: #fbbf24;
+      }
+      .warn-box.visible { display: block; }
+      .warn-box button {
+        margin-top: 8px;
+        background: none;
+        border: 1px solid #78350f;
+        border-radius: 6px;
+        color: #fbbf24;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
       .error {
         font-size: 12px;
         color: #f87171;
@@ -129,6 +179,8 @@
         <h2>Community Server</h2>
         <p>Connect to a Homecast relay on your network, or anywhere you can reach it. No account needed.</p>
         <div class="server-form" id="server-form">
+          <div class="relay-list" id="relay-list"></div>
+          <div class="discovery-status" id="discovery-status"></div>
           <label for="server-url">Server URL</label>
           <div class="input-row">
             <!-- A numeric address, not mac.local: Android's resolver has no
@@ -136,6 +188,7 @@
             <input type="url" id="server-url" placeholder="http://192.168.1.50:5656" autocapitalize="off" autocorrect="off" />
             <button class="btn" id="connect-btn" onclick="event.stopPropagation(); connectCommunity();">Connect</button>
           </div>
+          <div class="warn-box" id="unprotected-warning"></div>
           <div class="error" id="error"></div>
         </div>
       </div>
@@ -184,6 +237,139 @@
         setTimeout(function() {
           document.getElementById('server-url').focus();
         }, 100);
+        startRelayDiscovery();
+      }
+
+      // --- Relay discovery -------------------------------------------------
+      //
+      // The native shell finds relays advertising _homecast._tcp and calls the
+      // hooks below. Everything here is additive: if the shell has no
+      // discovery bridge, or the network blocks mDNS, or we're away from home,
+      // the list stays empty and the address field below is how you connect.
+
+      var discoveredRelays = {};
+      var discoveryTimer = null;
+
+      function startRelayDiscovery() {
+        // Two shells, one contract: Android speaks through the Kotlin bridge,
+        // desktop through Tauri events. Both end up calling the same
+        // window.__homecastOnRelay* hooks below.
+        var started = startAndroidDiscovery() || startDesktopDiscovery();
+        if (!started) return;
+
+        setDiscoveryStatus('Searching your network…');
+        discoveryTimer = setTimeout(function () {
+          if (!Object.keys(discoveredRelays).length) {
+            setDiscoveryStatus('No relays found — enter an address below.');
+          }
+        }, 5000);
+      }
+
+      function startAndroidDiscovery() {
+        var bridge = window.HomecastDiscovery;
+        if (!bridge || typeof bridge.startDiscovery !== 'function') return false;
+        try { bridge.startDiscovery(); } catch (_) { return false; }
+        return true;
+      }
+
+      function startDesktopDiscovery() {
+        var tauri = window.__TAURI__;
+        if (!tauri || !tauri.event || !tauri.core) return false;
+        try {
+          tauri.event.listen('relay-found', function (e) {
+            window.__homecastOnRelayFound(e.payload);
+          });
+          tauri.event.listen('relay-lost', function (e) {
+            window.__homecastOnRelayLost(e.payload);
+          });
+          tauri.core.invoke('discover_relays');
+        } catch (_) {
+          return false;
+        }
+        return true;
+      }
+
+      function stopRelayDiscovery() {
+        try {
+          if (window.HomecastDiscovery && window.HomecastDiscovery.stopDiscovery) {
+            window.HomecastDiscovery.stopDiscovery();
+          }
+        } catch (_) {}
+        // The desktop browse stops on its own timer — there is no window to
+        // leave it running in once we navigate away from the picker.
+        if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
+      }
+
+      function setDiscoveryStatus(text) {
+        document.getElementById('discovery-status').textContent = text || '';
+      }
+
+      window.__homecastOnRelayFound = function (relay) {
+        if (!relay || !relay.host || !relay.port) return;
+        discoveredRelays[relay.id || relay.name] = relay;
+        renderRelays();
+      };
+
+      window.__homecastOnRelayLost = function (id) {
+        // The shell reports the Bonjour name; a relay keyed by its TXT id has
+        // to be matched on the name too.
+        Object.keys(discoveredRelays).forEach(function (key) {
+          if (key === id || discoveredRelays[key].name === id) delete discoveredRelays[key];
+        });
+        renderRelays();
+      };
+
+      window.__homecastOnDiscoveryState = function (state) {
+        if (state === 'unavailable') setDiscoveryStatus('');
+      };
+
+      function renderRelays() {
+        var list = document.getElementById('relay-list');
+        var keys = Object.keys(discoveredRelays);
+        list.textContent = '';
+        if (!keys.length) return;
+
+        setDiscoveryStatus('');
+        if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
+
+        keys.sort(function (a, b) {
+          return String(discoveredRelays[a].name).localeCompare(String(discoveredRelays[b].name));
+        });
+
+        keys.forEach(function (key) {
+          var relay = discoveredRelays[key];
+          var origin = 'http://' + relay.host + ':' + relay.port;
+
+          var button = document.createElement('button');
+          button.className = 'relay';
+          button.type = 'button';
+
+          var text = document.createElement('div');
+          var name = document.createElement('div');
+          name.className = 'relay-name';
+          name.textContent = relay.name;
+          var meta = document.createElement('div');
+          meta.className = 'relay-meta';
+          meta.textContent = origin;
+          if (relay.auth === false) {
+            var warn = document.createElement('span');
+            warn.className = 'relay-warn';
+            warn.textContent = ' · No password set';
+            meta.appendChild(warn);
+          }
+          text.appendChild(name);
+          text.appendChild(meta);
+          button.appendChild(text);
+
+          button.addEventListener('click', function (event) {
+            event.stopPropagation();
+            document.getElementById('server-url').value = origin;
+            stopRelayDiscovery();
+            connectCommunity();
+          });
+
+          list.appendChild(button);
+        });
       }
 
       function connectCommunity() {
@@ -210,12 +396,82 @@
         }
 
         errorEl.classList.remove('visible');
+        checkThenGo(url);
+      }
+
+      /**
+       * A relay with no password is a nuisance on your own network and a
+       * genuine exposure off it — so reaching one at a public address is worth
+       * stopping for. /health answers before any auth, so this costs one
+       * request and never blocks the connection if the relay doesn't answer.
+       */
+      function checkThenGo(url) {
+        if (acknowledgedUnprotected || isLocalAddress(url)) return go(url);
+        var probe;
+        try {
+          // AbortSignal.timeout is recent; an older Android System WebView
+          // throws here, and it would throw *before* fetch is even called —
+          // taking the Connect button down with it. Connecting matters more
+          // than the warning, so fall back to an untimed probe.
+          probe = fetch(url + '/health', { signal: AbortSignal.timeout(4000) });
+        } catch (_) {
+          try { probe = fetch(url + '/health'); } catch (_) { return go(url); }
+        }
+        probe
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data && data.authEnabled === false) showUnprotectedWarning(url);
+            else go(url);
+          })
+          .catch(function () { go(url); });
+      }
+
+      var acknowledgedUnprotected = false;
+
+      function showUnprotectedWarning(url) {
+        var box = document.getElementById('unprotected-warning');
+        box.textContent = '';
+        var text = document.createElement('div');
+        text.textContent =
+          'This relay has no password. Anyone who can reach this address can ' +
+          'control your home. Turn on authentication in Homecast on your Mac, ' +
+          'under Settings.';
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Connect anyway';
+        button.addEventListener('click', function (event) {
+          event.stopPropagation();
+          acknowledgedUnprotected = true;
+          go(url);
+        });
+        box.appendChild(text);
+        box.appendChild(button);
+        box.classList.add('visible');
+      }
+
+      /** Private ranges, link-local, the CGNAT block mesh VPNs use, or .local. */
+      function isLocalAddress(url) {
+        var host;
+        try { host = new URL(url).hostname.toLowerCase(); } catch (_) { return false; }
+        if (host === 'localhost' || /\.local$/.test(host)) return true;
+        var m = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+        if (!m) return false;
+        var a = +m[1], b = +m[2];
+        return a === 10 || a === 127 ||
+          (a === 192 && b === 168) ||
+          (a === 172 && b >= 16 && b <= 31) ||
+          (a === 169 && b === 254) ||
+          (a === 100 && b >= 64 && b <= 127);
+      }
+
+      function go(url) {
         localStorage.setItem('homecast-mode', 'community');
         localStorage.setItem('homecast-server-url', url);
         // Nothing to hand over to the web app: it is served from the relay's
         // own origin and reads window.location, which is right for a LAN
         // address, a VPN address and a proxied hostname alike. (This page is a
         // different origin, so its localStorage isn't visible there anyway.)
+        stopRelayDiscovery();
         window.location.href = url;
       }
 

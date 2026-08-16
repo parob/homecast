@@ -1,5 +1,101 @@
 use tauri::webview::PageLoadEvent;
 
+/// Relay discovery on desktop.
+///
+/// Android has its own path — the system `NsdManager`, reached through a
+/// Kotlin `@JavascriptInterface` bridge — because it needs no multicast lock
+/// and no extra manifest permissions, which a raw-socket mDNS implementation
+/// like this one would. iOS never runs the Tauri shell at all.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod discovery {
+    use serde_json::json;
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    const SERVICE_TYPE: &str = "_homecast._tcp.local.";
+
+    /// Whether this webview is still showing the bundled picker, which Tauri
+    /// serves over the asset protocol rather than from a real host.
+    fn is_picker(window: &tauri::WebviewWindow) -> bool {
+        match window.url() {
+            Ok(url) => {
+                let host = url.host_str().unwrap_or("");
+                url.scheme() == "tauri" || host == "tauri.localhost" || host == "localhost"
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Browse for relays, emitting `relay-found` as each one resolves.
+    ///
+    /// Runs for a bounded window rather than forever: the picker is a
+    /// short-lived screen, and a browse left running would outlive it.
+    #[tauri::command]
+    pub fn discover_relays(window: tauri::WebviewWindow) -> Result<(), String> {
+        // Only the bundled picker may scan the network. Tauri already refuses
+        // IPC from origins outside a capability's `remote.urls`, but stating
+        // it here means a relay page — or the cloud web app, which *is*
+        // allowlisted — can never enumerate the user's LAN. Same posture as
+        // the Android bridge's origin gate.
+        if !is_picker(&window) {
+            return Err("discovery is only available on the mode picker".into());
+        }
+
+        let daemon = mdns_sd::ServiceDaemon::new().map_err(|e| e.to_string())?;
+        let receiver = daemon.browse(SERVICE_TYPE).map_err(|e| e.to_string())?;
+
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let event = match receiver.recv_timeout(remaining) {
+                    Ok(event) => event,
+                    Err(_) => break,
+                };
+                match event {
+                    mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                        // The web app navigates to this, so it must be an
+                        // address rather than a .local name — and specifically
+                        // an IPv4 one: a bare IPv6 literal needs brackets to
+                        // be a legal URL host, and the first address offered
+                        // is often the link-local v6.
+                        let Some(address) = info
+                            .get_addresses()
+                            .iter()
+                            .find(|addr| addr.is_ipv4())
+                        else {
+                            continue;
+                        };
+                        let name = info.get_fullname().split('.').next().unwrap_or("").to_string();
+                        let txt = |key: &str| {
+                            info.get_property_val_str(key).map(|v| v.to_string())
+                        };
+                        let payload = json!({
+                            "id": txt("id").unwrap_or_else(|| name.clone()),
+                            "name": name,
+                            "host": address.to_string(),
+                            "port": info.get_port(),
+                            "wsPort": txt("ws").and_then(|v| v.parse::<u16>().ok()),
+                            "version": txt("vs"),
+                            "auth": txt("au").map(|v| v == "1"),
+                            "v": txt("v").and_then(|v| v.parse::<u32>().ok()),
+                        });
+                        let _ = window.emit("relay-found", payload);
+                    }
+                    mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
+                        let name = fullname.split('.').next().unwrap_or("").to_string();
+                        let _ = window.emit("relay-lost", name);
+                    }
+                    _ => {}
+                }
+            }
+            let _ = daemon.shutdown();
+        });
+
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "android")]
 const PLATFORM_FLAGS_JS: &str = "\
     window.isHomecastTauriApp = true;\
@@ -149,8 +245,13 @@ const ANDROID_SAFE_AREA_JS: &str = r#"
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+
+    // Desktop only — on Android the Kotlin bridge does this instead.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.invoke_handler(tauri::generate_handler![discovery::discover_relays]);
+
+    builder
         .on_page_load(|webview, payload| {
             match payload.event() {
                 // Set safe-area-top BEFORE first paint so content positioned

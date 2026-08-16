@@ -4,7 +4,11 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -12,8 +16,11 @@ import android.view.WindowInsetsController
 import org.json.JSONObject
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessaging
+import java.net.Inet4Address
+import java.net.InetAddress
 
 class MainActivity : TauriActivity() {
 
@@ -71,6 +78,7 @@ class MainActivity : TauriActivity() {
         instance = this
         webView.addJavascriptInterface(StatusBarBridge(), "HomecastAndroid")
         webView.addJavascriptInterface(PushBridge(), "HomecastAndroidPush")
+        webView.addJavascriptInterface(DiscoveryBridge(), "HomecastDiscovery")
         installBackPressHandler()
     }
 
@@ -120,8 +128,259 @@ class MainActivity : TauriActivity() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        discoveryWanted = false
+        stopNsd()
         webViewRef = null
         super.onDestroy()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // An mDNS subscription left running in the background costs battery
+        // for results nobody is looking at.
+        if (discoveryWanted) stopNsd()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (discoveryWanted) runOnUiThread { if (isPickerOrigin()) startNsd() }
+    }
+
+    // MARK: - Relay discovery (mDNS)
+
+    private val nsdManager: NsdManager by lazy {
+        getSystemService(Context.NSD_SERVICE) as NsdManager
+    }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    @Volatile private var discoveryWanted = false
+
+    /** Pre-34 resolve state. resolveService serialises, so this queue is required. */
+    private val resolveQueue = ArrayDeque<NsdServiceInfo>()
+    private var resolving = false
+    private val resolveRetries = HashMap<String, Int>()
+
+    /** API 34+ per-service callbacks, keyed by service name. */
+    private val infoCallbacks = HashMap<String, Any>()
+
+    /**
+     * A JavascriptInterface is attached to the WebView, so every page it loads
+     * can call it — including the relay's own web app, which is a remote
+     * origin and after remote access may not even be on this network. Without
+     * this gate a hostile or compromised relay could enumerate the user's LAN.
+     */
+    private fun isPickerOrigin(): Boolean {
+        val current = webViewRef?.url ?: return false
+        val home = homeUrl ?: return false
+        return sameOrigin(current, home)
+    }
+
+    private fun startNsd() {
+        if (discoveryListener != null) return
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {
+                emitDiscoveryState("searching")
+            }
+
+            override fun onServiceFound(info: NsdServiceInfo) {
+                if (info.serviceType.trim('.') != SERVICE_TYPE.trim('.')) return
+                enqueueResolve(info)
+            }
+
+            override fun onServiceLost(info: NsdServiceInfo) {
+                evalJs(
+                    "window.__homecastOnRelayLost && " +
+                        "window.__homecastOnRelayLost(${jsString(info.serviceName)})"
+                )
+            }
+
+            override fun onDiscoveryStopped(serviceType: String) {
+                emitDiscoveryState("stopped")
+            }
+
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.w(TAG, "NSD discovery failed to start: $errorCode")
+                discoveryListener = null
+                emitDiscoveryState("unavailable")
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                discoveryListener = null
+            }
+        }
+        discoveryListener = listener
+        try {
+            nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+        } catch (t: Throwable) {
+            Log.w(TAG, "NSD unavailable", t)
+            discoveryListener = null
+            emitDiscoveryState("unavailable")
+        }
+    }
+
+    private fun stopNsd() {
+        discoveryListener?.let {
+            try { nsdManager.stopServiceDiscovery(it) } catch (_: Throwable) {}
+        }
+        discoveryListener = null
+        if (Build.VERSION.SDK_INT >= 34) unregisterInfoCallbacks()
+        infoCallbacks.clear()
+        synchronized(resolveQueue) {
+            resolveQueue.clear()
+            resolving = false
+        }
+        resolveRetries.clear()
+    }
+
+    private fun enqueueResolve(info: NsdServiceInfo) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            watchService(info)
+            return
+        }
+        synchronized(resolveQueue) { resolveQueue.addLast(info) }
+        pumpResolve()
+    }
+
+    /**
+     * One resolve in flight at a time.
+     *
+     * Before API 34 `resolveService` is serialised inside the framework and
+     * answers any concurrent call with FAILURE_ALREADY_ACTIVE, so firing one
+     * per discovered service loses all but the first.
+     */
+    @Suppress("DEPRECATION")
+    private fun pumpResolve() {
+        val next: NsdServiceInfo
+        synchronized(resolveQueue) {
+            if (resolving) return
+            next = resolveQueue.removeFirstOrNull() ?: return
+            resolving = true
+        }
+        nsdManager.resolveService(next, object : NsdManager.ResolveListener {
+            override fun onServiceResolved(resolved: NsdServiceInfo) {
+                synchronized(resolveQueue) { resolving = false }
+                emitRelay(resolved)
+                pumpResolve()
+            }
+
+            override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) {
+                synchronized(resolveQueue) { resolving = false }
+                if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE) {
+                    val key = failed.serviceName
+                    val tries = (resolveRetries[key] ?: 0) + 1
+                    if (tries <= 3) {
+                        resolveRetries[key] = tries
+                        mainHandler.postDelayed({ enqueueResolve(failed) }, 250L * tries)
+                    }
+                } else {
+                    Log.w(TAG, "NSD resolve failed for ${failed.serviceName}: $errorCode")
+                }
+                pumpResolve()
+            }
+        })
+    }
+
+    /** API 34+: a live subscription, so TXT changes arrive without re-resolving. */
+    @RequiresApi(34)
+    private fun watchService(info: NsdServiceInfo) {
+        val key = info.serviceName
+        if (infoCallbacks.containsKey(key)) return
+        val callback = object : NsdManager.ServiceInfoCallback {
+            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                Log.w(TAG, "NSD info callback failed for $key: $errorCode")
+                infoCallbacks.remove(key)
+            }
+
+            override fun onServiceUpdated(updated: NsdServiceInfo) = emitRelay(updated)
+
+            override fun onServiceLost() {
+                evalJs(
+                    "window.__homecastOnRelayLost && " +
+                        "window.__homecastOnRelayLost(${jsString(key)})"
+                )
+            }
+
+            override fun onServiceInfoCallbackUnregistered() {
+                infoCallbacks.remove(key)
+            }
+        }
+        infoCallbacks[key] = callback
+        try {
+            nsdManager.registerServiceInfoCallback(info, mainExecutor, callback)
+        } catch (t: Throwable) {
+            Log.w(TAG, "NSD info callback registration threw for $key", t)
+            infoCallbacks.remove(key)
+        }
+    }
+
+    @RequiresApi(34)
+    private fun unregisterInfoCallbacks() {
+        infoCallbacks.values.forEach { cb ->
+            if (cb is NsdManager.ServiceInfoCallback) {
+                try { nsdManager.unregisterServiceInfoCallback(cb) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    private fun emitRelay(info: NsdServiceInfo) {
+        val address = pickIpv4(info) ?: return
+        val attributes = info.attributes ?: emptyMap<String, ByteArray?>()
+        fun txt(key: String): String? = attributes[key]?.let { String(it, Charsets.UTF_8) }
+
+        val json = JSONObject()
+        // The relay's stable id, so a Mac that changed address is the same row.
+        json.put("id", txt("id") ?: info.serviceName)
+        json.put("name", info.serviceName)
+        json.put("host", address)
+        json.put("port", info.port)
+        txt("ws")?.toIntOrNull()?.let { json.put("wsPort", it) }
+        txt("vs")?.let { json.put("version", it) }
+        txt("au")?.let { json.put("auth", it == "1") }
+        txt("v")?.toIntOrNull()?.let { json.put("v", it) }
+
+        evalJs("window.__homecastOnRelayFound && window.__homecastOnRelayFound($json)")
+    }
+
+    /**
+     * Always a numeric IPv4 address.
+     *
+     * Android's platform resolver has no mDNS — only NsdManager does, and only
+     * internally — so a `.local` name handed to the WebView would never
+     * resolve. (iOS can use the name; Android cannot.)
+     */
+    @Suppress("DEPRECATION")
+    private fun pickIpv4(info: NsdServiceInfo): String? {
+        val candidates: List<InetAddress> =
+            if (Build.VERSION.SDK_INT >= 34) info.hostAddresses
+            else listOfNotNull(info.host)
+        return candidates.filterIsInstance<Inet4Address>().firstOrNull()?.hostAddress
+    }
+
+    private fun emitDiscoveryState(state: String) {
+        evalJs(
+            "window.__homecastOnDiscoveryState && " +
+                "window.__homecastOnDiscoveryState(${jsString(state)})"
+        )
+    }
+
+    inner class DiscoveryBridge {
+        /** Begin looking for relays. No-op anywhere but the mode picker. */
+        @JavascriptInterface
+        fun startDiscovery() {
+            runOnUiThread {
+                if (!isPickerOrigin()) return@runOnUiThread
+                discoveryWanted = true
+                startNsd()
+            }
+        }
+
+        @JavascriptInterface
+        fun stopDiscovery() {
+            runOnUiThread {
+                discoveryWanted = false
+                stopNsd()
+            }
+        }
     }
 
     private fun evalJs(js: String) {
@@ -223,6 +482,9 @@ class MainActivity : TauriActivity() {
 
     companion object {
         private const val TAG = "HomecastMain"
+
+        /** What the Mac relay advertises itself as. */
+        private const val SERVICE_TYPE = "_homecast._tcp"
 
         @Volatile private var instance: MainActivity? = null
 

@@ -477,6 +477,10 @@ struct RelayConnector: View {
     @State private var address = ""
     @State private var isConnecting = false
     @State private var error = ""
+    @StateObject private var discovery = RelayDiscovery()
+    @State private var showUnprotectedWarning = false
+    @State private var pendingOrigin: String?
+    @State private var acknowledgedUnprotected = false
 
     private var logoImage: UIImage? {
         if let path = Bundle.main.path(forResource: "web-dist/icon-192", ofType: "png"),
@@ -509,6 +513,8 @@ struct RelayConnector: View {
                 }
 
                 VStack(spacing: 12) {
+                    discoverySection
+
                     TextField("http://192.168.1.50:5656", text: $address)
                         .textFieldStyle(.roundedBorder)
                         .keyboardType(.URL)
@@ -557,6 +563,101 @@ struct RelayConnector: View {
         .padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .onAppear { discovery.start() }
+        .onDisappear { discovery.stop() }
+        .alert("This relay has no password", isPresented: $showUnprotectedWarning) {
+            Button("Cancel", role: .cancel) { pendingOrigin = nil }
+            Button("Connect Anyway", role: .destructive) {
+                acknowledgedUnprotected = true
+                if let origin = pendingOrigin {
+                    pendingOrigin = nil
+                    onConnect(origin)
+                }
+            }
+        } message: {
+            Text("Anyone who can reach this address can control your home. "
+                 + "Turn on authentication in Homecast on your Mac, under Settings.")
+        }
+    }
+
+    /// Relays found on the network, above the address field.
+    ///
+    /// Everything here is additive — if discovery finds nothing, is refused
+    /// permission, or fails outright, the address field below is untouched and
+    /// remains the way to connect. That also covers being away from home,
+    /// where there is no relay to discover at all.
+    @ViewBuilder
+    private var discoverySection: some View {
+        if !discovery.relays.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("On your network")
+
+                ForEach(discovery.relays) { relay in
+                    Button {
+                        address = relay.origin
+                        if let wsPort = relay.wsPort { AppConfig.relayWsPort = wsPort }
+                        UserDefaults.standard.set(relay.id, forKey: "com.homecast.relayInstanceId")
+                        connect()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "desktopcomputer")
+                                .foregroundColor(.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(relay.name)
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.primary)
+                                HStack(spacing: 6) {
+                                    Text(relay.origin)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                    if relay.authEnabled == false {
+                                        Label("No password", systemImage: "lock.open")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.orange)
+                                    }
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(10)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isConnecting)
+                }
+
+                sectionLabel("Or enter an address")
+            }
+        } else if discovery.state == .denied {
+            VStack(spacing: 6) {
+                Text("Local Network access is off, so Homecast can't find relays on your network.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+        } else if discovery.state == .searching {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Looking for relays on your network…")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.secondary)
+            .kerning(0.5)
     }
 
     private func connect() {
@@ -571,15 +672,21 @@ struct RelayConnector: View {
         // case, the local server's default port. Anything with a scheme is
         // taken as written, so https://home.example.com stays on 443.
         var typed = address.trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let hasScheme = typed.lowercased().hasPrefix("http://") || typed.lowercased().hasPrefix("https://")
         if !hasScheme { typed = "http://\(typed)" }
-        if typed.lowercased().hasPrefix("http://"),
-           let probe = URL(string: typed), probe.port == nil {
-            typed += ":5656"
+
+        // Set the port on the parsed URL rather than appending to the string:
+        // "http://mac/dashboard" + ":5656" is not an address at all.
+        guard var components = URLComponents(string: typed), components.host != nil else {
+            error = "Invalid address"
+            isConnecting = false
+            return
+        }
+        if components.scheme?.lowercased() == "http", components.port == nil {
+            components.port = 5656
         }
 
-        let origin = AppConfig.normalizedRelayOrigin(typed)
+        let origin = AppConfig.normalizedRelayOrigin(components.string ?? typed)
 
         guard URL(string: origin)?.host != nil, let healthURL = URL(string: "\(origin)/health") else {
             error = "Invalid address"
@@ -605,10 +712,38 @@ struct RelayConnector: View {
                 if let wsPort = json["wsPort"] as? Int, wsPort > 0 {
                     AppConfig.relayWsPort = wsPort
                 }
+
+                // A relay with no password is a nuisance on your own network
+                // and a genuine exposure off it, so reaching one at a public
+                // address is worth stopping for.
+                let unprotected = (json["authEnabled"] as? Bool) == false
+                if unprotected, !Self.isLocalHost(origin), !self.acknowledgedUnprotected {
+                    self.pendingOrigin = origin
+                    self.showUnprotectedWarning = true
+                    return
+                }
+
                 onConnect(origin)
             }
         }
         task.resume()
+    }
+
+    /// Whether the relay is on a network the user plausibly controls: private
+    /// ranges, link-local, the CGNAT block mesh VPNs hand out, or `.local`.
+    static func isLocalHost(_ origin: String) -> Bool {
+        guard let host = URL(string: origin)?.host?.lowercased() else { return false }
+        if host == "localhost" || host.hasSuffix(".local") { return true }
+
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4, parts.allSatisfy({ $0 >= 0 && $0 <= 255 }) else { return false }
+        switch (parts[0], parts[1]) {
+        case (10, _), (127, _), (192, 168): return true
+        case (172, 16...31): return true
+        case (169, 254): return true
+        case (100, 64...127): return true   // CGNAT — Tailscale and friends
+        default: return false
+        }
     }
 }
 

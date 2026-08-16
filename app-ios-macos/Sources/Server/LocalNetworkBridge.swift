@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import WebKit
 
 /// Bridges between external WebSocket clients (via LocalHTTPServer) and the
@@ -194,8 +195,80 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
             guard let authEnabled = body["authEnabled"] as? Bool else { return }
             server?.updateAdvertisement(authEnabled: authEnabled)
 
+        case "jwtKey":
+            guard let requestId = body["requestId"] as? String else { return }
+            if body["rotate"] as? Bool == true { Self.deleteJWTSigningKey() }
+            let key = Self.jwtSigningKey()?.base64EncodedString()
+            deliverJWTKey(requestId: requestId, base64: key)
+
         default:
             NSLog("[LocalNetworkBridge] Unknown action from JS: %@", action)
+        }
+    }
+
+    // MARK: - JWT signing key (Keychain)
+
+    /// The relay's JWT signing key, minted on first use and kept in the
+    /// Keychain.
+    ///
+    /// It used to be generated per launch and held in memory, which meant
+    /// every restart of the Mac app silently signed out every client on the
+    /// network. Keeping it here restores restart-survival while leaving the
+    /// raw bytes under the OS's protection rather than in IndexedDB — which is
+    /// the trade the local-auth module was written to wait for.
+    private static let jwtKeychainService = "cloud.homecast.relay"
+    private static let jwtKeychainAccount = "jwt-signing-key"
+
+    private static func jwtKeychainQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: jwtKeychainService,
+            kSecAttrAccount as String: jwtKeychainAccount,
+        ]
+    }
+
+    static func jwtSigningKey() -> Data? {
+        var query = jwtKeychainQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data, data.count == 32 {
+            return data
+        }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            NSLog("[LocalNetworkBridge] Could not generate a JWT signing key")
+            return nil
+        }
+        let data = Data(bytes)
+
+        var add = jwtKeychainQuery()
+        add[kSecValueData as String] = data
+        // The relay serves the network from launch, including before anyone
+        // has unlocked the Mac since boot.
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status != errSecSuccess && status != errSecDuplicateItem {
+            NSLog("[LocalNetworkBridge] Keychain add failed: %d", Int(status))
+            return nil
+        }
+        return data
+    }
+
+    /// Drop the key so the next request mints a fresh one. Used when the web
+    /// app deliberately invalidates every outstanding token.
+    static func deleteJWTSigningKey() {
+        SecItemDelete(jwtKeychainQuery() as CFDictionary)
+    }
+
+    private func deliverJWTKey(requestId: String, base64: String?) {
+        let value = base64.map { "'\($0)'" } ?? "null"
+        let js = "window.__homecast_jwt_key && window.__homecast_jwt_key('\(requestId)', \(value))"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 }

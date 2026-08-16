@@ -67,6 +67,11 @@ class LocalHTTPServer {
     /// Fences listener callbacks, so a listener cancelled by a newer start()
     /// cannot advance the current attempt.
     private var bindGeneration = 0
+    /// Fences callbacks *within* one ladder run. Every attempt shares a
+    /// generation, so without this a late failure from the listener we just
+    /// abandoned would advance the ladder a second time and silently skip a
+    /// candidate port.
+    private var attemptToken = 0
 
     // MIME type mapping
     private static let mimeTypes: [String: String] = [
@@ -163,6 +168,8 @@ class LocalHTTPServer {
             return
         }
         let candidatePort = portCandidates[candidateIndex]
+        attemptToken &+= 1
+        let token = attemptToken
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
@@ -189,7 +196,9 @@ class LocalHTTPServer {
         }
 
         listener.stateUpdateHandler = { [weak self] state in
-            guard let self = self, generation == self.bindGeneration else { return }
+            guard let self = self,
+                  generation == self.bindGeneration,
+                  token == self.attemptToken else { return }
             switch state {
             case .ready:
                 self.isRunning = true
@@ -229,7 +238,7 @@ class LocalHTTPServer {
         // WebSocket listener is for external clients, which by definition
         // cannot reach it.
         if exposure == .network {
-            startWSListener(httpPort: candidatePort, generation: generation)
+            startWSListener(httpPort: candidatePort, generation: generation, token: token)
         }
     }
 
@@ -254,7 +263,7 @@ class LocalHTTPServer {
     /// HTTP and WS bind as a pair: if WS can't come up, the HTTP listener it
     /// belongs to is torn down and the ladder moves on, rather than leaving a
     /// server that serves pages but can never push an update.
-    private func startWSListener(httpPort: UInt16, generation: Int) {
+    private func startWSListener(httpPort: UInt16, generation: Int, token: Int) {
         let wsPortCandidate = httpPort + 1
 
         let wsParams = NWParameters(tls: nil)
@@ -268,12 +277,14 @@ class LocalHTTPServer {
             listener = try NWListener(using: wsParams, on: NWEndpoint.Port(rawValue: wsPortCandidate)!)
         } catch {
             NSLog("[LocalHTTPServer] WS port %d unavailable: %@", wsPortCandidate, error.localizedDescription)
-            failWSPair(generation: generation)
+            failWSPair(generation: generation, token: token)
             return
         }
 
         listener.stateUpdateHandler = { [weak self] state in
-            guard let self = self, generation == self.bindGeneration else { return }
+            guard let self = self,
+                  generation == self.bindGeneration,
+                  token == self.attemptToken else { return }
             switch state {
             case .ready:
                 self.wsPort = wsPortCandidate
@@ -285,7 +296,7 @@ class LocalHTTPServer {
                 // wsPort is only set once ready, so a non-zero value means this
                 // is a later collapse rather than a failure to bind.
                 guard self.wsPort == 0 else { return }
-                self.failWSPair(generation: generation)
+                self.failWSPair(generation: generation, token: token)
             default:
                 break
             }
@@ -300,8 +311,8 @@ class LocalHTTPServer {
     }
 
     /// Drop the whole HTTP+WS pair for this candidate and try the next.
-    private func failWSPair(generation: Int) {
-        guard generation == bindGeneration else { return }
+    private func failWSPair(generation: Int, token: Int) {
+        guard generation == bindGeneration, token == attemptToken else { return }
         teardownPair()
         advance(from: generation)
     }

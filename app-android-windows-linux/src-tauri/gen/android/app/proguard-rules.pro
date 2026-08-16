@@ -30,3 +30,6 @@
 -keepclassmembers class cloud.homecast.app.MainActivity$StatusBarBridge {
     @android.webkit.JavascriptInterface <methods>;
 }
+-keepclassmembers class cloud.homecast.app.MainActivity$DiscoveryBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

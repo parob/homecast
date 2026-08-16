@@ -43,6 +43,7 @@ open Homecast.xcodeproj
 ## What You Get
 
 - **Control from any browser** — open `http://your-mac.local:5656` on your phone or tablet
+- **Found automatically** — the iOS and Android apps list the Macs running Homecast on your network, so there's no address to type
 - **REST API** — `GET /rest/homes`, `GET /rest/accessories`, `POST /rest/state`
 - **MCP for AI assistants** — connect Claude, ChatGPT, or any MCP client to `/mcp`
 - **Real-time updates** — device state changes appear instantly on all connected clients
@@ -113,13 +114,42 @@ Tailscale provides encrypted connections, valid HTTPS certificates via MagicDNS,
 2. Authenticate: `cloudflared tunnel login`
 3. Create a tunnel: `cloudflared tunnel create homecast`
 4. Route traffic: `cloudflared tunnel route dns homecast homecast.yourdomain.com`
-5. Run: `cloudflared tunnel --url http://localhost:5656 run homecast`
+5. Write `~/.cloudflared/config.yml` — **`/ws` must go to its own port**, or the
+   dashboard loads but never updates:
 
-The web app automatically detects Community mode regardless of hostname.
+   ```yaml
+   tunnel: homecast
+   credentials-file: /Users/you/.cloudflared/<TUNNEL-ID>.json
+
+   ingress:
+     # Homecast serves WebSocket on its own listener, HTTP port + 1.
+     - hostname: homecast.yourdomain.com
+       path: ^/ws
+       service: http://localhost:5657
+     - hostname: homecast.yourdomain.com
+       service: http://localhost:5656
+     - service: http_status:404
+   ```
+
+6. Run: `cloudflared tunnel run homecast`
+
+The web app automatically detects Community mode regardless of hostname, and
+when it reaches Homecast on a plain `https://host` with no port it looks for
+the WebSocket on that same origin at `/ws` — which is what the rule above
+serves. Any reverse proxy (nginx, Caddy) needs the same split.
+
+**Turn on authentication before doing this.** It is off by default, which is
+tolerable on your own network and not at all tolerable on a public hostname.
+The apps will warn you when you connect to an unprotected relay at a public
+address, but the fix belongs on the relay: Settings → enable authentication.
 
 ### Port Forwarding
 
-Forward port 5656 on your router to your Mac's local IP. This exposes your Mac directly to the internet — use strong passwords and consider the security implications. Tailscale is recommended instead.
+Forward ports **5656 and 5657** on your router to your Mac's local IP — the
+second one carries the WebSocket, and without it the dashboard will load but
+never update. This exposes your Mac directly to the internet: enable
+authentication first, use strong passwords, and consider the security
+implications. Tailscale is recommended instead — it needs no open ports at all.
 
 ### Homecast Cloud
 
