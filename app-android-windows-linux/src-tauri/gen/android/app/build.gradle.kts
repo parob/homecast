@@ -26,7 +26,9 @@ android {
         }
     }
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // Cleartext is governed by res/xml/network_security_config.xml, which
+        // applies to every build type. The old placeholder permitted it in
+        // debug only, so community mode over http could never work in release.
         applicationId = "cloud.homecast.app"
         minSdk = 24
         targetSdk = 36
@@ -35,7 +37,6 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false

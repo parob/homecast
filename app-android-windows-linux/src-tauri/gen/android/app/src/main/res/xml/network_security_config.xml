@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Community mode connects to a Homecast relay the user runs themselves, over
+  plain HTTP. Release builds previously set usesCleartextTraffic="false", which
+  blocked that outright — community mode could not work off a Play build at all.
+
+  This cannot be scoped to the private address ranges, much as we would like it
+  to be. Android's <domain> element takes hostnames only: no CIDR, no wildcards
+  beyond includeSubdomains, and numeric IPs are only meaningfully recognised in
+  the localhost sense. Nor can we scope it to ".local" instead, because the
+  platform resolver has no mDNS — NsdManager resolves a relay to a numeric
+  address and the WebView navigates to that.
+
+  So cleartext is permitted by default, and every host Homecast itself operates
+  is pinned to TLS below. A relay reached over HTTPS is unaffected either way.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">homecast.cloud</domain>
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <domain includeSubdomains="true">firebaseio.com</domain>
+    </domain-config>
+</network-security-config>
