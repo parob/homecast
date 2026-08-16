@@ -99,10 +99,47 @@ enum AppConfig {
     /// The port the local HTTP server is running on (set at runtime).
     static var localServerPort: UInt16 = 5656
 
-    /// Saved relay address for iOS community mode (e.g. "192.168.1.50:5656")
+    /// Saved relay origin for iOS community mode.
+    ///
+    /// A full origin — `http://192.168.1.50:5656` on the home network,
+    /// `https://home.example.com` through a tunnel or VPN. Older installs
+    /// stored a bare `host:port`, which is read as http on the way out: that
+    /// is what those installs were already doing implicitly.
     static var relayAddress: String? {
-        get { UserDefaults.standard.string(forKey: "com.homecast.relayAddress") }
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: "com.homecast.relayAddress") else { return nil }
+            return normalizedRelayOrigin(raw)
+        }
         set { UserDefaults.standard.set(newValue, forKey: "com.homecast.relayAddress") }
+    }
+
+    /// The relay's WebSocket port, learned from /health. Only meaningful when
+    /// the relay is reached on an explicit port; behind a proxy the WebSocket
+    /// shares the origin instead.
+    static var relayWsPort: Int? {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: "com.homecast.relayWsPort")
+            return stored > 0 ? stored : nil
+        }
+        set { UserDefaults.standard.set(newValue ?? 0, forKey: "com.homecast.relayWsPort") }
+    }
+
+    /// `192.168.1.50:5656` → `http://192.168.1.50:5656`; an explicit scheme is kept.
+    static func normalizedRelayOrigin(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let withScheme = trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://")
+            ? trimmed
+            : "http://\(trimmed)"
+        guard let url = URL(string: withScheme), let host = url.host else { return withScheme }
+        let scheme = url.scheme ?? "http"
+        if let port = url.port {
+            // Keep the port only when it isn't the scheme's default, so a
+            // proxied relay normalizes to a bare origin.
+            let isDefault = (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+            if !isDefault { return "\(scheme)://\(host):\(port)" }
+        }
+        return "\(scheme)://\(host)"
     }
 
     /// Base URL for the web app (changes based on mode).
@@ -137,6 +174,8 @@ extension Notification.Name {
     static let environmentDidChange = Notification.Name("environmentDidChange")
     static let relayStatusDidChange = Notification.Name("relayStatusDidChange")
     static let localServerDidStart = Notification.Name("localServerDidStart")
+    /// A universal link arrived. `object` is the `URL` to open.
+    static let openDeepLink = Notification.Name("openDeepLink")
 }
 
 @main
@@ -149,6 +188,17 @@ struct HomecastApp: App {
                 .environmentObject(appDelegate.homeKitManager)
                 .environmentObject(appDelegate.connectionManager)
                 .environmentObject(appDelegate.homeKitBridge)
+                // A tapped homecast.cloud link — from the waiting-list email, a
+                // home invitation, anywhere. The web app is the whole UI, so
+                // "handling" it means pointing the WebView at that URL.
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    NotificationCenter.default.post(name: .openDeepLink, object: url)
+                }
+                // Custom scheme, for anywhere a universal link can't reach.
+                .onOpenURL { url in
+                    NotificationCenter.default.post(name: .openDeepLink, object: url)
+                }
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -422,7 +472,9 @@ struct RelayConnector: View {
     let onConnect: (String) -> Void
     let onBack: () -> Void
 
-    @State private var address = "http://localhost:5656"
+    // Empty, not "localhost": on a phone localhost is the phone, so the old
+    // default was an address that could never work.
+    @State private var address = ""
     @State private var isConnecting = false
     @State private var error = ""
 
@@ -515,23 +567,21 @@ struct RelayConnector: View {
         isConnecting = true
         error = ""
 
-        // Normalize URL
-        var url = address.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if !url.hasPrefix("http://") && !url.hasPrefix("https://") {
-            url = "http://\(url)"
+        // A bare host gets http and, because plain http is the on-the-network
+        // case, the local server's default port. Anything with a scheme is
+        // taken as written, so https://home.example.com stays on 443.
+        var typed = address.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let hasScheme = typed.lowercased().hasPrefix("http://") || typed.lowercased().hasPrefix("https://")
+        if !hasScheme { typed = "http://\(typed)" }
+        if typed.lowercased().hasPrefix("http://"),
+           let probe = URL(string: typed), probe.port == nil {
+            typed += ":5656"
         }
 
-        // Extract host:port
-        guard let parsed = URL(string: url), let host = parsed.host else {
-            error = "Invalid URL"
-            isConnecting = false
-            return
-        }
-        let port = parsed.port ?? 5656
-        let addr = "\(host):\(port)"
+        let origin = AppConfig.normalizedRelayOrigin(typed)
 
-        // Validate relay
-        guard let healthURL = URL(string: "http://\(addr)/health") else {
+        guard URL(string: origin)?.host != nil, let healthURL = URL(string: "\(origin)/health") else {
             error = "Invalid address"
             isConnecting = false
             return
@@ -550,7 +600,12 @@ struct RelayConnector: View {
                     self.error = "Not a Homecast relay"
                     return
                 }
-                onConnect(addr)
+                // The relay reports its real WebSocket port; the web app would
+                // otherwise have to guess it as HTTP + 1.
+                if let wsPort = json["wsPort"] as? Int, wsPort > 0 {
+                    AppConfig.relayWsPort = wsPort
+                }
+                onConnect(origin)
             }
         }
         task.resume()
@@ -879,11 +934,17 @@ struct WebViewContainer: UIViewRepresentable {
         // dev fallback and the app talks to nothing.
         #if !targetEnvironment(macCatalyst)
         if AppConfig.isCommunity, let addr = AppConfig.relayAddress {
+            // Hand over the WebSocket port we learned from /health, so the web
+            // app uses the relay's real port instead of assuming HTTP + 1.
+            let wsPortLine = AppConfig.relayWsPort.map {
+                "localStorage.setItem('homecast-relay-ws-port', '\($0)');"
+            } ?? ""
             let communityScript = """
             window.__HOMECAST_COMMUNITY__ = true;
             localStorage.setItem('cookie-consent', 'granted');
             localStorage.setItem('homecast-mode', 'client');
             localStorage.setItem('homecast-relay-address', '\(addr)');
+            \(wsPortLine)
             console.log('[Homecast] iOS community client — relay: \(addr)');
             """
             config.userContentController.addUserScript(WKUserScript(
@@ -1242,6 +1303,14 @@ struct WebViewContainer: UIViewRepresentable {
                 object: nil
             )
 
+            // Listen for a tapped universal link
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleDeepLink(_:)),
+                name: .openDeepLink,
+                object: nil
+            )
+
             // Auto-reload WebView every 24 hours
             self.reloadTimer = Timer.scheduledTimer(
                 withTimeInterval: 24 * 60 * 60,
@@ -1256,6 +1325,44 @@ struct WebViewContainer: UIViewRepresentable {
             livenessTimer?.invalidate()
             stallTimer?.invalidate()
             networkMonitor?.cancel()
+        }
+
+        /// Point the WebView at a link the user tapped outside the app.
+        ///
+        /// Only ever our own hosts: the AASA already restricts which paths reach
+        /// us, but a custom scheme has no such gate, and a WebView that will load
+        /// whatever a URL tells it to is somebody else's phishing page waiting to
+        /// happen. Anything else is handed back to the system.
+        @objc private func handleDeepLink(_ note: Notification) {
+            guard let url = note.object as? URL else { return }
+
+            let allowedHosts: Set<String> = [
+                "homecast.cloud", "www.homecast.cloud", "staging.homecast.cloud",
+            ]
+
+            let target: URL
+            if let host = url.host?.lowercased(), allowedHosts.contains(host) {
+                target = url
+            } else if url.scheme?.lowercased() == "homecast" {
+                // homecast://portal/... — rebuild it against the current
+                // environment rather than trusting anything in the URL's host.
+                var components = URLComponents()
+                components.scheme = "https"
+                components.host = AppConfig.isStaging ? "staging.homecast.cloud" : "homecast.cloud"
+                let path = url.path.isEmpty ? "/portal" : url.path
+                components.path = path.hasPrefix("/") ? path : "/" + path
+                components.query = url.query
+                guard let rebuilt = components.url else { return }
+                target = rebuilt
+            } else {
+                print("[DeepLink] Ignoring link to an unexpected host: \(url.absoluteString)")
+                return
+            }
+
+            print("[DeepLink] Opening \(target.absoluteString)")
+            DispatchQueue.main.async { [weak self] in
+                self?.webView?.load(URLRequest(url: target))
+            }
         }
 
         private func handleAutoReload() {

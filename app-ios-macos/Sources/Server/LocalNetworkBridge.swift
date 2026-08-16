@@ -188,6 +188,12 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
                 callback(response)
             }
 
+        case "advertise":
+            // Whether the relay requires a login lives in the web app's
+            // IndexedDB, so Bonjour can only learn it by being told.
+            guard let authEnabled = body["authEnabled"] as? Bool else { return }
+            server?.updateAdvertisement(authEnabled: authEnabled)
+
         default:
             NSLog("[LocalNetworkBridge] Unknown action from JS: %@", action)
         }

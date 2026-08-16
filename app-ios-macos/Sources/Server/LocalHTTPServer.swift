@@ -49,6 +49,25 @@ class LocalHTTPServer {
     private lazy var serviceName: String = ProcessInfo.processInfo.hostName
         .replacingOccurrences(of: ".local", with: "")
 
+    /// Stable id for this relay, minted once and kept in UserDefaults.
+    /// Clients key "the relay I paired with" on this rather than on the name,
+    /// which changes when the Mac is renamed or picks up a new DHCP lease.
+    private let instanceId: String
+
+    /// Whether the relay requires a login. Lives in the web app's IndexedDB,
+    /// so it arrives over the bridge rather than being read here; nil until it
+    /// has reported once.
+    private var advertisedAuthEnabled: Bool?
+
+    /// Ports to try, in order. They stride by two because the WebSocket
+    /// listener binds HTTP+1 — a contiguous ladder would hand the next HTTP
+    /// attempt the port the WebSocket listener just took.
+    private let portCandidates: [UInt16] = [5656, 5658, 5660, 5662, 5664]
+    private var candidateIndex = 0
+    /// Fences listener callbacks, so a listener cancelled by a newer start()
+    /// cannot advance the current attempt.
+    private var bindGeneration = 0
+
     // MIME type mapping
     private static let mimeTypes: [String: String] = [
         "html": "text/html; charset=utf-8",
@@ -104,79 +123,138 @@ class LocalHTTPServer {
             print("[LocalHTTPServer] Warning: web-dist not found in bundle")
             self.webDistPath = nil
         }
+
+        // `serviceName` stays lazy — ProcessInfo.hostName performs a blocking
+        // reverse-DNS resolve, and only a network-exposed server ever needs it.
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: "com.homecast.relayInstanceId") {
+            self.instanceId = existing
+        } else {
+            let minted = UUID().uuidString
+                .replacingOccurrences(of: "-", with: "")
+                .prefix(8)
+                .lowercased()
+            defaults.set(minted, forKey: "com.homecast.relayInstanceId")
+            self.instanceId = minted
+        }
     }
 
     /// Callback fired when the server is ready (port bound).
     var onReady: (() -> Void)?
 
-    /// Start the server, trying ports 5656-5660.
+    /// Start the server on the first free candidate port.
     func start() {
         guard !isRunning else { return }
+        bindGeneration &+= 1
+        candidateIndex = 0
+        attemptBind(generation: bindGeneration)
+    }
 
-        for candidatePort in UInt16(5656)...UInt16(5660) {
-            do {
-                let params = NWParameters.tcp
-                params.allowLocalEndpointReuse = true
-                if exposure == .loopback {
-                    params.requiredInterfaceType = .loopback
-                }
+    /// Try `portCandidates[candidateIndex]`, falling through to the next on failure.
+    ///
+    /// This is a callback ladder rather than a loop because a busy port does not
+    /// throw: `NWListener` accepts it and then reports `.failed` asynchronously.
+    /// The old loop returned as soon as `start()` was called, so the fallback
+    /// range never ran and a busy 5656 left no server and no advertisement.
+    private func attemptBind(generation: Int) {
+        guard generation == bindGeneration else { return }
+        guard candidateIndex < portCandidates.count else {
+            NSLog("[LocalHTTPServer] Failed to bind any port in %@", "\(portCandidates)")
+            return
+        }
+        let candidatePort = portCandidates[candidateIndex]
 
-                let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: candidatePort)!)
-                if exposure == .network {
-                    listener.service = NWListener.Service(
-                        name: serviceName,
-                        type: "_homecast._tcp"
-                    )
-                }
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        if exposure == .loopback {
+            params.requiredInterfaceType = .loopback
+        }
 
-                listener.stateUpdateHandler = { [weak self] state in
-                    switch state {
-                    case .ready:
-                        self?.isRunning = true
-                        self?.port = candidatePort
-                        NSLog("[LocalHTTPServer] Listening on port %d", candidatePort)
-                        DispatchQueue.main.async {
-                            // webBaseURL is built from this. Without the sync
-                            // it stayed at 5656 while the listener had fallen
-                            // through to 5657, and the WebView would load
-                            // nothing at all.
-                            AppConfig.localServerPort = candidatePort
-                            self?.onReady?()
-                        }
-                    case .failed(let error):
-                        print("[LocalHTTPServer] Listener failed: \(error)")
-                        self?.isRunning = false
-                    case .cancelled:
-                        self?.isRunning = false
-                    default:
-                        break
-                    }
-                }
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: candidatePort)!)
+        } catch {
+            print("[LocalHTTPServer] Port \(candidatePort) unavailable: \(error)")
+            advance(from: generation)
+            return
+        }
 
-                listener.newConnectionHandler = { [weak self] connection in
-                    self?.handleNewConnection(connection)
-                }
+        // Only a network-exposed server advertises. A loopback server has no
+        // external clients to be found by, and staying off Bonjour is what
+        // keeps iOS from raising a Local Network prompt we could not justify.
+        // Published without `ws` for now — the WebSocket port isn't known until
+        // its own listener is ready, which re-publishes with it.
+        if exposure == .network {
+            listener.service = makeService()
+        }
 
-                listener.start(queue: queue)
-                self.listener = listener
-                // A loopback server exists only to serve the app's own UI.
-                // The WebSocket listener is for external clients, which by
-                // definition can't reach it.
-                if exposure == .network {
-                    startWSListener(httpPort: candidatePort)
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self = self, generation == self.bindGeneration else { return }
+            switch state {
+            case .ready:
+                self.isRunning = true
+                self.port = candidatePort
+                NSLog("[LocalHTTPServer] Listening on port %d", candidatePort)
+                DispatchQueue.main.async {
+                    // webBaseURL is built from this. Without the sync it stayed
+                    // at 5656 while the listener had fallen through, and the
+                    // WebView would load nothing at all.
+                    AppConfig.localServerPort = candidatePort
+                    self.onReady?()
                 }
-                return // Success — stop trying ports
-            } catch {
-                print("[LocalHTTPServer] Port \(candidatePort) unavailable: \(error)")
-                continue
+            case .failed(let error):
+                NSLog("[LocalHTTPServer] Port %d failed: %@", candidatePort, error.localizedDescription)
+                guard !self.isRunning else {
+                    // Already serving — this is a later collapse, not a bind
+                    // failure. Wake-from-sleep restarts us; don't re-ladder.
+                    self.isRunning = false
+                    return
+                }
+                self.teardownPair()
+                self.advance(from: generation)
+            case .cancelled:
+                self.isRunning = false
+            default:
+                break
             }
         }
 
-        print("[LocalHTTPServer] Failed to bind any port in range 5656-5660")
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.handleNewConnection(connection)
+        }
+
+        listener.start(queue: queue)
+        self.listener = listener
+        // A loopback server exists only to serve the app's own UI; the
+        // WebSocket listener is for external clients, which by definition
+        // cannot reach it.
+        if exposure == .network {
+            startWSListener(httpPort: candidatePort, generation: generation)
+        }
     }
 
-    /// Start WebSocket listener on port HTTP+1 using NWProtocolWebSocket.
-    private func startWSListener(httpPort: UInt16) {
+    private func advance(from generation: Int) {
+        guard generation == bindGeneration else { return }
+        candidateIndex += 1
+        attemptBind(generation: generation)
+    }
+
+    private func teardownPair() {
+        listener?.cancel()
+        listener = nil
+        wsListener?.cancel()
+        wsListener = nil
+        isRunning = false
+        port = 0
+        wsPort = 0
+    }
+
+    /// Start the WebSocket listener on HTTP port + 1.
+    ///
+    /// HTTP and WS bind as a pair: if WS can't come up, the HTTP listener it
+    /// belongs to is torn down and the ladder moves on, rather than leaving a
+    /// server that serves pages but can never push an update.
+    private func startWSListener(httpPort: UInt16, generation: Int) {
         let wsPortCandidate = httpPort + 1
 
         let wsParams = NWParameters(tls: nil)
@@ -185,34 +263,99 @@ class LocalHTTPServer {
         wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
         wsParams.allowLocalEndpointReuse = true
 
+        let listener: NWListener
         do {
-            let listener = try NWListener(using: wsParams, on: NWEndpoint.Port(rawValue: wsPortCandidate)!)
-
-            listener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    self?.wsPort = wsPortCandidate
-                    NSLog("[LocalHTTPServer] WebSocket listening on port %d", wsPortCandidate)
-                case .failed(let error):
-                    NSLog("[LocalHTTPServer] WS listener failed: %@", error.localizedDescription)
-                default:
-                    break
-                }
-            }
-
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.handleNewWSConnection(connection)
-            }
-
-            listener.start(queue: queue)
-            self.wsListener = listener
+            listener = try NWListener(using: wsParams, on: NWEndpoint.Port(rawValue: wsPortCandidate)!)
         } catch {
-            NSLog("[LocalHTTPServer] Failed to start WS listener on port %d: %@", wsPortCandidate, error.localizedDescription)
+            NSLog("[LocalHTTPServer] WS port %d unavailable: %@", wsPortCandidate, error.localizedDescription)
+            failWSPair(generation: generation)
+            return
         }
+
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self = self, generation == self.bindGeneration else { return }
+            switch state {
+            case .ready:
+                self.wsPort = wsPortCandidate
+                NSLog("[LocalHTTPServer] WebSocket listening on port %d", wsPortCandidate)
+                // Re-publish now that `ws` can be filled in.
+                self.listener?.service = self.makeService()
+            case .failed(let error):
+                NSLog("[LocalHTTPServer] WS listener failed on %d: %@", wsPortCandidate, error.localizedDescription)
+                // wsPort is only set once ready, so a non-zero value means this
+                // is a later collapse rather than a failure to bind.
+                guard self.wsPort == 0 else { return }
+                self.failWSPair(generation: generation)
+            default:
+                break
+            }
+        }
+
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.handleNewWSConnection(connection)
+        }
+
+        listener.start(queue: queue)
+        self.wsListener = listener
+    }
+
+    /// Drop the whole HTTP+WS pair for this candidate and try the next.
+    private func failWSPair(generation: Int) {
+        guard generation == bindGeneration else { return }
+        teardownPair()
+        advance(from: generation)
+    }
+
+    // MARK: - Bonjour
+
+    /// The Bonjour advertisement.
+    ///
+    /// TXT carries what a browsing client cannot otherwise learn: the WebSocket
+    /// port (that listener doesn't advertise, and deriving it from the HTTP port
+    /// is a guess), a stable id that outlives a rename or a new DHCP lease, and
+    /// whether the relay asks for a login at all.
+    ///
+    /// Not included: the HTTP port, which the SRV record already carries, and a
+    /// display name, which is the Bonjour instance name.
+    private func makeService() -> NWListener.Service {
+        var txt = NWTXTRecord()
+        txt["v"] = "1"
+        txt["id"] = instanceId
+        txt["md"] = "community"
+        txt["vs"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        // Unknown reads as "no password", so a relay whose web app hasn't
+        // reported yet is flagged rather than silently trusted.
+        txt["au"] = (advertisedAuthEnabled == true) ? "1" : "0"
+        if wsPort != 0 { txt["ws"] = String(wsPort) }
+        return NWListener.Service(
+            name: serviceName,
+            type: "_homecast._tcp",
+            domain: nil,
+            txtRecord: txt
+        )
+    }
+
+    /// Re-publish the advertisement when the relay's auth setting changes.
+    /// Called from the web app over the `localServer` bridge.
+    func updateAdvertisement(authEnabled: Bool) {
+        queue.async { [weak self] in
+            guard let self = self, self.advertisedAuthEnabled != authEnabled else { return }
+            self.advertisedAuthEnabled = authEnabled
+            guard self.isRunning else { return }
+            self.listener?.service = self.makeService()
+        }
+    }
+
+    /// Raw JSON fragment for `authEnabled`: `null` until the web app reports.
+    private var authEnabledJSON: String {
+        advertisedAuthEnabled.map { $0 ? "true" : "false" } ?? "null"
     }
 
     /// Stop the server and disconnect all clients.
     func stop() {
+        // Invalidate any in-flight bind ladder, so a listener cancelled here
+        // cannot advance to the next candidate after we've been told to stop.
+        bindGeneration &+= 1
         listener?.cancel()
         listener = nil
         wsListener?.cancel()
@@ -357,7 +500,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"mqtt":\(mqttJson)}
+            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return
@@ -368,7 +511,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
+            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return

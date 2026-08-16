@@ -16,5 +16,17 @@
 	</array>
 	<key>aps-environment</key>
 	<string>production</string>
+	<!-- Universal links. The matching applinks section lives in
+	     app-web/public/.well-known/apple-app-site-association, which is served
+	     from the Firebase site for each environment. Adding this key requires the
+	     Associated Domains capability on the App ID, so a provisioning profile
+	     issued before this change will fail to build. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:homecast.cloud</string>
+		<string>applinks:www.homecast.cloud</string>
+		<string>applinks:staging.homecast.cloud</string>
+		<string>webcredentials:homecast.cloud</string>
+	</array>
 </dict>
 </plist>
