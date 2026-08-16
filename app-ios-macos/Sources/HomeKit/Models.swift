@@ -184,13 +184,74 @@ struct AccessoryModel {
 
     init(from accessory: HMAccessory, homeId: String? = nil, includeValues: Bool = true, reachableOverride: Bool? = nil) {
         self.id = accessory.uniqueIdentifier.uuidString
-        self.name = accessory.name
+        self.name = AccessoryModel.userFacingName(of: accessory)
         self.homeId = homeId
         self.roomId = accessory.room?.uniqueIdentifier.uuidString
         self.roomName = accessory.room?.name
         self.category = accessory.category.localizedDescription
         self.isReachable = reachableOverride ?? accessory.isReachable
         self.services = accessory.services.map { ServiceModel(from: $0, includeValues: includeValues) }
+    }
+
+    /// Services that describe how an accessory is plumbed in rather than what
+    /// it does. They keep the manufacturer's name when the user renames the
+    /// accessory, so they must not be consulted for the name.
+    private static let auxiliaryServiceTypes: Set<String> = [
+        HMServiceTypeAccessoryInformation,
+        HMServiceTypeBattery,
+        HMServiceTypeLabel,
+        HMServiceTypeLockManagement,
+        "00000239-0000-1000-8000-0026BB765291",  // thread_transport
+        "00000701-0000-1000-8000-0026BB765291",  // wifi_transport
+        "E863F007-079E-48FF-8F27-9C2605A29F52",  // Eve's own logging service
+    ]
+
+    /// The name the user actually set.
+    ///
+    /// The Home app renames the *service*, not the accessory: a Nuki renamed to
+    /// "Front Door Lock" still reports `HMAccessory.name` == "Nuki_19F252BD",
+    /// and only its lock_mechanism service knows better. Everything downstream
+    /// of this relay — tiles, search, REST and MCP slugs, MQTT topics, Home
+    /// Assistant discovery, the Mac menu bar — reads the accessory name, so
+    /// resolving it here is what stops each of them having to remember to.
+    ///
+    /// It also goes the other way, which is the trap: a Nest Cam called "Front
+    /// Yard Camera" has a motion service called "Motion", and a Hue pendant
+    /// called "Living Room Pendant" still has a lightbulb service called "Hue
+    /// Bulb". Taking the service name every time renames good accessories
+    /// badly. Two conditions separate the cases:
+    ///
+    ///  1. The functional services agree on ONE name that isn't the
+    ///     accessory's. Disagreement means a multi-purpose accessory — a Nest
+    ///     Protect with smoke, CO and occupancy services — and only the
+    ///     accessory has a name for the whole of it.
+    ///  2. The accessory itself was never renamed. Accessory Information keeps
+    ///     the accessory's first name, so information ≠ accessory means someone
+    ///     deliberately set the accessory name, and that beats any service.
+    ///
+    /// Mirrors `getAccessoryDisplayName` in app-web's
+    /// `components/widgets/types.ts`, which does the same for accessories
+    /// coming from relays that predate this. Both are idempotent.
+    static func userFacingName(of accessory: HMAccessory) -> String {
+        let fallback = accessory.name
+
+        var functional = Set<String>()
+        for service in accessory.services {
+            guard !auxiliaryServiceTypes.contains(service.serviceType) else { continue }
+            let name = service.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { functional.insert(name) }
+        }
+        guard functional.count == 1, let serviceName = functional.first else { return fallback }
+        guard serviceName != fallback else { return fallback }
+
+        let informationName = accessory.services
+            .first { $0.serviceType == HMServiceTypeAccessoryInformation }?
+            .name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let informationName, !informationName.isEmpty, informationName != fallback {
+            return fallback
+        }
+
+        return serviceName
     }
 
     func toJSON() -> JSONValue {
@@ -366,7 +427,7 @@ struct AutomationActionModel {
         let characteristic = action.characteristic
         let accessory = characteristic.service?.accessory
         self.accessoryId = accessory?.uniqueIdentifier.uuidString ?? ""
-        self.accessoryName = accessory?.name ?? "Unknown"
+        self.accessoryName = accessory.map { AccessoryModel.userFacingName(of: $0) } ?? "Unknown"
         self.characteristicType = CharacteristicMapper.fromHomeKitType(characteristic.characteristicType)
         self.targetValue = JSONValue.from(action.targetValue)
     }
@@ -424,7 +485,7 @@ struct AutomationEventModel {
             return AutomationEventModel(
                 type: "characteristic",
                 accessoryId: accessory?.uniqueIdentifier.uuidString,
-                accessoryName: accessory?.name,
+                accessoryName: accessory.map { AccessoryModel.userFacingName(of: $0) },
                 characteristicType: CharacteristicMapper.fromHomeKitType(characteristic.characteristicType),
                 triggerValue: charEvent.triggerValue.map { JSONValue.from($0) },
                 thresholdMin: nil, thresholdMax: nil,
@@ -442,7 +503,7 @@ struct AutomationEventModel {
             return AutomationEventModel(
                 type: "characteristic",
                 accessoryId: accessory?.uniqueIdentifier.uuidString,
-                accessoryName: accessory?.name,
+                accessoryName: accessory.map { AccessoryModel.userFacingName(of: $0) },
                 characteristicType: CharacteristicMapper.fromHomeKitType(characteristic.characteristicType),
                 triggerValue: charEvent.triggerValue.map { JSONValue.from($0) },
                 thresholdMin: nil, thresholdMax: nil,
@@ -459,7 +520,7 @@ struct AutomationEventModel {
             return AutomationEventModel(
                 type: "characteristic",
                 accessoryId: accessory?.uniqueIdentifier.uuidString,
-                accessoryName: accessory?.name,
+                accessoryName: accessory.map { AccessoryModel.userFacingName(of: $0) },
                 characteristicType: CharacteristicMapper.fromHomeKitType(characteristic.characteristicType),
                 triggerValue: charEvent.triggerValue.map { JSONValue.from($0) },
                 thresholdMin: nil, thresholdMax: nil,
@@ -683,7 +744,7 @@ struct AutomationConditionModel {
         return AutomationConditionModel(
             type: "characteristic",
             accessoryId: accessory?.uniqueIdentifier.uuidString,
-            accessoryName: accessory?.name,
+            accessoryName: accessory.map { AccessoryModel.userFacingName(of: $0) },
             characteristicType: characteristic.map { CharacteristicMapper.fromHomeKitType($0.characteristicType) },
             comparisonOperator: mapOperator(valuePred.predicateOperatorType),
             value: valuePred.rightExpression.constantValue.map { JSONValue.from($0) },
@@ -751,7 +812,7 @@ struct AutomationConditionModel {
                     return AutomationConditionModel(
                         type: "characteristic",
                         accessoryId: accessory?.uniqueIdentifier.uuidString,
-                        accessoryName: accessory?.name,
+                        accessoryName: accessory.map { AccessoryModel.userFacingName(of: $0) },
                         characteristicType: CharacteristicMapper.fromHomeKitType(char.characteristicType),
                         comparisonOperator: nil, value: nil,
                         beforeTime: nil, afterTime: nil, beforeEvent: nil, afterEvent: nil,

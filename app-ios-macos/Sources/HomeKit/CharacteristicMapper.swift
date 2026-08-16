@@ -211,6 +211,11 @@ enum CharacteristicMapper {
 
         // Doors, Windows & Locks
         "lock": HMServiceTypeLockMechanism,
+        // The lock's paperwork — control point, logs, auto-relock timeout. Named
+        // so it stops reaching clients as a bare UUID they have to guess at, and
+        // so it can be told apart from the lock itself: on a Nuki both services
+        // exist and only lock_mechanism carries the name the user chose.
+        "lock_management": HMServiceTypeLockManagement,
         "door": HMServiceTypeDoor,
         "doorbell": HMServiceTypeDoorbell,
         "window": HMServiceTypeWindow,

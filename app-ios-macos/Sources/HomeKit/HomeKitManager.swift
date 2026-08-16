@@ -942,7 +942,8 @@ class HomeKitManager: NSObject, ObservableObject {
             throw HomeKitError.writeFailed(
                 NSError(domain: "Homecast", code: -1, userInfo: [
                     NSLocalizedDescriptionKey:
-                        "\(accessory.name) did not confirm the write within \(Int(HomeKitManager.writeTimeoutSeconds))s — it may be unreachable.",
+                        "\(AccessoryModel.userFacingName(of: accessory)) did not confirm the write "
+                        + "within \(Int(HomeKitManager.writeTimeoutSeconds))s — it may be unreachable.",
                 ])
             )
         }
@@ -1791,7 +1792,12 @@ class HomeKitManager: NSObject, ObservableObject {
             for accessory in home.accessories {
                 guard let room = accessory.room else { continue }
                 let accRoomKey = self.roomKey(room.name, id: room.uniqueIdentifier)
-                let accKey = self.accessoryKey(accessory.name, id: accessory.uniqueIdentifier)
+                // Must be the same name we published the accessory under, or a
+                // slug we handed out is one we can no longer resolve.
+                let accKey = self.accessoryKey(
+                    AccessoryModel.userFacingName(of: accessory),
+                    id: accessory.uniqueIdentifier
+                )
 
                 if accRoomKey == targetRoomKey && accKey == targetAccKey {
                     return accessory
