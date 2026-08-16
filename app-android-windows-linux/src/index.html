@@ -127,11 +127,13 @@
       <div class="card" id="community-card" onclick="toggleCommunity()">
         <span class="badge community-badge">Free &amp; Open Source</span>
         <h2>Community Server</h2>
-        <p>Connect to a Homecast relay on your local network. No account needed.</p>
+        <p>Connect to a Homecast relay on your network, or anywhere you can reach it. No account needed.</p>
         <div class="server-form" id="server-form">
           <label for="server-url">Server URL</label>
           <div class="input-row">
-            <input type="url" id="server-url" placeholder="http://mac.local:5656" autocapitalize="off" autocorrect="off" />
+            <!-- A numeric address, not mac.local: Android's resolver has no
+                 mDNS, so a .local name never resolves for the WebView. -->
+            <input type="url" id="server-url" placeholder="http://192.168.1.50:5656" autocapitalize="off" autocorrect="off" />
             <button class="btn" id="connect-btn" onclick="event.stopPropagation(); connectCommunity();">Connect</button>
           </div>
           <div class="error" id="error"></div>
@@ -210,6 +212,10 @@
         errorEl.classList.remove('visible');
         localStorage.setItem('homecast-mode', 'community');
         localStorage.setItem('homecast-server-url', url);
+        // Nothing to hand over to the web app: it is served from the relay's
+        // own origin and reads window.location, which is right for a LAN
+        // address, a VPN address and a proxied hostname alike. (This page is a
+        // different origin, so its localStorage isn't visible there anyway.)
         window.location.href = url;
       }
 
