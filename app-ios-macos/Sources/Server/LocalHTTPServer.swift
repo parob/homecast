@@ -204,6 +204,12 @@ class LocalHTTPServer {
                 self.isRunning = true
                 self.port = candidatePort
                 NSLog("[LocalHTTPServer] Listening on port %d", candidatePort)
+                // Only a network-exposed server is the relay. A loopback
+                // server (iOS) serves nothing but this device's own UI, and a
+                // household should produce one report, not one per device.
+                if self.exposure == .network {
+                    TelemetryReporter.shared.start()
+                }
                 DispatchQueue.main.async {
                     // webBaseURL is built from this. Without the sync it stayed
                     // at 5656 while the listener had fallen through, and the
@@ -491,6 +497,18 @@ class LocalHTTPServer {
                 let value = line[line.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
                 headers[key] = value
             }
+        }
+
+        // Anonymous usage counting. One integer bump, dispatched onto the
+        // reporter's own queue — the response path never waits on it. OPTIONS
+        // is excluded because a preflight is a browser's bookkeeping, not a
+        // request anyone made, and counting it would double every write.
+        if exposure == .network, method != "OPTIONS" {
+            TelemetryReporter.shared.recordHTTP(
+                path: path,
+                userAgent: headers["user-agent"],
+                endpoint: connection.endpoint
+            )
         }
 
         // Handle CORS preflight
@@ -799,6 +817,10 @@ class LocalHTTPServer {
             case .ready:
                 self?.wsClients[clientId] = connection
                 NSLog("[LocalHTTPServer] WS client connected: %@ (total: %d)", clientId, self?.wsClients.count ?? 0)
+                // NWProtocolWebSocket has already consumed the handshake, so
+                // there is no User-Agent left to read here — the client's kind
+                // is inferred from the HTTP requests it also makes.
+                TelemetryReporter.shared.recordWSConnect(userAgent: nil, endpoint: connection.endpoint)
 
                 // Send initial config (mirrors cloud server behavior)
                 let config = """
@@ -839,6 +861,7 @@ class LocalHTTPServer {
             }
 
             if let data = data, !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                TelemetryReporter.shared.recordWSMessage()
                 self.bridge?.handleExternalMessage(clientId: clientId, message: text)
             }
 
@@ -869,6 +892,10 @@ class LocalHTTPServer {
     private func removeWSClient(_ clientId: String) {
         if let connection = wsClients.removeValue(forKey: clientId) {
             connection.cancel()
+            // Only on an actual removal — `.failed` and `.cancelled` both land
+            // here, and an unguarded decrement would run twice for one client
+            // and drift the live count negative.
+            TelemetryReporter.shared.recordWSDisconnect()
         }
         NSLog("[LocalHTTPServer] WS client removed: %@ (remaining: %d)", clientId, wsClients.count)
         bridge?.handleClientDisconnected(clientId: clientId)

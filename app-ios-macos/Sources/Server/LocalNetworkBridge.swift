@@ -231,6 +231,24 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
                 pendingAuthEnabled = authEnabled
             }
 
+        case "telemetry":
+            // Same reason `advertise` exists: the counts that matter here —
+            // automations, virtual accessories, the accessory census — live in
+            // IndexedDB and HomeKit, neither of which Swift can read. The web
+            // app pushes them; the reporter holds them until it sends.
+            switch body["kind"] as? String {
+            case "counters":
+                if let deltas = body["counters"] as? [String: Int] {
+                    TelemetryReporter.shared.applyCounterDeltas(deltas)
+                }
+            case "snapshot":
+                if let snapshot = body["snapshot"] as? [String: Any] {
+                    TelemetryReporter.shared.applySnapshot(snapshot)
+                }
+            default:
+                break
+            }
+
         case "jwtKey":
             guard let requestId = body["requestId"] as? String else { return }
             if body["rotate"] as? Bool == true { Self.deleteJWTSigningKey() }
