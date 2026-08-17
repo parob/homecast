@@ -654,14 +654,18 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate, MenuBarController {
                 let scaledWidth = originalSize.width * 0.9
                 let scaledHeight = originalSize.height * 0.9
 
-                // 2px up: add padding at bottom to shift icon up
+                // The status item centres whatever image it is given, so padding on
+                // one side moves the visible glyph towards the other. lockFocus draws
+                // with the origin at the bottom-left, so drawing at y = 0 leaves the
+                // padding above the glyph and the glyph sits verticalOffset/2 below
+                // the centre line — 2px lower than padding the bottom instead.
                 let verticalOffset: CGFloat = 2.0
                 let finalSize = NSSize(width: scaledWidth, height: scaledHeight + verticalOffset)
 
                 let finalImage = NSImage(size: finalSize)
                 finalImage.lockFocus()
                 originalImage.draw(
-                    in: NSRect(x: 0, y: verticalOffset, width: scaledWidth, height: scaledHeight),
+                    in: NSRect(x: 0, y: 0, width: scaledWidth, height: scaledHeight),
                     from: .zero,
                     operation: .sourceOver,
                     fraction: 1.0
