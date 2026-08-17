@@ -1079,6 +1079,13 @@ struct WebViewContainer: UIViewRepresentable {
             } ?? ""
             let communityScript = """
             window.__HOMECAST_COMMUNITY__ = true;
+            // The authority for "which relay". This web app is served from
+            // this device's own loopback server, so without it the app falls
+            // back to same-origin and the phone talks to itself — a loopback
+            // server with no bridge, where every request hangs and the relay
+            // looks unreachable while being perfectly healthy. A global cannot
+            // be cleared by page code the way the localStorage keys below can.
+            window.__HOMECAST_RELAY_ORIGIN__ = '\(addr)';
             localStorage.setItem('cookie-consent', 'granted');
             localStorage.setItem('homecast-mode', 'client');
             localStorage.setItem('homecast-relay-address', '\(addr)');
