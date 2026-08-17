@@ -113,6 +113,17 @@ enum AppConfig {
         set { UserDefaults.standard.set(newValue, forKey: "com.homecast.relayAddress") }
     }
 
+    /// The stable id of the relay this device paired with.
+    ///
+    /// Distinct from `com.homecast.relayInstanceId`, which is *this* device's
+    /// own advertised id. Kept so the relay can be found again by identity
+    /// when its address changes, rather than being remembered as an address
+    /// that quietly stops being true.
+    static var pairedRelayInstanceId: String? {
+        get { UserDefaults.standard.string(forKey: "com.homecast.pairedRelayInstanceId") }
+        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.pairedRelayInstanceId") }
+    }
+
     /// The relay's WebSocket port, learned from /health. Only meaningful when
     /// the relay is reached on an explicit port; behind a proxy the WebSocket
     /// shares the origin instead.
@@ -285,6 +296,31 @@ struct ContentView: View {
         return URL(string: "\(AppConfig.webBaseURL)\(path)")!
     }
 
+    /// Ask Bonjour where the paired relay is now, and follow it if it moved.
+    ///
+    /// The stored address is a cache. A relay that changed network or picked
+    /// up a new lease is the same relay somewhere else, and without this the
+    /// app kept dialling the old address forever — which looks identical to
+    /// the relay being switched off, and was previously only escapable by
+    /// re-entering the address by hand.
+    ///
+    /// Cheap when nothing has changed: the browse ends as soon as the paired
+    /// id answers, and if the stored address is still right nothing reloads.
+    private func refreshRelayAddressIfMoved() async {
+        guard AppConfig.isCommunity,
+              let pairedId = AppConfig.pairedRelayInstanceId,
+              let current = AppConfig.relayAddress
+        else { return }
+
+        guard let found = await RelayDiscovery.locate(pairedId: pairedId),
+              found != current
+        else { return }
+
+        NSLog("[Homecast] Relay moved: %@ -> %@", current, found)
+        AppConfig.relayAddress = found
+        webViewId = UUID()
+    }
+
     var body: some View {
         if showModeSelector {
             ModeSelector(onSelect: { mode in
@@ -336,6 +372,7 @@ struct ContentView: View {
             WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
                 .ignoresSafeArea()
                 .id(webViewId)
+                .task { await refreshRelayAddressIfMoved() }
                 .onReceive(NotificationCenter.default.publisher(for: .environmentDidChange)) { _ in
                     if !AppConfig.modeSelected {
                         showModeSelector = true
@@ -740,6 +777,13 @@ struct RelayConnector: View {
                 // otherwise have to guess it as HTTP + 1.
                 if let wsPort = json["wsPort"] as? Int, wsPort > 0 {
                     AppConfig.relayWsPort = wsPort
+                }
+                // Pin the relay's identity, not just where it happens to live.
+                // /health reports it, so this works for a hand-typed address
+                // as well as a discovered one, and lets us find this relay
+                // again after it changes network.
+                if let instanceId = json["instanceId"] as? String, !instanceId.isEmpty {
+                    AppConfig.pairedRelayInstanceId = instanceId
                 }
 
                 // A relay with no password is a nuisance on your own network

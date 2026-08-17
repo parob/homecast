@@ -98,6 +98,32 @@ final class RelayDiscovery: ObservableObject {
         #endif
     }
 
+    /// Find a relay we have paired with before, by its stable id, whatever
+    /// address it happens to have now.
+    ///
+    /// A stored address is a cache, not an identity. A Mac that joined another
+    /// network or picked up a new DHCP lease is the same relay at a new
+    /// address, and Bonjour is how you find that out — which is the entire
+    /// reason the relay publishes a stable `id` in its TXT record. Storing the
+    /// resolved address once and trusting it forever threw that away, and left
+    /// a stale IP looking exactly like a relay that had gone offline.
+    ///
+    /// Returns nil if no relay with that id is on this network.
+    static func locate(pairedId: String, within seconds: TimeInterval = 5) async -> String? {
+        let discovery = RelayDiscovery()
+        discovery.start()
+        defer { discovery.stop() }
+
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if let match = discovery.relays.first(where: { $0.id == pairedId }) {
+                return match.origin
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return nil
+    }
+
     func stop() {
         emptyTimer?.invalidate()
         emptyTimer = nil
@@ -205,7 +231,16 @@ final class RelayDiscovery: ObservableObject {
         let endpoint = resolveQueue.removeFirst()
         guard let key = bonjourName(of: endpoint) else { pump(); return }
 
-        let connection = NWConnection(to: endpoint, using: .tcp)
+        // Resolve over IPv4 specifically. Left to itself this settles on IPv6,
+        // which sends the address through the `.local` fallback below — and a
+        // .local name demonstrably does not connect from an iPhone, while the
+        // dotted-quad does. Asking for v4 is what makes the resolved address
+        // one the client can actually use.
+        let params = NWParameters.tcp
+        if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ip.version = .v4
+        }
+        let connection = NWConnection(to: endpoint, using: params)
         resolving = connection
 
         var finished = false
