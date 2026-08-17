@@ -495,7 +495,14 @@ class LocalHTTPServer {
 
         // Handle CORS preflight
         if method == "OPTIONS" {
-            sendResponse(on: connection, status: 204, headers: corsHeaders(), body: nil)
+            // Echo back exactly what was asked for. A fixed allow-list is a
+            // standing trap: any header the client adds later is refused, the
+            // request is never sent, and the only symptom is "Load failed".
+            var preflight: [String: String] = [:]
+            if let requested = headers["access-control-request-headers"], !requested.isEmpty {
+                preflight["Access-Control-Allow-Headers"] = requested
+            }
+            sendResponse(on: connection, status: 204, headers: preflight, body: nil)
             return
         }
 
@@ -991,11 +998,18 @@ class LocalHTTPServer {
 
     // MARK: - Response Helpers
 
+    /// The client sends tracing headers the allow-list did not name —
+    /// `x-client-type`, `x-client-timestamp`, `x-trace-id` — and a preflight
+    /// that does not allow every requested header is rejected outright, so the
+    /// browser never sends the request at all. Reads only carry `content-type`
+    /// and were unaffected; every write failed with a bare "Load failed" and
+    /// nothing on the wire to explain it.
     private func corsHeaders() -> [String: String] {
         [
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Headers":
+                "Content-Type, Authorization, x-client-type, x-client-timestamp, x-trace-id",
         ]
     }
 
@@ -1026,10 +1040,15 @@ class LocalHTTPServer {
             headerLines.append("Content-Length: \(bodyData.count)")
         }
 
-        for (key, value) in corsHeaders() {
-            headerLines.append("\(key): \(value)")
-        }
-        for (key, value) in headers {
+        // Merge rather than append both sets. Appending meant a caller that
+        // passed CORS headers of its own got them sent twice, and a preflight
+        // answering with two Access-Control-Allow-Origin headers is a CORS
+        // failure per the Fetch spec — WebKit rejects it outright. curl does
+        // not care, so this survived every command-line test while blocking
+        // every real cross-origin request from a browser or the iOS app.
+        var merged = corsHeaders()
+        for (key, value) in headers { merged[key] = value }
+        for (key, value) in merged {
             headerLines.append("\(key): \(value)")
         }
 

@@ -1149,6 +1149,27 @@ struct WebViewContainer: UIViewRepresentable {
             } ?? ""
             let communityScript = """
             window.__HOMECAST_COMMUNITY__ = true;
+            (function () {
+              var send = function (level, args) {
+                try {
+                  var text = Array.prototype.map.call(args, function (a) {
+                    if (a instanceof Error) return (a.message || String(a)) + " " + (a.stack || "");
+                    if (typeof a === "object") { try { return JSON.stringify(a); } catch (e) { return String(a); } }
+                    return String(a);
+                  }).join(" ").slice(0, 900);
+                  webkit.messageHandlers.homecast.postMessage({ action: "log", level: level, text: text });
+                } catch (e) {}
+              };
+              var realError = console.error, realWarn = console.warn;
+              console.error = function () { send("error", arguments); realError.apply(console, arguments); };
+              console.warn = function () { send("warn", arguments); realWarn.apply(console, arguments); };
+              window.addEventListener("unhandledrejection", function (ev) {
+                send("rejection", [ev.reason && (ev.reason.message || ev.reason)]);
+              });
+              window.addEventListener("error", function (ev) {
+                send("exception", [ev.message, ev.filename + ":" + ev.lineno]);
+              });
+            })();
             // The authority for "which relay". This web app is served from
             // this device's own loopback server, so without it the app falls
             // back to same-origin and the phone talks to itself — a loopback
@@ -1972,21 +1993,25 @@ struct WebViewContainer: UIViewRepresentable {
             case "resetMode":
                 // Reset mode selection — stop server, clean up, show mode selector
                 print("[WebView] Reset mode selection")
+                // Switch the UI over *first*. This used to happen only inside
+                // removeData's completion, which can take seconds and is not
+                // guaranteed to be prompt — and by then the server hosting the
+                // UI had already been stopped, so the user sat on a "no
+                // internet" error page over a dead port with no way forward.
+                // Pressing Start Over again just repeated it.
+                UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
+                UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
+                AppConfig.relayAddress = nil
+                NotificationCenter.default.post(name: .environmentDidChange, object: nil)
+
+                // Then tear down, with the mode selector already on screen.
                 LocalHTTPServer.shared?.stop()
                 LocalHTTPServer.shared = nil
-                // Clear ALL web data (localStorage, cookies, cache) across all origins
-                // THEN show mode selector — ensures no stale data when user picks a mode
                 WKWebsiteDataStore.default().removeData(
                     ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                     modifiedSince: .distantPast
                 ) {
-                    DispatchQueue.main.async {
-                        print("[WebView] Web data cleared, showing mode selector")
-                        UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
-                        UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
-                        AppConfig.relayAddress = nil
-                        NotificationCenter.default.post(name: .environmentDidChange, object: nil)
-                    }
+                    print("[WebView] Web data cleared")
                 }
             case "copy":
                 if let text = body["text"] as? String {
@@ -2141,6 +2166,15 @@ struct WebViewContainer: UIViewRepresentable {
                         "relayStatus": relayStatus as Any
                     ]
                 )
+            case "log":
+                // The web app's console is otherwise invisible on a device —
+                // "failed to …" messages have a cause that never leaves the
+                // WebView. Errors and rejections come through here so they
+                // land in the same log as everything else.
+                let level = (body["level"] as? String) ?? "log"
+                let text = (body["text"] as? String) ?? ""
+                NSLog("[WebConsole/%@] %@", level, text)
+
             case "retry":
                 if let url = pendingReloadURL {
                     print("[WebView] Manual retry from error page")
@@ -2237,6 +2271,30 @@ struct WebViewContainer: UIViewRepresentable {
                 NSURLErrorDNSLookupFailed,           // -1006
                 NSURLErrorSecureConnectionFailed,    // -1200
             ]
+
+            // In Community mode the UI is served by this device's own server.
+            // If that has stopped — a mode reset tears it down — the failure is
+            // not a network problem at all, and no amount of retrying fixes it.
+            // Bring it back before deciding we are offline.
+            if AppConfig.isCommunity {
+                let server = LocalHTTPServer.shared
+                if server == nil || server?.isRunning != true {
+                    print("[WebView] Local server not running — restarting before reporting offline")
+                    let revived = server ?? {
+                        #if targetEnvironment(macCatalyst)
+                        return LocalHTTPServer(exposure: .network)
+                        #else
+                        return LocalHTTPServer(exposure: .loopback)
+                        #endif
+                    }()
+                    LocalHTTPServer.shared = revived
+                    revived.onReady = { [weak webView] in
+                        webView?.load(URLRequest(url: URL(string: "\(AppConfig.webBaseURL)/login")!))
+                    }
+                    revived.start()
+                    return
+                }
+            }
 
             if nsError.domain == NSURLErrorDomain && networkErrorCodes.contains(nsError.code) {
                 let failingURL = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String
