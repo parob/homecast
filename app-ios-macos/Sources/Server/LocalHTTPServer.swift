@@ -574,12 +574,14 @@ class LocalHTTPServer {
             NSLog("[LocalHTTPServer] GraphQL %@ — bridge: %@, body length: %d", operationName, bridge != nil ? "ready" : "nil", body.count)
             if let bridge = bridge {
                 let clientId = "graphql-\(UUID().uuidString)"
-                bridge.handleGraphQLRequest(clientId: clientId, body: body) { [weak self] response in
+                bridge.handleGraphQLRequest(clientId: clientId, body: body, authorization: headers["authorization"]) { [weak self] response in
                     NSLog("[LocalHTTPServer] GraphQL %@ response: %@", operationName, String(response.prefix(100)))
                     self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
                 }
             } else {
-                // Bridge not ready — queue the request until it initializes
+                // Bridge not ready — queue the request until it initializes.
+                // Capture the header now; `headers` does not outlive this scope.
+                let authorization = headers["authorization"]
                 pendingGraphQLRequests.append { [weak self] in
                     guard let self = self, let bridge = self.bridge else {
                         self?.sendResponse(on: connection, status: 503, contentType: "application/json", body: """
@@ -588,7 +590,7 @@ class LocalHTTPServer {
                         return
                     }
                     let clientId = "graphql-\(UUID().uuidString)"
-                    bridge.handleGraphQLRequest(clientId: clientId, body: body) { [weak self] response in
+                    bridge.handleGraphQLRequest(clientId: clientId, body: body, authorization: authorization) { [weak self] response in
                         self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
                     }
                 }

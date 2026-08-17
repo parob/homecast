@@ -123,9 +123,18 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     /// Pending GraphQL request callbacks (keyed by request ID)
     private var graphqlCallbacks: [String: (String) -> Void] = [:]
 
-    /// Forward a GraphQL POST body to JS for processing.
-    /// All callback dictionary access is serialized on the main queue to prevent thread safety issues.
-    func handleGraphQLRequest(clientId: String, body: String, completion: @escaping (String) -> Void) {
+    /// Forward a GraphQL POST body to JS for processing. All callback
+    /// dictionary access is serialized on the main queue for thread safety.
+    ///
+    /// `authorization` matters: without it an external client can log in, get a
+    /// token, and then have every authenticated request rejected, because the
+    /// resolver never sees the credential it just issued.
+    func handleGraphQLRequest(
+        clientId: String,
+        body: String,
+        authorization: String?,
+        completion: @escaping (String) -> Void
+    ) {
         let escapedClientId = clientId.replacingOccurrences(of: "'", with: "\\'")
         let escapedBody = body
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -133,7 +142,13 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r")
 
-        let js = "window.__localserver_graphql && window.__localserver_graphql('\(escapedClientId)', '\(escapedBody)');"
+        let escapedAuth = (authorization ?? "")
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+
+        let js = "window.__localserver_graphql && window.__localserver_graphql('\(escapedClientId)', '\(escapedBody)', '\(escapedAuth)');"
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let webView = self.webView else {

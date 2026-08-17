@@ -386,9 +386,12 @@ struct ModeSelector: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Homecast Cloud")
                                 .font(.system(size: 15, weight: .medium))
-                            Text("Remote access, cloud sync, and sharing")
+                            Text("Reach your home from anywhere, share it, and get notifications.")
                                 .font(.system(size: 12))
                                 .foregroundColor(.secondary)
+                            Text("Works as soon as you sign in.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary.opacity(0.7))
                         }
                         Spacer()
                         Image(systemName: "arrow.right")
@@ -417,13 +420,19 @@ struct ModeSelector: View {
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundColor(.white)
                             #if targetEnvironment(macCatalyst)
-                            Text("Runs entirely on this Mac — no cloud needed")
+                            Text("This Mac serves everything itself. Nothing leaves your network.")
                                 .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.5))
+                            Text("This Mac has to stay on, and reaching it from outside is yours to set up — a VPN or a tunnel.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.4))
                             #else
-                            Text("Connect to a Mac running the Homecast relay")
+                            Text("Needs your own Mac on this network running Homecast.")
                                 .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.5))
+                            Text("Only works away from home if you set up a VPN or tunnel yourself.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.4))
                             #endif
                         }
                         Spacer()
@@ -1143,9 +1152,10 @@ struct WebViewContainer: UIViewRepresentable {
             };
 
             // Helper to handle GraphQL requests forwarded from Swift
-            window.__localserver_graphql = function(clientId, bodyJson) {
+            window.__localserver_graphql = function(clientId, bodyJson, authorization) {
                 try {
                     var request = JSON.parse(bodyJson);
+                    if (authorization) request.authorization = authorization;
                     if (window.__localserver_graphql_handler) {
                         window.__localserver_graphql_handler(clientId, request);
                     } else {
