@@ -53,7 +53,7 @@ final class RelayDiscovery: ObservableObject {
 
     /// The relay this device last connected to, floated to the top of the list.
     private var preferredId: String? {
-        UserDefaults.standard.string(forKey: "com.homecast.relayInstanceId")
+        UserDefaults.standard.string(forKey: "com.homecast.pairedRelayInstanceId")
     }
 
     func start() {

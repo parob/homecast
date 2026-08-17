@@ -13,12 +13,28 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     /// MQTT bridge — receives broadcast events for publishing to MQTT topics
     var mqttBridge: MQTTBridge?
 
+    /// Auth state reported by the web app before `server` was wired up.
+    ///
+    /// The script message handler is registered when the WebView is built, but
+    /// `server` is only set in `attach`, which runs on didFinish. The web app
+    /// reports its auth setting while the page is still loading, so that first
+    /// report — usually the only one, since it fires once at startup — landed
+    /// on a nil server and was dropped. /health then said `authEnabled: null`
+    /// and Bonjour advertised `au=0`, telling every client the relay had no
+    /// password when it did.
+    private var pendingAuthEnabled: Bool?
+
     /// Attach to a WKWebView — called after the WebView is created.
     func attach(webView: WKWebView, server: LocalHTTPServer) {
         self.webView = webView
         self.server = server
         server.bridge = self
         NSLog("[LocalNetworkBridge] Attached to WebView and server")
+
+        if let pending = pendingAuthEnabled {
+            server.updateAdvertisement(authEnabled: pending)
+            pendingAuthEnabled = nil
+        }
 
         // Attach MQTT bridge to the same WebView
         mqttBridge?.attach(webView: webView)
@@ -193,7 +209,12 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
             // Whether the relay requires a login lives in the web app's
             // IndexedDB, so Bonjour can only learn it by being told.
             guard let authEnabled = body["authEnabled"] as? Bool else { return }
-            server?.updateAdvertisement(authEnabled: authEnabled)
+            if let server = server {
+                server.updateAdvertisement(authEnabled: authEnabled)
+            } else {
+                // Reported before attach; applied there instead of dropped.
+                pendingAuthEnabled = authEnabled
+            }
 
         case "jwtKey":
             guard let requestId = body["requestId"] as? String else { return }

@@ -596,7 +596,10 @@ struct RelayConnector: View {
                     Button {
                         address = relay.origin
                         if let wsPort = relay.wsPort { AppConfig.relayWsPort = wsPort }
-                        UserDefaults.standard.set(relay.id, forKey: "com.homecast.relayInstanceId")
+                        // Distinct from com.homecast.relayInstanceId, which is *this* device's
+                        // own advertised id. A Mac can run a relay and connect to
+                        // another one, and sharing the key would rewrite its identity.
+                        UserDefaults.standard.set(relay.id, forKey: "com.homecast.pairedRelayInstanceId")
                         connect()
                     } label: {
                         HStack(spacing: 10) {
