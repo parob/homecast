@@ -255,7 +255,18 @@ struct ContentView: View {
     @EnvironmentObject var connectionManager: ConnectionManager
     @EnvironmentObject var homeKitBridge: HomeKitBridge
     @State private var showModeSelector = !AppConfig.modeSelected
+    #if targetEnvironment(macCatalyst)
     @State private var showRelayConnect = false
+    #else
+    /// iOS has no relay of its own, so Community without a relay address has
+    /// nothing to talk to. This was always false on launch, so a cold start in
+    /// that state fell through to the WebView, which loaded this device's own
+    /// loopback server and posted GraphQL at it — and the loopback bridge is
+    /// never attached on iOS, so the request queued forever behind a spinner
+    /// with no way out but deleting the app.
+    @State private var showRelayConnect =
+        AppConfig.modeSelected && AppConfig.isCommunity && AppConfig.relayAddress == nil
+    #endif
     @State private var webViewId = UUID()
 
     /// Where the WebView starts on a cold launch.

@@ -578,6 +578,14 @@ class LocalHTTPServer {
                     NSLog("[LocalHTTPServer] GraphQL %@ response: %@", operationName, String(response.prefix(100)))
                     self?.sendResponse(on: connection, status: 200, contentType: "application/json", body: response)
                 }
+            } else if exposure == .loopback {
+                // No bridge ever attaches on the loopback path — this device
+                // hosts its own UI and is not a relay. Queueing would hold the
+                // caller open forever, which is precisely what left iOS on an
+                // endless spinner. Fail fast so the client can say so.
+                sendResponse(on: connection, status: 503, contentType: "application/json", body: """
+                {"data":null,"errors":[{"message":"This device is not a relay"}]}
+                """)
             } else {
                 // Bridge not ready — queue the request until it initializes.
                 // Capture the header now; `headers` does not outlive this scope.
