@@ -154,7 +154,13 @@ enum AppConfig {
     /// The web app already models this split as Community *client* mode.
     static var webBaseURL: String {
         if isCommunity {
-            return "http://localhost:\(localServerPort)"
+            // The port the server actually bound, not the one we hoped for.
+            // The ladder can land on 5658 when 5656 is taken — by a previous
+            // instance in this same process, most easily — and a WebView aimed
+            // at the port we asked for rather than the one that answered just
+            // spins on a dead address with no way back.
+            let live = LocalHTTPServer.shared?.port ?? 0
+            return "http://localhost:\(live != 0 ? live : localServerPort)"
         }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
@@ -2187,10 +2193,16 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         private func loadErrorPage(in webView: WKWebView) {
+            // Retry alone is a trap when the address itself is the problem —
+            // a relay that moved, or a port nothing is listening on. Retrying
+            // fails identically every time, and the only way out was to delete
+            // the app. "Start Over" returns to the mode selector, which clears
+            // the saved mode and relay address on its way.
+            let startOverHTML = "<button class=\"retry-btn secondary\" onclick=\"webkit.messageHandlers.homecast.postMessage({action:'resetMode'})\">Start Over</button>"
             #if targetEnvironment(macCatalyst)
-            let hintHTML = "<p class=\"hint\">or press &#8984;R to retry</p>"
+            let hintHTML = "<p class=\"hint\">or press &#8984;R to retry</p>" + startOverHTML
             #else
-            let hintHTML = "<button class=\"retry-btn\" onclick=\"webkit.messageHandlers.homecast.postMessage({action:'retry'})\">Tap to Retry</button>"
+            let hintHTML = "<button class=\"retry-btn\" onclick=\"webkit.messageHandlers.homecast.postMessage({action:'retry'})\">Tap to Retry</button>" + startOverHTML
             #endif
 
             let html = """
@@ -2228,6 +2240,11 @@ struct WebViewContainer: UIViewRepresentable {
                 -webkit-tap-highlight-color: transparent;
               }
               .retry-btn:active { background: rgba(255,255,255,0.2); }
+              .retry-btn.secondary {
+                display: block; margin: 12px auto 0;
+                background: none; border-color: rgba(255,255,255,0.12);
+                color: rgba(255,255,255,0.45); font-size: 14px;
+              }
               @keyframes spin { to { transform: rotate(360deg); } }
             </style>
             </head>

@@ -141,6 +141,16 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     func startLocalServer() {
         guard localHTTPServer == nil else { return }
 
+        // The mode selector starts one too, on the iOS path. Guarding only on
+        // our own reference let both run: the second bound a different port
+        // from the ladder, took over LocalHTTPServer.shared, and left the
+        // WebView pointed at whichever one it had asked about first.
+        if let existing = LocalHTTPServer.shared {
+            localHTTPServer = existing
+            if !existing.isRunning { existing.start() }
+            return
+        }
+
         // The Mac is the relay: it serves the LAN and advertises over Bonjour.
         // iOS hosts only its own UI, so it stays on loopback — a phone has no
         // external clients, and putting its HomeKit endpoints on Wi-Fi would
