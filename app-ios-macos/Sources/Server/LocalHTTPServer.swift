@@ -363,6 +363,41 @@ class LocalHTTPServer {
         }
     }
 
+    /// This Mac's address on the LAN, as another device would reach it.
+    ///
+    /// The settings screen used to show `window.location.origin`, which on the
+    /// relay is `http://localhost:5656` — an address that means "this device"
+    /// on whatever device reads it, so copying it to a phone hands over a link
+    /// to the phone itself. Only the server can answer this, so it reports it.
+    ///
+    /// Prefers a private IPv4 on an active interface; nil when there is none,
+    /// in which case the UI keeps its old behaviour rather than inventing one.
+    var lanAddress: String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ptr.pointee.ifa_flags)
+            guard flags & IFF_UP == IFF_UP, flags & IFF_LOOPBACK == 0 else { continue }
+            guard ptr.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(ptr.pointee.ifa_addr,
+                              socklen_t(ptr.pointee.ifa_addr.pointee.sa_len),
+                              &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let candidate = String(cString: host)
+            // Skip link-local; it is reachable but not what anyone wants to type.
+            if candidate.hasPrefix("169.254.") { continue }
+            let name = String(cString: ptr.pointee.ifa_name)
+            if name == "en0" { return candidate }   // Wi-Fi wins outright
+            if address == nil { address = candidate }
+        }
+        return address
+    }
+
     /// Raw JSON fragment for `authEnabled`: `null` until the web app reports.
     private var authEnabledJSON: String {
         advertisedAuthEnabled.map { $0 ? "true" : "false" } ?? "null"
@@ -536,7 +571,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"mqtt":\(mqttJson)}
+            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return
@@ -547,7 +582,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
+            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return
