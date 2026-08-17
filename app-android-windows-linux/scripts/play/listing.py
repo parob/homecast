@@ -96,8 +96,15 @@ def main():
         print("  details updated", flush=True)
 
         # 3. Images
-        assets = '/tmp/play-assets'
-        screenshots_dir = '/Users/r.parker/Documents/GitHub/homecast/app-ios-macos/screenshots'
+        #
+        # These used to point at /tmp/play-assets and an absolute path under one
+        # developer's home directory. /tmp/play-assets does not exist, so the store
+        # icon and feature graphic were silently skipped on every run and were not
+        # reproducible from source at all. Both now live in the repo, generated
+        # from the brand master by `cd brand && npm run build`.
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
+        screenshots_dir = os.path.join(os.path.dirname(repo), 'app-ios-macos', 'screenshots')
 
         if os.path.exists(f'{assets}/icon-512.png'):
             # Delete existing icons first to overwrite cleanly

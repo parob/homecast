@@ -1,0 +1,13 @@
+{
+  "name": "@homecast/brand",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "The Homecast mark: one vector master, every raster derived from it.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.3"
+  }
+}

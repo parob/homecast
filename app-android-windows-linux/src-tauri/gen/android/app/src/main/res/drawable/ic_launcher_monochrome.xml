@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Monochrome layer for Android 13+ themed icons. Without it the launcher falls
+    back to showing the full-colour icon when the user turns themed icons on.
+
+    The group scales the mark into the adaptive icon's 72/108 safe zone; drawing
+    it at full viewport size would get the edges clipped by the launcher's mask.
+
+    Generated from brand/params.json — do not hand-edit; run `cd brand && npm run build`.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group
+        android:pivotX="505.5"
+        android:pivotY="496.5"
+        android:scaleX="0.90181"
+        android:scaleY="0.90181"
+        android:translateX="6.5"
+        android:translateY="15.5">
+        <path
+            android:pathData="M559.257,190.923 L763.605,340.923 A72,72 0 0 1 793,398.964 L793,708.5 A111,111 0 0 1 682,819.5 L330,819.5 A111,111 0 0 1 219,708.5 L219,404.201 A72,72 0 0 1 248.699,345.938 L462.559,190.67 A82,82 0 0 1 559.257,190.923 Z"
+            android:strokeColor="#000000"
+            android:strokeWidth="61.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M337.472,576.745 A131.5,131.5 0 0 1 476.28,694.255"
+            android:strokeColor="#000000"
+            android:strokeWidth="61.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M337.31,463.652 A249,249 0 0 1 594.393,695.131"
+            android:strokeColor="#000000"
+            android:strokeWidth="61.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M307.5,691 a41.5,41.5 0 1 0 83,0 a41.5,41.5 0 1 0 -83,0 Z"
+            android:fillColor="#000000" />
+    </group>
+</vector>
