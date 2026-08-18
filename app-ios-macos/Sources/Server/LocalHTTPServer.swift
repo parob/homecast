@@ -540,6 +540,7 @@ class LocalHTTPServer {
         // request anyone made, and counting it would double every write.
         if exposure == .network, method != "OPTIONS" {
             TelemetryReporter.shared.recordHTTP(
+                method: method,
                 path: path,
                 userAgent: headers["user-agent"],
                 endpoint: connection.endpoint

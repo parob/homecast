@@ -84,6 +84,12 @@ final class TelemetryReporter {
     /// connected" can be distinguished from "one device reconnected 6 times",
     /// without the relay retaining anything that identifies either.
     private var distinctClients: Set<String> = []
+    /// The same hashes, split by client kind. Kept as sets rather than
+    /// counters because the question is "how many devices of each kind
+    /// connected", and a counter answers "how many requests they made" —
+    /// which is a different number by two orders of magnitude, and was being
+    /// reported to the fleet page under the label "Client Devices".
+    private var clientsByKind: [String: Set<String>] = [:]
     private var liveWSClients = 0
 
     /// The latest topology + feature snapshot pushed down from the web app.
@@ -194,7 +200,7 @@ final class TelemetryReporter {
     // MARK: - Recording (called from the server queue)
 
     /// One HTTP request served. Classifies the surface and the client kind.
-    func recordHTTP(path: String, userAgent: String?, endpoint: NWEndpoint?) {
+    func recordHTTP(method: String, path: String, userAgent: String?, endpoint: NWEndpoint?) {
         queue.async { [weak self] in
             guard let self = self else { return }
             self.counters["httpRequests", default: 0] += 1
@@ -203,7 +209,7 @@ final class TelemetryReporter {
                 self.counters["restCalls", default: 0] += 1
             } else if path.hasPrefix("/mcp") {
                 self.counters["mcpCalls", default: 0] += 1
-            } else if path.hasPrefix("/graphql") {
+            } else if Self.isGraphQL(method: method, path: path) {
                 self.counters["graphqlCalls", default: 0] += 1
             }
 
@@ -265,6 +271,14 @@ final class TelemetryReporter {
         "characteristicWrites", "sceneRuns", "automationRuns", "automationErrors",
     ]
 
+    /// The web app posts GraphQL to the server root, not to `/graphql`, so
+    /// matching on the path alone counted every query as untyped HTTP traffic
+    /// and reported `graphqlCalls: 0` on a relay serving hundreds of them.
+    static func isGraphQL(method: String, path: String) -> Bool {
+        guard method == "POST" else { return false }
+        return path == "/" || path.hasPrefix("/graphql")
+    }
+
     static func clientKind(path: String, userAgent: String?) -> String {
         // The MCP endpoint identifies the client better than its User-Agent
         // does — AI assistants present as whatever HTTP library they use.
@@ -293,14 +307,13 @@ final class TelemetryReporter {
     /// that never leaves the device, and only the resulting set's *size* is
     /// reported.
     private func noteClient(kind: String, userAgent: String?, endpoint: NWEndpoint?) {
-        counters["client_\(kind)", default: 0] += 1
-
         guard distinctClients.count < Self.maxDistinctClients else { return }
         let material = "\(Self.hostToken(endpoint))|\(userAgent ?? "")"
         guard let data = material.data(using: .utf8) else { return }
         let mac = HMAC<SHA256>.authenticationCode(for: data, using: clientSalt)
         let digest = Data(mac).prefix(8).map { String(format: "%02x", $0) }.joined()
         distinctClients.insert(digest)
+        clientsByKind[kind, default: []].insert(digest)
     }
 
     /// The remote address, for hashing only. Never stored, never sent.
@@ -441,6 +454,7 @@ final class TelemetryReporter {
     private func resetWindow(at now: TimeInterval) {
         counters.removeAll()
         distinctClients.removeAll()
+        clientsByKind.removeAll()
         // Keep the live count — the clients are still connected, and zeroing it
         // would under-report the next window's peak.
         counters["peakConcurrent"] = liveWSClients
@@ -474,10 +488,7 @@ final class TelemetryReporter {
         let ageDays = firstSeen > 0 ? Int((now - firstSeen) / 86400) : 0
         let windowSeconds = windowStart > 0 ? max(0, Int(now - windowStart)) : 0
 
-        var clientsByKind: [String: Int] = [:]
-        for (key, value) in counters where key.hasPrefix("client_") {
-            clientsByKind[String(key.dropFirst("client_".count))] = value
-        }
+        let byKind = clientsByKind.mapValues { $0.count }
 
         let info = Bundle.main.infoDictionary
         let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -503,7 +514,7 @@ final class TelemetryReporter {
             "clients": [
                 "peakConcurrent": counters["peakConcurrent"] ?? 0,
                 "distinct": distinctClients.count,
-                "byKind": clientsByKind,
+                "byKind": byKind,
             ],
             "usage": [
                 "httpRequests": counters["httpRequests"] ?? 0,
