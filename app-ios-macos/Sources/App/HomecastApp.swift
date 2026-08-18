@@ -1620,6 +1620,10 @@ struct WebViewContainer: UIViewRepresentable {
             "portal", "login", "signup", "verify-email", "forgot-password",
             "reset-password", "subscribe", "oauth", "analytics", "history",
             "diagnostics", "mqtt", "s", "delete-account",
+            // The doormat the AASA claims. Letting it through keeps its ?to=
+            // intact; collapsing it here would send every emailed link to the
+            // dashboard regardless of where it asked to go.
+            "open",
         ]
 
         /// Does this path lead to a screen of the app, rather than the website?
