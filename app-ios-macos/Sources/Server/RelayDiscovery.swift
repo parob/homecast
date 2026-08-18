@@ -124,6 +124,23 @@ final class RelayDiscovery: ObservableObject {
         return nil
     }
 
+    /// Look again, from scratch.
+    ///
+    /// Bonjour pushes changes as they happen, so a relay that appears while
+    /// this screen is open arrives on its own. This is for the states a live
+    /// browse cannot get itself out of: the phone joined the right Wi-Fi after
+    /// the browse started, Local Network permission was granted in Settings
+    /// while the app sat on this screen, or the browser failed and its backoff
+    /// has not come round yet. `start()` returns early if one is already
+    /// running, so tearing down first is what makes this do anything.
+    func refresh() {
+        stop()
+        // A manual retry is not part of the failure backoff — the user asking
+        // again should not be made to wait out a delay that grew to 30s.
+        restartDelay = 1
+        start()
+    }
+
     func stop() {
         emptyTimer?.invalidate()
         emptyTimer = nil

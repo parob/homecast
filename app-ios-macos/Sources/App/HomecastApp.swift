@@ -651,9 +651,30 @@ struct RelayConnector: View {
     /// where there is no relay to discover at all.
     @ViewBuilder
     private var discoverySection: some View {
-        if !discovery.relays.isEmpty {
+        // `.idle` means discovery never ran — the Mac, where this app is the
+        // relay rather than a client looking for one.
+        if discovery.state != .idle {
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("On your network")
+                HStack(spacing: 6) {
+                    sectionLabel("On your network")
+                    Spacer(minLength: 0)
+                    // The spinner stands in for the button only while there is
+                    // nothing to show yet: a browse that has found a relay
+                    // stays open indefinitely, so spinning on `.searching`
+                    // alone would spin forever.
+                    if discovery.relays.isEmpty && discovery.state == .searching {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Button(action: discovery.refresh) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isConnecting)
+                        .accessibilityLabel("Scan again")
+                    }
+                }
 
                 ForEach(discovery.relays) { relay in
                     Button {
@@ -694,14 +715,24 @@ struct RelayConnector: View {
                     .disabled(isConnecting)
                 }
 
+                if discovery.relays.isEmpty { discoveryStatus }
+
                 sectionLabel("Or enter an address")
             }
-        } else if discovery.state == .denied {
-            VStack(spacing: 6) {
+        }
+    }
+
+    /// What to say when the list is empty. Every one of these is a state the
+    /// address field below recovers from, so none of them is an error — they
+    /// say what happened and point down.
+    @ViewBuilder
+    private var discoveryStatus: some View {
+        switch discovery.state {
+        case .denied:
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Local Network access is off, so Homecast can't find relays on your network.")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
                 Button("Open Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)
@@ -709,13 +740,21 @@ struct RelayConnector: View {
                 }
                 .font(.system(size: 12, weight: .medium))
             }
-        } else if discovery.state == .searching {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Looking for relays on your network…")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-            }
+        case .empty:
+            Text("Nothing found. Check your Mac is awake with Homecast open on this network, "
+                 + "then scan again — or enter its address below.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        case .failed:
+            Text("Couldn't search the network. Scan again, or enter the address below.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        case .searching:
+            Text("Looking for relays on your network…")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        case .idle:
+            EmptyView()
         }
     }
 
