@@ -352,16 +352,23 @@ final class TelemetryReporter {
         // Backing off from an earlier failure.
         guard now >= nextAttempt else { return }
 
-        if lastReport == 0 {
-            // Never reported. Wait out the first-report delay so a launch
-            // burst does not report a 30-second-old install.
-            let firstSeen = defaults.double(forKey: Key.firstSeen)
-            guard now - firstSeen >= Self.firstReportDelay else { return }
-        } else {
-            guard now - lastReport >= Self.reportInterval else { return }
-            // Report at this install's own time of day rather than everyone's
-            // midnight, so the fleet does not arrive in one spike.
-            guard Self.isPreferredHour(installId: installId, now: now) else { return }
+        // Forced: report on the next tick. Without this, verifying the pipeline
+        // end to end means waiting out the first-report delay and then a 30-min
+        // tick — half an hour to find out whether anything works at all, which
+        // is long enough that "it isn't reporting" and "it hasn't reported yet"
+        // are indistinguishable.
+        if !defaults.bool(forKey: Key.forceSend) {
+            if lastReport == 0 {
+                // Never reported. Wait out the first-report delay so a launch
+                // burst does not report a 30-second-old install.
+                let firstSeen = defaults.double(forKey: Key.firstSeen)
+                guard now - firstSeen >= Self.firstReportDelay else { return }
+            } else {
+                guard now - lastReport >= Self.reportInterval else { return }
+                // Report at this install's own time of day rather than
+                // everyone's midnight, so the fleet does not arrive in one spike.
+                guard Self.isPreferredHour(installId: installId, now: now) else { return }
+            }
         }
 
         send(now: now)
