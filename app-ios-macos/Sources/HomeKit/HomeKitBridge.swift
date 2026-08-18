@@ -795,6 +795,7 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             ]
             if let value = result.value { entry["value"] = value }
             if let error = result.error { entry["error"] = error }
+            if result.unreachable { entry["unreachable"] = true }
             return entry
         }
         changes.append(contentsOf: malformed)

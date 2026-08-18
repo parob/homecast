@@ -682,6 +682,21 @@ class HomeKitManager: NSObject, ObservableObject {
     /// so this bounds the batch, not merely each write in it.
     nonisolated static let bulkWriteTimeoutSeconds: Double = 10.0
 
+    /// The bound for an accessory HomeKit already reports unreachable.
+    ///
+    /// A Hue bulb switched off at the wall cannot answer, and waiting the full
+    /// ten seconds to be told so is most of what makes "All lights" feel slow:
+    /// five dead bulbs hold the whole batch open long after the other two
+    /// hundred have landed.
+    ///
+    /// Still attempted, and that is the point of a short bound rather than a
+    /// skip — `isReachable` goes stale, and a bulb that is actually fine must
+    /// not be silently dropped from "all lights off". Two seconds is long
+    /// enough for one that was only marked down in error to answer, and short
+    /// enough that the ones which are really gone stop being the slowest thing
+    /// in the house.
+    nonisolated static let unreachableWriteTimeoutSeconds: Double = 2.0
+
     /// Write a characteristic, giving up after `seconds`. Returns false on
     /// write failure or timeout.
     ///
@@ -1026,6 +1041,11 @@ class HomeKitManager: NSObject, ObservableObject {
         let value: Any?
         let success: Bool
         let error: String?
+        /// HomeKit already considered this accessory unreachable when the write
+        /// went out. A failure here is a bulb off at the wall, not a fault —
+        /// the difference the caller needs in order to decide whether anyone
+        /// should be told about it.
+        let unreachable: Bool
     }
 
     /// A resolved write, ready to go out.
@@ -1037,12 +1057,18 @@ class HomeKitManager: NSObject, ObservableObject {
         let characteristic: HMCharacteristic
         let value: Any
         let serviceName: String
+        /// Decided on the main actor while resolving, because reachability is
+        /// HomeKit state and the write itself runs off-actor.
+        let seconds: Double
+        let reachable: Bool
 
-        nonisolated init(position: Int, characteristic: HMCharacteristic, value: Any, serviceName: String) {
+        nonisolated init(position: Int, characteristic: HMCharacteristic, value: Any, serviceName: String, seconds: Double, reachable: Bool) {
             self.position = position
             self.characteristic = characteristic
             self.value = value
             self.serviceName = serviceName
+            self.seconds = seconds
+            self.reachable = reachable
         }
     }
 
@@ -1093,7 +1119,8 @@ class HomeKitManager: NSObject, ObservableObject {
                     characteristicType: write.characteristicType,
                     value: nil,
                     success: false,
-                    error: message
+                    error: message,
+                    unreachable: false
                 )
             }
 
@@ -1116,11 +1143,16 @@ class HomeKitManager: NSObject, ObservableObject {
             do {
                 let converted = try CharacteristicMapper.convertValue(write.value, for: characteristic)
                 accessoriesByPosition[position] = accessory
+                let reachable = isEffectivelyReachable(accessory)
                 resolved.append(ResolvedWrite(
                     position: position,
                     characteristic: characteristic,
                     value: converted,
-                    serviceName: AccessoryModel.userFacingName(of: accessory)
+                    serviceName: AccessoryModel.userFacingName(of: accessory),
+                    seconds: reachable
+                        ? HomeKitManager.bulkWriteTimeoutSeconds
+                        : HomeKitManager.unreachableWriteTimeoutSeconds,
+                    reachable: reachable
                 ))
             } catch {
                 fail(error.localizedDescription)
@@ -1139,7 +1171,7 @@ class HomeKitManager: NSObject, ObservableObject {
                 group.addTask {
                     let ok = await HomeKitManager.writeValue(
                         item.characteristic, item.value, serviceName: item.serviceName,
-                        seconds: HomeKitManager.bulkWriteTimeoutSeconds, quiet: true
+                        seconds: item.seconds, quiet: true
                     )
                     return (item.position, ok)
                 }
@@ -1152,6 +1184,7 @@ class HomeKitManager: NSObject, ObservableObject {
         }
 
         let valuesByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.value) })
+        let reachableByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.reachable) })
         var okCount = 0
         for (position, ok) in written {
             let write = writes[position]
@@ -1163,12 +1196,20 @@ class HomeKitManager: NSObject, ObservableObject {
                     recordSuccessfulRead(accessory)
                 }
             }
+            let wasReachable = reachableByPosition[position] ?? true
             results[position] = BulkWriteResult(
                 accessoryId: write.accessoryId,
                 characteristicType: write.characteristicType,
                 value: ok ? valuesByPosition[position] : nil,
                 success: ok,
-                error: ok ? nil : "Did not confirm the write within \(Int(HomeKitManager.bulkWriteTimeoutSeconds))s — it may be unreachable."
+                // Two different facts, said differently. An unreachable
+                // accessory is not responding — a sentence about the light. A
+                // reachable one that did not confirm is a sentence about our
+                // timeout, and only that case deserves the number.
+                error: ok ? nil : (wasReachable
+                    ? "Did not confirm the write within \(Int(HomeKitManager.bulkWriteTimeoutSeconds))s."
+                    : "Not responding."),
+                unreachable: !wasReachable
             )
         }
         print("[HomeKit] 📝 setCharacteristics: \(okCount)/\(writes.count) confirmed")
@@ -1182,7 +1223,8 @@ class HomeKitManager: NSObject, ObservableObject {
                 characteristicType: writes[position].characteristicType,
                 value: nil,
                 success: false,
-                error: "Write did not complete"
+                error: "Write did not complete",
+                unreachable: false
             )
         }
     }
