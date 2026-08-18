@@ -666,18 +666,21 @@ class HomeKitManager: NSObject, ObservableObject {
     /// actor) can read it without hopping back — required under Swift 6.
     nonisolated static let writeTimeoutSeconds: Double = 10.0
 
-    /// The per-write bound inside a *bulk* write, deliberately tighter.
+    /// The per-write bound inside a *bulk* write.
     ///
-    /// A bulk write answers once, for every accessory in it. The cloud gives up
-    /// on a relay request at 10s (`route_request`) — the same number as the
-    /// single-write bound — so a batch pinned by one unreachable bulb would race
-    /// that ceiling and lose, and the caller would be told all two hundred
-    /// writes failed when all but one had landed. Finishing early enough for the
-    /// answer to get home is worth more than three extra seconds of hoping.
+    /// The same 10s as a single write, and deliberately so: an accessory that
+    /// is merely slow deserves the same patience whether it was written on its
+    /// own or alongside two hundred others.
     ///
-    /// Every timer starts together (the whole batch is dispatched at once), so
-    /// this bounds the batch, not merely each write in it.
-    nonisolated static let bulkWriteTimeoutSeconds: Double = 7.0
+    /// This was briefly 7s, to leave room for the answer to beat a cloud
+    /// ceiling that does not exist on this path. The web client's relay route
+    /// calls `route_request` with no timeout argument, so it takes the 30s
+    /// default; the 10s figure belongs to the identity code's own
+    /// `accessories.list` calls. There was never a race to lose.
+    ///
+    /// Every timer starts together — the whole batch is dispatched at once —
+    /// so this bounds the batch, not merely each write in it.
+    nonisolated static let bulkWriteTimeoutSeconds: Double = 10.0
 
     /// Write a characteristic, giving up after `seconds`. Returns false on
     /// write failure or timeout.
