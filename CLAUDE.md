@@ -264,6 +264,41 @@ Messages use this JSON format:
 | `app-web/src/components/settings/home/` | The per-home sub-pages (overview, actions, notifications, MQTT, mobile row list) |
 | `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
 | `app-web/src/lib/marketing-routes.ts` | Which paths are the website, not the app — pure, unit-tested (collapsed to the dashboard inside the native shell) |
+| `app-web/src/components/scenes/ScenesSection.tsx` | The Scenes summary section — pill + the one grid holding both card kinds |
+| `app-web/src/components/scenes/SceneCard.tsx` | One Apple Home scene card |
+| `app-web/src/components/actions/ActionCard.tsx` | One shortcut card (derived, not authored) |
+| `app-web/src/components/actions/useHomeActionRunner.ts` | Shortcut run state: what's running, how far, which way |
+| `app-web/src/lib/home-cards.ts` | Pure ordering for the merged grid — prefixed keys, unknown keys skipped (unit-tested) |
+| `app-web/src/lib/summary-sections.ts` | Pure catalog + visibility for the summary row (unit-tested) |
+
+### The summary row
+
+The whole-home view carries three pills — **Scenes**, **Automations**, **Status** — each
+expanding to a card grid, only one open at a time.
+
+Scenes holds two kinds of card in one grid: Apple Home's scenes, and the shortcuts
+`deriveHomeActions()` derives from the home's accessories (All lights, Lock up, Everything
+off). They were two pills until they merged. Cards intermix and are dragged into any order,
+persisted as `HomeLayoutData.sceneCardOrder` — a flat list of prefixed keys
+(`action:lights`, `scene:<uuid>`), because the two kinds share no id space. A key that no
+longer resolves is skipped rather than pruned: a shortcut comes and goes with what the home
+contains.
+
+Visibility is stored as *hidden* lists in the home layout blob, so absent means shown and
+no migration was ever needed:
+
+| Flag | Hides |
+|------|-------|
+| `visibility.hiddenSummarySections: ['scenes']` | the Apple Home scenes half |
+| `visibility.hiddenSummarySections: ['actions']` | the shortcuts half |
+| both | the Scenes pill itself |
+| `visibility.hiddenActions: [...]` | individual shortcuts |
+
+`actions` is a **content flag, not a pill**, and must stay in `SUMMARY_SECTION_ORDER` —
+every write is normalised through that array, so removing it would silently un-hide the
+shortcuts of anyone who had already turned them off. `SUMMARY_PILL_ORDER` is what the row
+renders. Settings → Home Screen shows Scenes with both switches nested under it; the
+per-shortcut ticks live on the home's own Actions page.
 
 ## Advanced Automation Engine
 
