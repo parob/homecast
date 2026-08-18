@@ -263,6 +263,7 @@ Messages use this JSON format:
 | `app-web/src/components/settings/HomeDetailView.tsx` | One home's settings: live-home poll + router over its sub-sections |
 | `app-web/src/components/settings/home/` | The per-home sub-pages (overview, actions, notifications, MQTT, mobile row list) |
 | `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
+| `app-web/src/lib/marketing-routes.ts` | Which paths are the website, not the app — pure, unit-tested (collapsed to the dashboard inside the native shell) |
 
 ## Advanced Automation Engine
 

@@ -1606,12 +1606,37 @@ struct WebViewContainer: UIViewRepresentable {
             networkMonitor?.cancel()
         }
 
+        /// The first path segment of every screen the app itself owns.
+        ///
+        /// Everything else on our hosts is the website: the landing page, the
+        /// pricing table, the legal copy. The AASA claims the bare root because
+        /// that is what our emails link to — and the bare root serves the
+        /// marketing site, so a tap on Safari's "Open in the Homecast app"
+        /// banner used to hand the WebView our own advertising.
+        ///
+        /// Kept in step with the web app's route table by
+        /// app-web/src/lib/__tests__/deep-link-paths.test.ts.
+        private static let appPathSegments: Set<String> = [
+            "portal", "login", "signup", "verify-email", "forgot-password",
+            "reset-password", "subscribe", "oauth", "analytics", "history",
+            "diagnostics", "mqtt", "s", "delete-account",
+        ]
+
+        /// Does this path lead to a screen of the app, rather than the website?
+        private static func isAppPath(_ path: String) -> Bool {
+            guard let first = path.split(separator: "/").first else { return false }
+            return appPathSegments.contains(first.lowercased())
+        }
+
         /// Point the WebView at a link the user tapped outside the app.
         ///
         /// Only ever our own hosts: the AASA already restricts which paths reach
         /// us, but a custom scheme has no such gate, and a WebView that will load
         /// whatever a URL tells it to is somebody else's phishing page waiting to
         /// happen. Anything else is handed back to the system.
+        ///
+        /// And only ever our own *screens*: a host we trust is not the same as a
+        /// page the app should be showing.
         @objc private func handleDeepLink(_ note: Notification) {
             guard let url = note.object as? URL else { return }
 
@@ -1619,25 +1644,43 @@ struct WebViewContainer: UIViewRepresentable {
                 "homecast.cloud", "www.homecast.cloud", "staging.homecast.cloud",
             ]
 
-            let target: URL
+            var components: URLComponents
             if let host = url.host?.lowercased(), allowedHosts.contains(host) {
-                target = url
+                guard let parsed = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+                components = parsed
             } else if url.scheme?.lowercased() == "homecast" {
                 // homecast://portal/... — rebuild it against the current
                 // environment rather than trusting anything in the URL's host.
-                var components = URLComponents()
+                //
+                // A custom-scheme URL has no real host to trust anyway: this
+                // parses as host "portal", path "/admin". Stitching the two back
+                // together is what makes it one path again — without it,
+                // homecast://portal/admin asked for /admin.
+                components = URLComponents()
                 components.scheme = "https"
                 components.host = AppConfig.isStaging ? "staging.homecast.cloud" : "homecast.cloud"
-                let path = url.path.isEmpty ? "/portal" : url.path
-                components.path = path.hasPrefix("/") ? path : "/" + path
+                var segments = url.path.split(separator: "/").map(String.init)
+                if let first = url.host, !first.isEmpty { segments.insert(first, at: 0) }
+                components.path = "/" + segments.joined(separator: "/")
                 components.query = url.query
-                guard let rebuilt = components.url else { return }
-                target = rebuilt
+                components.fragment = url.fragment
             } else {
                 print("[DeepLink] Ignoring link to an unexpected host: \(url.absoluteString)")
                 return
             }
 
+            // Both branches arrive here, so the rule is applied exactly once and
+            // a custom-scheme URL cannot smuggle in a page a universal link
+            // could not. Only the path moves: the query is the whole reason the
+            // link was tapped — ?enrollment=, ?home=, ?checkout= are all read by
+            // the dashboard — and an empty path is a link to the root, which is
+            // the marketing page, i.e. exactly the case being fixed.
+            if !Self.isAppPath(components.path) {
+                print("[DeepLink] \(components.path.isEmpty ? "/" : components.path) is not a screen of the app — opening /portal")
+                components.path = "/portal"
+            }
+
+            guard let target = components.url else { return }
             print("[DeepLink] Opening \(target.absoluteString)")
             DispatchQueue.main.async { [weak self] in
                 self?.webView?.load(URLRequest(url: target))
