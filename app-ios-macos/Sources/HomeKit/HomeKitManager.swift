@@ -102,6 +102,19 @@ class HomeKitManager: NSObject, ObservableObject {
     private var lastFullRefreshAt: Date?
     private var isRefreshing = false
 
+    /// How many bulk writes are in flight.
+    ///
+    /// The periodic refresh reads the same HomeKit stack a write goes out on,
+    /// and the two compete: this codebase already records twelve reads racing
+    /// the group write that triggered them until the write timed out. A bulk
+    /// write is that hazard at two hundred accessories, so refreshing stands
+    /// aside while one is travelling — including mid-pass, because a refresh
+    /// that started first would otherwise read straight through it.
+    ///
+    /// A counter rather than a flag: two batches can overlap, and the second
+    /// finishing must not re-open the door on the first.
+    private var bulkWritesInFlight = 0
+
     /// A client attaching this soon after a completed pass gets that pass's
     /// result instead of provoking another one.
     private let catchUpMinInterval: TimeInterval = 15
@@ -325,6 +338,7 @@ class HomeKitManager: NSObject, ObservableObject {
     /// enableNotification(true) forces HomeKit to attempt a fresh HAP connection;
     /// if it succeeds, HomeKit flips isReachable → true and fires the delegate.
     private func probeUnreachableAccessories() async {
+        guard bulkWritesInFlight == 0 else { return }
         let unreachable = homes.flatMap { $0.accessories }.filter { !$0.isReachable }
         guard !unreachable.isEmpty else { return }
 
@@ -370,6 +384,7 @@ class HomeKitManager: NSObject, ObservableObject {
         label: String = "Periodic refresh"
     ) async -> Int {
         guard !isRefreshing else { return 0 }
+        guard bulkWritesInFlight == 0 else { return 0 }
         isRefreshing = true
         defer {
             isRefreshing = false
@@ -400,6 +415,12 @@ class HomeKitManager: NSObject, ObservableObject {
         // Batches keep us from overwhelming HomeKit devices — see `batchSize`.
         var changedCount = 0
         for batch in stride(from: 0, to: toRefresh.count, by: batchSize) {
+            // A write started while this pass was draining. Reads are a safety
+            // net; the write is what the user is waiting for.
+            if bulkWritesInFlight > 0 {
+                print("[HomeKit] ⏸️ \(label) yielding to a bulk write in flight")
+                break
+            }
             let end = min(batch + batchSize, toRefresh.count)
             let batchItems = Array(toRefresh[batch..<end])
 
@@ -645,6 +666,19 @@ class HomeKitManager: NSObject, ObservableObject {
     /// actor) can read it without hopping back — required under Swift 6.
     nonisolated static let writeTimeoutSeconds: Double = 10.0
 
+    /// The per-write bound inside a *bulk* write, deliberately tighter.
+    ///
+    /// A bulk write answers once, for every accessory in it. The cloud gives up
+    /// on a relay request at 10s (`route_request`) — the same number as the
+    /// single-write bound — so a batch pinned by one unreachable bulb would race
+    /// that ceiling and lose, and the caller would be told all two hundred
+    /// writes failed when all but one had landed. Finishing early enough for the
+    /// answer to get home is worth more than three extra seconds of hoping.
+    ///
+    /// Every timer starts together (the whole batch is dispatched at once), so
+    /// this bounds the batch, not merely each write in it.
+    nonisolated static let bulkWriteTimeoutSeconds: Double = 7.0
+
     /// Write a characteristic, giving up after `seconds`. Returns false on
     /// write failure or timeout.
     ///
@@ -652,11 +686,18 @@ class HomeKitManager: NSObject, ObservableObject {
     /// be cancelled, and in practice it often still lands once the accessory
     /// answers. Bounding the *wait* is the point: it keeps one unresponsive
     /// device from holding up every other write in the batch.
+    ///
+    /// `quiet` drops the per-write success line. A bulk write of two hundred
+    /// accessories would otherwise emit two hundred log lines that all say the
+    /// same thing, through one stdio lock, while the writes they describe are
+    /// trying to go out together. Failures are still printed either way: they
+    /// are rare and they are the ones worth reading.
     nonisolated static func writeValue(
         _ characteristic: HMCharacteristic,
         _ value: Any,
         serviceName: String,
-        seconds: Double = HomeKitManager.writeTimeoutSeconds
+        seconds: Double = HomeKitManager.writeTimeoutSeconds,
+        quiet: Bool = false
     ) async -> Bool {
         await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
             group.addTask {
@@ -667,7 +708,7 @@ class HomeKitManager: NSObject, ObservableObject {
                                 print("[HomeKit] ❌ Write failed for '\(serviceName)': \(error.localizedDescription)")
                                 continuation.resume(throwing: error)
                             } else {
-                                print("[HomeKit] ✅ Write successful for '\(serviceName)'")
+                                if !quiet { print("[HomeKit] ✅ Write successful for '\(serviceName)'") }
                                 continuation.resume()
                             }
                         }
@@ -956,6 +997,191 @@ class HomeKitManager: NSObject, ObservableObject {
             characteristic: characteristicType,
             newValue: String(describing: convertedValue)
         )
+    }
+
+    // MARK: - Bulk Characteristic Writes
+
+    /// One entry in a bulk characteristic write.
+    struct BulkWrite: @unchecked Sendable {
+        let accessoryId: String
+        let characteristicType: String
+        let value: Any
+
+        /// `Any` is not Sendable, but only JSON primitives ever reach here —
+        /// the same reasoning as `setState`'s `WriteOp`.
+        nonisolated init(accessoryId: String, characteristicType: String, value: Any) {
+            self.accessoryId = accessoryId
+            self.characteristicType = characteristicType
+            self.value = value
+        }
+    }
+
+    /// What became of one entry, paired back to the accessory that caused it.
+    struct BulkWriteResult {
+        let accessoryId: String
+        let characteristicType: String
+        let value: Any?
+        let success: Bool
+        let error: String?
+    }
+
+    /// A resolved write, ready to go out.
+    ///
+    /// Carries the service name rather than the accessory, so nothing reaches
+    /// into HomeKit's object graph from off the main actor.
+    private struct ResolvedWrite: @unchecked Sendable {
+        let position: Int
+        let characteristic: HMCharacteristic
+        let value: Any
+        let serviceName: String
+
+        nonisolated init(position: Int, characteristic: HMCharacteristic, value: Any, serviceName: String) {
+            self.position = position
+            self.characteristic = characteristic
+            self.value = value
+            self.serviceName = serviceName
+        }
+    }
+
+    /// Write many characteristics as one operation.
+    ///
+    /// `setCharacteristic` × N is the wrong shape at scale. A 223-light home
+    /// paid 223 bridge round trips, and every one of them re-entered the main
+    /// actor to linear-scan every accessory of every home before it could
+    /// write — on the order of 10^5 comparisons per press, competing with
+    /// SwiftUI and the web view for the same thread. Here the whole batch
+    /// resolves in a single pass over one index, then goes out as one group.
+    ///
+    /// **The fan-out is deliberately unbounded**, matching `setState`. HomeKit's
+    /// daemon coalesces writes that reach the same accessory server close
+    /// together into a single HAP request, and a bridge is one accessory
+    /// server — so simultaneity is precisely what turns forty bulbs behind a
+    /// bridge into one write rather than forty. Pacing them defeats it. Each
+    /// write is still bounded individually by `writeValue`'s own timeout, so
+    /// one unreachable accessory cannot hold up the rest.
+    ///
+    /// Addressed by accessory id, unlike `setState`, whose `findAccessoryByKey`
+    /// resolves room/accessory slugs and skips anything with no room — which
+    /// silently drops virtual accessories and HomeKit's default room.
+    ///
+    /// Never throws. A batch reports per entry, because the entire point is to
+    /// tell the caller which accessories moved and which did not.
+    func setCharacteristics(_ writes: [BulkWrite]) async -> [BulkWriteResult] {
+        guard !writes.isEmpty else { return [] }
+
+        // One index for the whole batch, built once rather than rescanned per
+        // write. This is the change that keeps a large press off the main
+        // thread's back.
+        var accessoriesById: [UUID: HMAccessory] = [:]
+        for home in homes {
+            for accessory in home.accessories {
+                accessoriesById[accessory.uniqueIdentifier] = accessory
+            }
+        }
+
+        var results: [BulkWriteResult?] = Array(repeating: nil, count: writes.count)
+        var resolved: [ResolvedWrite] = []
+        var accessoriesByPosition: [Int: HMAccessory] = [:]
+
+        for (position, write) in writes.enumerated() {
+            func fail(_ message: String) {
+                results[position] = BulkWriteResult(
+                    accessoryId: write.accessoryId,
+                    characteristicType: write.characteristicType,
+                    value: nil,
+                    success: false,
+                    error: message
+                )
+            }
+
+            guard let uuid = UUID(uuidString: write.accessoryId) else {
+                fail("Invalid accessory id")
+                continue
+            }
+            guard let accessory = accessoriesById[uuid] else {
+                fail("Accessory not found")
+                continue
+            }
+            guard let characteristic = firstCharacteristic(on: accessory, type: write.characteristicType) else {
+                fail("Characteristic '\(write.characteristicType)' not found on \(accessory.name)")
+                continue
+            }
+            guard characteristic.properties.contains(HMCharacteristicPropertyWritable) else {
+                fail("Characteristic '\(write.characteristicType)' is not writable")
+                continue
+            }
+            do {
+                let converted = try CharacteristicMapper.convertValue(write.value, for: characteristic)
+                accessoriesByPosition[position] = accessory
+                resolved.append(ResolvedWrite(
+                    position: position,
+                    characteristic: characteristic,
+                    value: converted,
+                    serviceName: AccessoryModel.userFacingName(of: accessory)
+                ))
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
+
+        print("[HomeKit] 📝 setCharacteristics: \(resolved.count) resolved of \(writes.count), writing as one batch")
+
+        // Claimed around the dispatch itself, not the resolution: the reads we
+        // are keeping out of the way only matter once the writes are travelling.
+        bulkWritesInFlight += 1
+        defer { bulkWritesInFlight -= 1 }
+
+        let written: [(Int, Bool)] = await withTaskGroup(of: (Int, Bool).self, returning: [(Int, Bool)].self) { group in
+            for item in resolved {
+                group.addTask {
+                    let ok = await HomeKitManager.writeValue(
+                        item.characteristic, item.value, serviceName: item.serviceName,
+                        seconds: HomeKitManager.bulkWriteTimeoutSeconds, quiet: true
+                    )
+                    return (item.position, ok)
+                }
+            }
+            var collected: [(Int, Bool)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        let valuesByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.value) })
+        var okCount = 0
+        for (position, ok) in written {
+            let write = writes[position]
+            if ok {
+                okCount += 1
+                // A confirmed write is strong evidence the accessory is
+                // reachable, whatever HomeKit's own bit currently says.
+                if let accessory = accessoriesByPosition[position] {
+                    recordSuccessfulRead(accessory)
+                }
+            }
+            results[position] = BulkWriteResult(
+                accessoryId: write.accessoryId,
+                characteristicType: write.characteristicType,
+                value: ok ? valuesByPosition[position] : nil,
+                success: ok,
+                error: ok ? nil : "Did not confirm the write within \(Int(HomeKitManager.bulkWriteTimeoutSeconds))s — it may be unreachable."
+            )
+        }
+        print("[HomeKit] 📝 setCharacteristics: \(okCount)/\(writes.count) confirmed")
+
+        // Defensive rather than force-unwrapped: every position is filled above,
+        // but a batch that quietly returned fewer results than it was asked for
+        // would be a very bad thing to discover downstream.
+        return results.enumerated().map { position, result in
+            result ?? BulkWriteResult(
+                accessoryId: writes[position].accessoryId,
+                characteristicType: writes[position].characteristicType,
+                value: nil,
+                success: false,
+                error: "Write did not complete"
+            )
+        }
     }
 
     // MARK: - Scene Operations
@@ -1955,15 +2181,14 @@ class HomeKitManager: NSObject, ObservableObject {
 
     // MARK: - Private Helpers
 
-    private func findCharacteristic(accessoryId: String, type: String) throws -> (HMAccessory, HMCharacteristic) {
-        guard let uuid = UUID(uuidString: accessoryId) else {
-            throw HomeKitError.invalidId(accessoryId)
-        }
-
-        let characteristicType = CharacteristicMapper.toHomeKitType(type)
-
+    /// The characteristic types to try for `type`, in the order to try them.
+    ///
+    /// Power control is the awkward one: some accessories carry PowerState and
+    /// others Active, and callers name either. Shared by the single-write and
+    /// bulk-write paths so the two cannot drift on which fallbacks exist.
+    nonisolated static func characteristicTypesToTry(for type: String) -> [String] {
         // Build list of types to try (with fallbacks for power control)
-        var typesToTry = [characteristicType]
+        var typesToTry = [CharacteristicMapper.toHomeKitType(type)]
 
         // For power control, also try Active as fallback (for heaters, coolers, air purifiers, etc.)
         let typeLower = type.lowercased().replacingOccurrences(of: "_", with: "")
@@ -1974,16 +2199,31 @@ class HomeKitManager: NSObject, ObservableObject {
         if typeLower == "active" {
             typesToTry.append(HMCharacteristicTypePowerState)
         }
+        return typesToTry
+    }
+
+    /// The first characteristic on `accessory` matching `type`, or nil.
+    private func firstCharacteristic(on accessory: HMAccessory, type: String) -> HMCharacteristic? {
+        // Try each type in order
+        for typeToTry in HomeKitManager.characteristicTypesToTry(for: type) {
+            for service in accessory.services {
+                if let characteristic = service.characteristics.first(where: { $0.characteristicType == typeToTry }) {
+                    return characteristic
+                }
+            }
+        }
+        return nil
+    }
+
+    private func findCharacteristic(accessoryId: String, type: String) throws -> (HMAccessory, HMCharacteristic) {
+        guard let uuid = UUID(uuidString: accessoryId) else {
+            throw HomeKitError.invalidId(accessoryId)
+        }
 
         for home in homes {
             if let accessory = home.accessories.first(where: { $0.uniqueIdentifier == uuid }) {
-                // Try each type in order
-                for typeToTry in typesToTry {
-                    for service in accessory.services {
-                        if let characteristic = service.characteristics.first(where: { $0.characteristicType == typeToTry }) {
-                            return (accessory, characteristic)
-                        }
-                    }
+                if let characteristic = firstCharacteristic(on: accessory, type: type) {
+                    return (accessory, characteristic)
                 }
                 // Log available characteristics for debugging
                 let availableTypes = accessory.services.flatMap { $0.characteristics }.map { CharacteristicMapper.fromHomeKitType($0.characteristicType) }

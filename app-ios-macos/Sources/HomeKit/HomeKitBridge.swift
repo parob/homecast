@@ -354,6 +354,12 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             }
             return try await setCharacteristic(accessoryId: accessoryId, characteristicType: characteristicType, value: value)
 
+        case "characteristics.set":
+            guard let writes = payload["writes"] as? [[String: Any]] else {
+                throw HomeKitBridgeError.missingParameter("writes")
+            }
+            return try await setCharacteristics(writes)
+
         // Scene operations
         case "scenes.list":
             guard let homeId = payload["homeId"] as? String else {
@@ -750,6 +756,55 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             "accessoryId": result.accessoryId,
             "characteristicType": result.characteristic,
             "value": result.newValue
+        ]
+    }
+
+    /// Bulk sibling of `setCharacteristic`.
+    ///
+    /// Entries that cannot be read at all are reported as failures rather than
+    /// dropped: a caller counting "how many of my lights moved" must not be told
+    /// twenty of twenty when it asked for twenty-two.
+    private func setCharacteristics(_ writes: [[String: Any]]) async throws -> [String: Any] {
+        await homeKitManager.waitForReady()
+
+        var requests: [HomeKitManager.BulkWrite] = []
+        var malformed: [[String: Any]] = []
+        for write in writes {
+            guard let accessoryId = write["accessoryId"] as? String,
+                  let characteristicType = write["characteristicType"] as? String,
+                  let value = write["value"] else {
+                malformed.append([
+                    "accessoryId": (write["accessoryId"] as? String) ?? "",
+                    "characteristicType": (write["characteristicType"] as? String) ?? "",
+                    "success": false,
+                    "error": "accessoryId, characteristicType and value are all required",
+                ])
+                continue
+            }
+            requests.append(HomeKitManager.BulkWrite(
+                accessoryId: accessoryId, characteristicType: characteristicType, value: value
+            ))
+        }
+
+        let results = await homeKitManager.setCharacteristics(requests)
+        var changes: [[String: Any]] = results.map { result in
+            var entry: [String: Any] = [
+                "accessoryId": result.accessoryId,
+                "characteristicType": result.characteristicType,
+                "success": result.success,
+            ]
+            if let value = result.value { entry["value"] = value }
+            if let error = result.error { entry["error"] = error }
+            return entry
+        }
+        changes.append(contentsOf: malformed)
+
+        let ok = results.filter { $0.success }.count
+        return [
+            "success": ok == writes.count,
+            "ok": ok,
+            "total": writes.count,
+            "changes": changes,
         ]
     }
 
