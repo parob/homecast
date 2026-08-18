@@ -139,6 +139,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     // MARK: - Local Server Lifecycle
 
     func startLocalServer() {
+        // The MQTT bridge is not the HTTP server's, and must not be gated on
+        // whether we are the ones who started it — every return path below has
+        // to leave it running. See `ensureMQTTBridge`.
+        defer {
+            #if targetEnvironment(macCatalyst)
+            ensureMQTTBridge()
+            #endif
+        }
+
         guard localHTTPServer == nil else { return }
 
         // The mode selector starts one too, on the iOS path. Guarding only on
@@ -164,14 +173,35 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         server.start()
         localHTTPServer = server
         LocalHTTPServer.shared = server
+    }
 
-        #if targetEnvironment(macCatalyst)
-        // Initialize MQTT bridge (auto-connects saved brokers from UserDefaults)
+    #if targetEnvironment(macCatalyst)
+    /// Bring up the MQTT bridge if it isn't already, and connect saved brokers.
+    ///
+    /// This used to be the last few lines of `startLocalServer`, which returns
+    /// early whenever a server is already up — and on the path that matters one
+    /// always is: the mode selector starts its own the moment Community is
+    /// chosen, before the delegate is ever asked. So choosing Community left
+    /// `mqttBridge` nil for the rest of the session. Saved brokers never
+    /// connected, `/health` reported `"mqtt":null`, and every `mqtt` call from
+    /// the web app was dropped without a reply — which is what left Settings →
+    /// Homes → MQTT sitting on "Loading…" until the web side's 15s timeout gave
+    /// up and reported no brokers configured.
+    ///
+    /// Idempotent, so every entry point can just call it.
+    @discardableResult
+    func ensureMQTTBridge() -> MQTTBridge? {
+        // Cloud mode keeps its brokers server-side; the native bridge is the
+        // Community-mode store, and connecting it here would publish twice.
+        guard AppConfig.isCommunity else { return nil }
+        if let bridge = mqttBridge { return bridge }
         let bridge = MQTTBridge()
         mqttBridge = bridge
         bridge.loadAndConnectSavedBrokers()
-        #endif
+        Log.info("mqtt bridge started", category: "lifecycle")
+        return bridge
     }
+    #endif
 
     func stopLocalServer() {
         #if targetEnvironment(macCatalyst)

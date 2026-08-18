@@ -338,6 +338,9 @@ struct ContentView: View {
                     }
                     server.start()
                     LocalHTTPServer.shared = server
+                    // We started the server ourselves, so `startLocalServer`
+                    // will adopt it and never reach its own bridge setup.
+                    (UIApplication.shared.delegate as? AppDelegate)?.ensureMQTTBridge()
                     return
                     #else
                     // iOS: start the loopback server that will host the web app,
@@ -2116,83 +2119,112 @@ struct WebViewContainer: UIViewRepresentable {
                     self.handleFileOperation(method: method, payload: payload, callbackId: callbackId)
                 }
             case "mqtt":
-                // Handle MQTT broker management from the web app
+                // Handle MQTT broker management from the web app.
+                //
+                // Every branch has to answer. The web side registers a callback
+                // and waits 15s for it, so a dropped message is not a no-op: it
+                // is a quarter-minute spinner followed by a confident wrong
+                // answer ("No custom brokers configured"), with the real reason
+                // never leaving this switch.
+                let mqttCallbackId = body["callbackId"] as? String ?? ""
                 #if targetEnvironment(macCatalyst)
-                if let method = body["method"] as? String,
-                   let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-                   let bridge = appDelegate.mqttBridge {
-                    let callbackId = body["callbackId"] as? String ?? ""
-                    switch method {
-                    case "getBrokers":
-                        let brokers = bridge.getBrokers()
-                        if let data = try? JSONSerialization.data(withJSONObject: brokers),
-                           let json = String(data: data, encoding: .utf8) {
-                            sendMQTTCallback(callbackId: callbackId, json: json)
-                        }
-
-                    case "addBroker":
-                        if let homeId = body["homeId"] as? String,
-                           let host = body["host"] as? String {
-                            let config = MQTTBrokerConfig(
-                                id: UUID().uuidString,
-                                name: body["name"] as? String ?? host,
-                                host: host,
-                                port: UInt16(body["port"] as? Int ?? 1883),
-                                username: body["username"] as? String,
-                                password: body["password"] as? String,
-                                useTLS: body["useTLS"] as? Bool ?? false,
-                                topicPrefix: body["topicPrefix"] as? String ?? "homecast",
-                                haDiscovery: body["haDiscovery"] as? Bool ?? true,
-                                haDiscoveryPrefix: body["haDiscoveryPrefix"] as? String ?? "homeassistant",
-                                enabled: true
-                            )
-                            let added = bridge.addBroker(config, forHome: homeId)
-                            if let data = try? JSONEncoder().encode(added),
-                               let json = String(data: data, encoding: .utf8) {
-                                sendMQTTCallback(callbackId: callbackId, json: json)
-                            }
-                        }
-
-                    case "removeBroker":
-                        if let homeId = body["homeId"] as? String,
-                           let brokerId = body["brokerId"] as? String {
-                            bridge.removeBroker(id: brokerId, forHome: homeId)
-                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '{\"ok\":true}');"
-                            webView?.evaluateJavaScript(js, completionHandler: nil)
-                        }
-
-                    case "updateBroker":
-                        if let homeId = body["homeId"] as? String,
-                           let brokerId = body["brokerId"] as? String,
-                           let updates = body["updates"] as? [String: Any] {
-                            bridge.updateBroker(id: brokerId, forHome: homeId, updates: updates)
-                            let js = "window.__mqtt_callback && window.__mqtt_callback('\(callbackId)', '{\"ok\":true}');"
-                            webView?.evaluateJavaScript(js, completionHandler: nil)
-                        }
-
-                    case "testConnection":
-                        if let host = body["host"] as? String {
-                            let port = UInt16(body["port"] as? Int ?? 1883)
-                            bridge.testConnection(
-                                host: host,
-                                port: port,
-                                username: body["username"] as? String,
-                                password: body["password"] as? String,
-                                useTLS: body["useTLS"] as? Bool ?? false
-                            ) { [weak self] success, error in
-                                var result: [String: Any] = ["success": success]
-                                if let error = error { result["error"] = error }
-                                if let data = try? JSONSerialization.data(withJSONObject: result),
-                                   let json = String(data: data, encoding: .utf8) {
-                                    self?.sendMQTTCallback(callbackId: callbackId, json: json)
-                                }
-                            }
-                        }
-
-                    default:
-                        break
-                    }
+                guard let method = body["method"] as? String else {
+                    sendMQTTError(callbackId: mqttCallbackId, message: "MQTT call had no method")
+                    return
                 }
+                guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+                      let bridge = appDelegate.ensureMQTTBridge() else {
+                    sendMQTTError(callbackId: mqttCallbackId,
+                                  message: "The MQTT bridge is only available in Community mode")
+                    return
+                }
+                let callbackId = mqttCallbackId
+                switch method {
+                case "getBrokers":
+                    let brokers = bridge.getBrokers()
+                    if let data = try? JSONSerialization.data(withJSONObject: brokers),
+                       let json = String(data: data, encoding: .utf8) {
+                        sendMQTTCallback(callbackId: callbackId, json: json)
+                    } else {
+                        sendMQTTError(callbackId: callbackId, message: "Could not encode the broker list")
+                    }
+
+                case "addBroker":
+                    guard let homeId = body["homeId"] as? String,
+                          let host = body["host"] as? String else {
+                        sendMQTTError(callbackId: callbackId, message: "Broker needs a home and a host")
+                        return
+                    }
+                    let config = MQTTBrokerConfig(
+                        id: UUID().uuidString,
+                        name: body["name"] as? String ?? host,
+                        host: host,
+                        port: UInt16(body["port"] as? Int ?? 1883),
+                        username: body["username"] as? String,
+                        password: body["password"] as? String,
+                        useTLS: body["useTLS"] as? Bool ?? false,
+                        topicPrefix: body["topicPrefix"] as? String ?? "homecast",
+                        haDiscovery: body["haDiscovery"] as? Bool ?? true,
+                        haDiscoveryPrefix: body["haDiscoveryPrefix"] as? String ?? "homeassistant",
+                        enabled: true
+                    )
+                    let added = bridge.addBroker(config, forHome: homeId)
+                    if let data = try? JSONEncoder().encode(added),
+                       let json = String(data: data, encoding: .utf8) {
+                        sendMQTTCallback(callbackId: callbackId, json: json)
+                    } else {
+                        sendMQTTError(callbackId: callbackId, message: "Could not encode the saved broker")
+                    }
+
+                case "removeBroker":
+                    guard let homeId = body["homeId"] as? String,
+                          let brokerId = body["brokerId"] as? String else {
+                        sendMQTTError(callbackId: callbackId, message: "Remove needs a home and a broker")
+                        return
+                    }
+                    bridge.removeBroker(id: brokerId, forHome: homeId)
+                    sendMQTTCallback(callbackId: callbackId, json: "{\"ok\":true}")
+
+                case "updateBroker":
+                    guard let homeId = body["homeId"] as? String,
+                          let brokerId = body["brokerId"] as? String,
+                          let updates = body["updates"] as? [String: Any] else {
+                        sendMQTTError(callbackId: callbackId, message: "Update needs a home, a broker and changes")
+                        return
+                    }
+                    bridge.updateBroker(id: brokerId, forHome: homeId, updates: updates)
+                    sendMQTTCallback(callbackId: callbackId, json: "{\"ok\":true}")
+
+                case "testConnection":
+                    guard let host = body["host"] as? String else {
+                        sendMQTTError(callbackId: callbackId, message: "Test needs a host")
+                        return
+                    }
+                    let port = UInt16(body["port"] as? Int ?? 1883)
+                    bridge.testConnection(
+                        host: host,
+                        port: port,
+                        username: body["username"] as? String,
+                        password: body["password"] as? String,
+                        useTLS: body["useTLS"] as? Bool ?? false
+                    ) { [weak self] success, error in
+                        var result: [String: Any] = ["success": success]
+                        if let error = error { result["error"] = error }
+                        if let data = try? JSONSerialization.data(withJSONObject: result),
+                           let json = String(data: data, encoding: .utf8) {
+                            self?.sendMQTTCallback(callbackId: callbackId, json: json)
+                        } else {
+                            self?.sendMQTTError(callbackId: callbackId, message: "Could not encode the test result")
+                        }
+                    }
+
+                default:
+                    sendMQTTError(callbackId: callbackId, message: "Unknown MQTT method \(method)")
+                }
+                #else
+                // iOS has no relay duties, so no broker bridge. Say so rather
+                // than leaving the caller to time out.
+                sendMQTTError(callbackId: mqttCallbackId, message: "MQTT brokers are configured on the Mac")
                 #endif
             case "relayStatus":
                 let connectionState = body["connectionState"] as? String ?? "disconnected"
@@ -2237,9 +2269,12 @@ struct WebViewContainer: UIViewRepresentable {
             #if targetEnvironment(macCatalyst)
             if AppConfig.isCommunity && localNetworkBridge.webView == nil {
                 if let server = LocalHTTPServer.shared {
-                    // Set MQTT bridge before attaching (attach forwards it to WebView)
+                    // Set MQTT bridge before attaching (attach forwards it to
+                    // WebView). This runs once, on the first load — so reading
+                    // a bridge that hasn't been created yet wired nil in for
+                    // the whole session and no state ever reached a broker.
                     if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                        localNetworkBridge.mqttBridge = appDelegate.mqttBridge
+                        localNetworkBridge.mqttBridge = appDelegate.ensureMQTTBridge()
                     }
                     localNetworkBridge.attach(webView: webView, server: server)
                 }
@@ -2599,6 +2634,17 @@ struct WebViewContainer: UIViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.webView?.evaluateJavaScript(js, completionHandler: nil)
             }
+        }
+
+        /// Answer an MQTT bridge call that cannot be served.
+        ///
+        /// `mqtt-bridge.ts` rejects on this envelope, so the reason reaches a
+        /// toast instead of dying here as a dropped message.
+        private func sendMQTTError(callbackId: String, message: String) {
+            guard let data = try? JSONSerialization.data(withJSONObject: ["__mqttError": message]),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            NSLog("[MQTTBridge] %@", message)
+            sendMQTTCallback(callbackId: callbackId, json: json)
         }
 
         private func sendFileCallback(callbackId: String, result: [String: Any]? = nil, error: String? = nil) {
