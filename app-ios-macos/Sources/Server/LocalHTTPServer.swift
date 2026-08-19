@@ -343,6 +343,11 @@ class LocalHTTPServer {
         // Unknown reads as "no password", so a relay whose web app hasn't
         // reported yet is flagged rather than silently trusted.
         txt["au"] = (advertisedAuthEnabled == true) ? "1" : "0"
+        // Display name. The instance name doubles as one, but only for a client
+        // that found us over Bonjour — a hand-typed address carries no name at
+        // all, and two Macs sharing a hostname are otherwise told apart only by
+        // `id`. Sent only when it differs, to keep the record small.
+        if relayName != serviceName { txt["dn"] = relayName }
         if wsPort != 0 { txt["ws"] = String(wsPort) }
         return NWListener.Service(
             name: serviceName,
@@ -363,19 +368,49 @@ class LocalHTTPServer {
         }
     }
 
-    /// This Mac's address on the LAN, as another device would reach it.
+    /// Rename the relay, and re-advertise so clients see it without a restart.
     ///
-    /// The settings screen used to show `window.location.origin`, which on the
-    /// relay is `http://localhost:5656` — an address that means "this device"
-    /// on whatever device reads it, so copying it to a phone hands over a link
-    /// to the phone itself. Only the server can answer this, so it reports it.
+    /// Persisted rather than held in memory like `advertisedAuthEnabled`: the
+    /// name is answered by /health, which a client can hit before the web app
+    /// has loaded and reported anything, and a nameless relay is precisely the
+    /// problem this solves.
+    func updateRelayName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let defaults = UserDefaults.standard
+            // Empty means "no custom name" — fall back to the hostname rather
+            // than advertising a blank row.
+            let current = defaults.string(forKey: Self.nameKey) ?? ""
+            guard current != trimmed else { return }
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: Self.nameKey)
+            } else {
+                defaults.set(trimmed, forKey: Self.nameKey)
+            }
+            guard self.isRunning else { return }
+            self.listener?.service = self.makeService()
+        }
+    }
+
+    /// Every IPv4 address a client could reach this Mac on, best first.
     ///
-    /// Prefers a private IPv4 on an active interface; nil when there is none,
-    /// in which case the UI keeps its old behaviour rather than inventing one.
-    var lanAddress: String? {
-        var address: String?
+    /// A relay is not at one address. It is on Wi-Fi and Ethernet at once, and
+    /// on a mesh VPN it also holds a CGNAT address that works from anywhere —
+    /// which is the whole point of reporting these: a phone that pairs on the
+    /// sofa silently learns the address that will still work from a train.
+    /// Only the machine itself can enumerate them.
+    ///
+    /// Ordered LAN → CGNAT → everything else, so the first entry stays the one
+    /// a human would want to read, and a client racing the list has a sensible
+    /// preference order handed to it.
+    var allAddresses: [String] {
+        var lan: [String] = []
+        var cgnat: [String] = []
+        var other: [String] = []
+
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
         defer { freeifaddrs(ifaddr) }
 
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
@@ -389,18 +424,100 @@ class LocalHTTPServer {
                               &host, socklen_t(host.count),
                               nil, 0, NI_NUMERICHOST) == 0 else { continue }
             let candidate = String(cString: host)
-            // Skip link-local; it is reachable but not what anyone wants to type.
+            // Link-local is reachable but nobody wants to type it, and it never
+            // survives leaving the segment.
             if candidate.hasPrefix("169.254.") { continue }
+            if lan.contains(candidate) || cgnat.contains(candidate) || other.contains(candidate) { continue }
+
             let name = String(cString: ptr.pointee.ifa_name)
-            if name == "en0" { return candidate }   // Wi-Fi wins outright
-            if address == nil { address = candidate }
+            if Self.isPrivateLAN(candidate) {
+                // Wi-Fi first among equals — it is the one the user recognises.
+                if name == "en0" { lan.insert(candidate, at: 0) } else { lan.append(candidate) }
+            } else if Self.isCGNAT(candidate) {
+                cgnat.append(candidate)
+            } else {
+                other.append(candidate)
+            }
         }
-        return address
+        return lan + cgnat + other
     }
+
+    /// RFC1918.
+    private static func isPrivateLAN(_ ip: String) -> Bool {
+        if ip.hasPrefix("10.") || ip.hasPrefix("192.168.") { return true }
+        // 172.16.0.0/12 is 172.16 through 172.31 — not all of 172.
+        if ip.hasPrefix("172.") {
+            let second = ip.split(separator: ".").dropFirst().first.flatMap { Int($0) }
+            if let second = second, (16...31).contains(second) { return true }
+        }
+        return false
+    }
+
+    /// 100.64.0.0/10 — carrier-grade NAT, and where Tailscale and most mesh
+    /// VPNs live. Reachable from anywhere on the mesh, which is exactly why it
+    /// is worth publishing, but never a LAN address.
+    private static func isCGNAT(_ ip: String) -> Bool {
+        guard ip.hasPrefix("100.") else { return false }
+        guard let second = ip.split(separator: ".").dropFirst().first.flatMap({ Int($0) }) else { return false }
+        return (64...127).contains(second)
+    }
+
+    /// This Mac's address on the LAN, as another device would reach it.
+    ///
+    /// The settings screen used to show `window.location.origin`, which on the
+    /// relay is `http://localhost:5656` — an address that means "this device"
+    /// on whatever device reads it, so copying it to a phone hands over a link
+    /// to the phone itself. Only the server can answer this, so it reports it.
+    ///
+    /// The best of `allAddresses`; nil when there is none, in which case the UI
+    /// keeps its old behaviour rather than inventing one.
+    var lanAddress: String? { allAddresses.first }
 
     /// Raw JSON fragment for `authEnabled`: `null` until the web app reports.
     private var authEnabledJSON: String {
         advertisedAuthEnabled.map { $0 ? "true" : "false" } ?? "null"
+    }
+
+    /// What to call this relay.
+    ///
+    /// Clients used to have only the Bonjour instance name, which a hand-typed
+    /// address never carries — so a relay reached over a VPN was nameless, and
+    /// two Macs with the same hostname were indistinguishable except by id.
+    /// Persisted here rather than held like `advertisedAuthEnabled`, so a cold
+    /// start can answer before the web app has loaded and told us anything.
+    static let nameKey = "com.homecast.relayName"
+    var relayName: String {
+        let stored = UserDefaults.standard.string(forKey: Self.nameKey)
+        if let stored = stored, !stored.isEmpty { return stored }
+        return serviceName
+    }
+
+    /// Escape the few characters that would break a hand-built JSON string.
+    /// The whole response is interpolated rather than encoded, and a relay name
+    /// is the first field here that a user can type into.
+    private static func jsonString(_ value: String) -> String {
+        var out = ""
+        for ch in value.unicodeScalars {
+            switch ch {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if ch.value < 0x20 {
+                    out += String(format: "\\u%04x", ch.value)
+                } else {
+                    out.unicodeScalars.append(ch)
+                }
+            }
+        }
+        return "\"\(out)\""
+    }
+
+    /// `["http://192.168.1.5:5656","http://100.93.89.109:5656"]`
+    private var addressesJSON: String {
+        "[" + allAddresses.map { Self.jsonString("http://\($0):\(port)") }.joined(separator: ",") + "]"
     }
 
     /// Stop the server and disconnect all clients.
@@ -572,7 +689,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"mqtt":\(mqttJson)}
+            {"mode":"community","version":"\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")","name":\(Self.jsonString(relayName)),"port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return
@@ -583,7 +700,7 @@ class LocalHTTPServer {
             let mqttStatus = bridge?.mqttBridge?.statusDescription
             let mqttJson = mqttStatus != nil ? "\"\(mqttStatus!)\"" : "null"
             let json = """
-            {"status":"ok","mode":"community","port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
+            {"status":"ok","mode":"community","name":\(Self.jsonString(relayName)),"port":\(port),"wsPort":\(wsPort),"instanceId":"\(instanceId)","authEnabled":\(authEnabledJSON),"lanAddress":\(lanAddress.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON),"wsClients":\(wsClients.count),"bridgeAttached":\(bridge != nil),"mqtt":\(mqttJson)}
             """
             sendResponse(on: connection, status: 200, contentType: "application/json", body: json)
             return

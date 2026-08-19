@@ -24,6 +24,11 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
     /// password when it did.
     private var pendingAuthEnabled: Bool?
 
+    /// Same holding pattern as `pendingAuthEnabled`, for the same reason: the
+    /// name is reported while the page is still loading, and dropping that one
+    /// report leaves the relay advertising its hostname until the next rename.
+    private var pendingRelayName: String?
+
     /// Attach to a WKWebView — called after the WebView is created.
     func attach(webView: WKWebView, server: LocalHTTPServer) {
         self.webView = webView
@@ -34,6 +39,10 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
         if let pending = pendingAuthEnabled {
             server.updateAdvertisement(authEnabled: pending)
             pendingAuthEnabled = nil
+        }
+        if let pendingName = pendingRelayName {
+            server.updateRelayName(pendingName)
+            pendingRelayName = nil
         }
 
         // Attach MQTT bridge to the same WebView
@@ -222,7 +231,17 @@ class LocalNetworkBridge: NSObject, WKScriptMessageHandler {
 
         case "advertise":
             // Whether the relay requires a login lives in the web app's
-            // IndexedDB, so Bonjour can only learn it by being told.
+            // IndexedDB, so Bonjour can only learn it by being told. The relay
+            // name arrives the same way and on the same message, but the two
+            // are independent: a rename must not have to wait for an auth
+            // change, and vice versa.
+            if let name = body["name"] as? String {
+                if let server = server {
+                    server.updateRelayName(name)
+                } else {
+                    pendingRelayName = name
+                }
+            }
             guard let authEnabled = body["authEnabled"] as? Bool else { return }
             if let server = server {
                 server.updateAdvertisement(authEnabled: authEnabled)
