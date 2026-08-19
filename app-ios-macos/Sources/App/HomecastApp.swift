@@ -380,6 +380,17 @@ struct ContentView: View {
                     if !AppConfig.modeSelected {
                         showModeSelector = true
                     } else {
+                        #if !targetEnvironment(macCatalyst)
+                        // Losing the relay address has to land on the picker.
+                        // Reloading the WebView instead would point it at this
+                        // iPhone's own loopback server, whose bridge is never
+                        // attached — the exact dead end showRelayConnect exists
+                        // to prevent, and the one "Change host" fell into.
+                        if AppConfig.isCommunity && AppConfig.relayAddress == nil {
+                            showRelayConnect = true
+                            return
+                        }
+                        #endif
                         webViewId = UUID()
                     }
                 }
@@ -2079,6 +2090,23 @@ struct WebViewContainer: UIViewRepresentable {
                 }
             case "authSuccess":
                 print("[WebView] User authenticated")
+            case "forgetRelay":
+                // "Change host". The web app cannot do this by clearing
+                // localStorage: on iOS the address is injected from
+                // UserDefaults as __HOMECAST_RELAY_ORIGIN__, and
+                // getRelayAddress() reads that *before* localStorage. So the
+                // old address survived, the reload came straight back to the
+                // same unreachable host, and with relayAddress still set there
+                // was no route to the picker — a spinner with no way out.
+                //
+                // Deliberately not resetMode: the user is changing which relay,
+                // not reconsidering Community mode.
+                print("[WebView] Forget relay")
+                AppConfig.relayAddress = nil
+                AppConfig.relayWsPort = nil
+                UserDefaults.standard.removeObject(forKey: "com.homecast.pairedRelayInstanceId")
+                NotificationCenter.default.post(name: .environmentDidChange, object: nil)
+
             case "resetMode":
                 // Reset mode selection — stop server, clean up, show mode selector
                 print("[WebView] Reset mode selection")

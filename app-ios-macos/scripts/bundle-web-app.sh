@@ -19,8 +19,19 @@ echo "[bundle-web-app] Copying dist/ to Resources/web-dist/..."
 rm -rf "$DEST_DIR"
 cp -r "$WEB_APP_DIR/dist" "$DEST_DIR"
 
-# Remove unnecessary files from the bundle
-rm -rf "$DEST_DIR/.DS_Store"
+# Finder junk, at every depth — the old rm only caught the top-level one.
+find "$DEST_DIR" -name '.DS_Store' -delete
+
+# cp -r carries extended attributes across, and files written under
+# ~/Documents pick up com.apple.provenance from the sync daemon. codesign
+# rejects a bundle carrying them ("resource fork, Finder information, or
+# similar detritus not allowed"), so strip them rather than ship a bundle that
+# might refuse to sign.
+#
+# Note this is not the whole story for that error: the same message comes from
+# iCloud stamping com.apple.FinderInfo on build products, which is why
+# -derivedDataPath must point outside ~/Documents. See CLAUDE.md.
+xattr -cr "$DEST_DIR"
 
 echo "[bundle-web-app] Done. Web app bundled at: $DEST_DIR"
 ls -lh "$DEST_DIR/assets/"
