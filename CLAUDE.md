@@ -264,6 +264,8 @@ Messages use this JSON format:
 | `app-web/src/components/settings/home/` | The per-home sub-pages (overview, actions, notifications, MQTT, mobile row list) |
 | `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
 | `app-web/src/lib/marketing-routes.ts` | Which paths are the website, not the app — pure, unit-tested (collapsed to the dashboard inside the native shell) |
+| `app-web/src/lib/swipe.ts` | Left-menu swipe decisions — axis lock, travel/flick thresholds, what yields to a scroller (pure, unit-tested) |
+| `app-web/src/hooks/useDrawerSwipe.ts` | The listeners: `useEdgeSwipeOpen` (edge → open, scoped to its dialog) and `useSwipeToClose` (wired into every `side="left"` sheet) |
 | `app-web/src/components/scenes/ScenesSection.tsx` | The Scenes summary section — pill + the one grid holding both card kinds |
 | `app-web/src/components/scenes/SceneCard.tsx` | One Apple Home scene card |
 | `app-web/src/components/actions/ActionCard.tsx` | One shortcut card (derived, not authored) |
