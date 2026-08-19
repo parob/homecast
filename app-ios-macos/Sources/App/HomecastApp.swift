@@ -394,9 +394,28 @@ struct ContentView: View {
 
         NSLog("[Homecast] Relay moved %@ -> %@", current, health.origin)
         AppConfig.relayAddress = health.origin
-        // The web app freezes its API and WebSocket URLs at import, so the new
-        // origin only takes effect on a fresh load.
-        webViewId = UUID()
+
+        // Tell the page rather than replacing it. Recreating the WebView
+        // blanked the screen and lost the user's place for what is, from where
+        // they are standing, only a change of route — and it happens every time
+        // they walk out of the front door. The page re-points its API calls and
+        // moves its socket in place, and says so with a banner.
+        let escaped = health.origin.replacingOccurrences(of: "'", with: "\\'")
+        let js = "window.__homecastRelayMoved && window.__homecastRelayMoved('\(escaped)')"
+        if let webView = WebViewContainer.Coordinator.liveWebView {
+            webView.evaluateJavaScript(js) { _, error in
+                guard error != nil else { return }
+                // Too early in the boot for the handler to exist, or the page
+                // is somewhere that never loaded it. A reload is ugly but it
+                // is still correct, and it is better than talking to an
+                // address that no longer answers.
+                NSLog("[Homecast] In-place switch unavailable, reloading: %@",
+                      error?.localizedDescription ?? "?")
+                webViewId = UUID()
+            }
+        } else {
+            webViewId = UUID()
+        }
     }
 
     var body: some View {
@@ -1648,6 +1667,7 @@ struct WebViewContainer: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
+        Coordinator.liveWebView = webView
         // Watch for the connected-but-not-executing state; see the watchdog.
         context.coordinator.beginLivenessWatch()
 
@@ -1764,6 +1784,12 @@ struct WebViewContainer: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var authToken: String?
         weak var webView: WKWebView?
+        /// The WebView currently on screen.
+        ///
+        /// ContentView is a struct with no route to its own coordinator, and
+        /// it needs one to tell the page the relay moved instead of throwing
+        /// the page away. Weak, and only ever read on the main thread.
+        static weak var liveWebView: WKWebView?
         let connectionManager: ConnectionManager
         private let homeKitBridge: HomeKitBridge
         private var reloadTimer: Timer?
