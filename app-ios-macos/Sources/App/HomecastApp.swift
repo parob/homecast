@@ -296,7 +296,7 @@ struct ContentView: View {
         return URL(string: "\(AppConfig.webBaseURL)\(path)")!
     }
 
-    /// Ask Bonjour where the paired relay is now, and follow it if it moved.
+    /// Check the relay is still where we left it, and follow it if not.
     ///
     /// The stored address is a cache. A relay that changed network or picked
     /// up a new lease is the same relay somewhere else, and without this the
@@ -304,20 +304,60 @@ struct ContentView: View {
     /// the relay being switched off, and was previously only escapable by
     /// re-entering the address by hand.
     ///
-    /// Cheap when nothing has changed: the browse ends as soon as the paired
-    /// id answers, and if the stored address is still right nothing reloads.
+    /// This used to ask Bonjour first and overwrite the stored address with
+    /// whatever it found. That was wrong twice over: it could not help at all
+    /// away from home, where there is no Bonjour, and coming home would
+    /// silently replace a hand-typed VPN or tunnel address with the LAN one —
+    /// destroying the only address that worked from outside the house.
+    ///
+    /// So: confirm the current address first and change nothing if it answers.
+    /// Only when it is genuinely dead do we look elsewhere, and then we try
+    /// every address we know for this relay before asking Bonjour.
     private func refreshRelayAddressIfMoved() async {
-        guard AppConfig.isCommunity,
-              let pairedId = AppConfig.pairedRelayInstanceId,
-              let current = AppConfig.relayAddress
-        else { return }
+        guard AppConfig.isCommunity, let current = AppConfig.relayAddress else { return }
+        guard let pairedId = AppConfig.pairedRelayInstanceId else {
+            // Paired before the relay published an id, or the id was cleared.
+            // Nothing can be filed under an identity we do not have, so learn
+            // it from the relay itself and carry on.
+            if let health = await RelayProbe.probe(current), let id = health.instanceId {
+                AppConfig.pairedRelayInstanceId = id
+                SavedRelayStore.remember(health)
+                NSLog("[Homecast] Adopted relay id %@ from %@", id, current)
+            } else {
+                NSLog("[Homecast] No relay id and none offered by %@", current)
+            }
+            return
+        }
 
-        guard let found = await RelayDiscovery.locate(pairedId: pairedId),
-              found != current
-        else { return }
+        SavedRelayStore.migrateLegacyIfNeeded()
 
-        NSLog("[Homecast] Relay moved: %@ -> %@", current, found)
-        AppConfig.relayAddress = found
+        // Still good? Then learn from it and leave everything alone. This is
+        // also where an already-paired device picks up the addresses the relay
+        // advertises — it never visits the picker again, so without this it
+        // would never learn the mesh address that works away from home.
+        if let health = await RelayProbe.probe(current),
+           health.instanceId == nil || health.instanceId == pairedId {
+            let saved = SavedRelayStore.remember(health)
+            NSLog("[Homecast] Relay confirmed at %@ — %d address(es) known",
+                  current, saved?.addresses.count ?? 0)
+            return
+        }
+
+        // Not answering. Everything else we hold for this relay, plus whatever
+        // Bonjour can see — a relay on a new lease is at an address no store
+        // has yet, and a browse is the only way to learn it.
+        var candidates = (SavedRelayStore.load().first { $0.id == pairedId })?.candidateOrigins ?? []
+        candidates.removeAll { $0 == current }
+        if let found = await RelayDiscovery.locate(pairedId: pairedId) {
+            candidates.insert(found, at: 0)   // freshly observed beats remembered
+        }
+
+        guard let health = await RelayProbe.pickReachable(candidates, expectedId: pairedId) else { return }
+
+        NSLog("[Homecast] Relay reachable at %@ (was %@)", health.origin, current)
+        SavedRelayStore.remember(health)
+        if let wsPort = health.wsPort { AppConfig.relayWsPort = wsPort }
+        AppConfig.relayAddress = health.origin
         webViewId = UUID()
     }
 
