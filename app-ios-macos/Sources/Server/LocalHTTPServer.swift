@@ -430,36 +430,17 @@ class LocalHTTPServer {
             if lan.contains(candidate) || cgnat.contains(candidate) || other.contains(candidate) { continue }
 
             let name = String(cString: ptr.pointee.ifa_name)
-            if Self.isPrivateLAN(candidate) {
+            switch RelayProbe.classify(host: candidate) {
+            case .lan:
                 // Wi-Fi first among equals — it is the one the user recognises.
                 if name == "en0" { lan.insert(candidate, at: 0) } else { lan.append(candidate) }
-            } else if Self.isCGNAT(candidate) {
+            case .cgnat:
                 cgnat.append(candidate)
-            } else {
+            case .other:
                 other.append(candidate)
             }
         }
         return lan + cgnat + other
-    }
-
-    /// RFC1918.
-    private static func isPrivateLAN(_ ip: String) -> Bool {
-        if ip.hasPrefix("10.") || ip.hasPrefix("192.168.") { return true }
-        // 172.16.0.0/12 is 172.16 through 172.31 — not all of 172.
-        if ip.hasPrefix("172.") {
-            let second = ip.split(separator: ".").dropFirst().first.flatMap { Int($0) }
-            if let second = second, (16...31).contains(second) { return true }
-        }
-        return false
-    }
-
-    /// 100.64.0.0/10 — carrier-grade NAT, and where Tailscale and most mesh
-    /// VPNs live. Reachable from anywhere on the mesh, which is exactly why it
-    /// is worth publishing, but never a LAN address.
-    private static func isCGNAT(_ ip: String) -> Bool {
-        guard ip.hasPrefix("100.") else { return false }
-        guard let second = ip.split(separator: ".").dropFirst().first.flatMap({ Int($0) }) else { return false }
-        return (64...127).contains(second)
     }
 
     /// This Mac's address on the LAN, as another device would reach it.

@@ -807,69 +807,48 @@ struct RelayConnector: View {
 
         let origin = AppConfig.normalizedRelayOrigin(components.string ?? typed)
 
-        guard URL(string: origin)?.host != nil, let healthURL = URL(string: "\(origin)/health") else {
+        guard URL(string: origin)?.host != nil else {
             error = "Invalid address"
             isConnecting = false
             return
         }
 
-        let task = URLSession.shared.dataTask(with: healthURL) { data, response, err in
-            DispatchQueue.main.async {
-                self.isConnecting = false
-                if let err = err {
-                    self.error = "Could not connect: \(err.localizedDescription)"
-                    return
-                }
-                guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      json["status"] as? String == "ok" else {
-                    self.error = "Not a Homecast relay"
-                    return
-                }
-                // The relay reports its real WebSocket port; the web app would
-                // otherwise have to guess it as HTTP + 1.
-                if let wsPort = json["wsPort"] as? Int, wsPort > 0 {
-                    AppConfig.relayWsPort = wsPort
-                }
-                // Pin the relay's identity, not just where it happens to live.
-                // /health reports it, so this works for a hand-typed address
-                // as well as a discovered one, and lets us find this relay
-                // again after it changes network.
-                if let instanceId = json["instanceId"] as? String, !instanceId.isEmpty {
-                    AppConfig.pairedRelayInstanceId = instanceId
-                }
-
-                // A relay with no password is a nuisance on your own network
-                // and a genuine exposure off it, so reaching one at a public
-                // address is worth stopping for.
-                let unprotected = (json["authEnabled"] as? Bool) == false
-                if unprotected, !Self.isLocalHost(origin), !self.acknowledgedUnprotected {
-                    self.pendingOrigin = origin
-                    self.showUnprotectedWarning = true
-                    return
-                }
-
-                onConnect(origin)
+        Task { @MainActor in
+            // One probe implementation, shared with the address race that picks
+            // between a relay's several addresses — a second copy here would be
+            // the one that drifts.
+            let health = await RelayProbe.probe(origin)
+            self.isConnecting = false
+            guard let health = health else {
+                self.error = "Could not reach a Homecast relay at that address"
+                return
             }
+            // The relay reports its real WebSocket port; the web app would
+            // otherwise have to guess it as HTTP + 1.
+            if let wsPort = health.wsPort { AppConfig.relayWsPort = wsPort }
+            // Pin the relay's identity, not just where it happens to live.
+            // /health reports it, so this works for a hand-typed address as
+            // well as a discovered one, and lets us find this relay again
+            // after it changes network.
+            if let instanceId = health.instanceId { AppConfig.pairedRelayInstanceId = instanceId }
+
+            // A relay with no password is a nuisance on your own network and a
+            // genuine exposure off it, so reaching one at a public address is
+            // worth stopping for.
+            if health.authEnabled == false, !Self.isLocalHost(origin), !self.acknowledgedUnprotected {
+                self.pendingOrigin = origin
+                self.showUnprotectedWarning = true
+                return
+            }
+
+            onConnect(origin)
         }
-        task.resume()
     }
 
     /// Whether the relay is on a network the user plausibly controls: private
     /// ranges, link-local, the CGNAT block mesh VPNs hand out, or `.local`.
     static func isLocalHost(_ origin: String) -> Bool {
-        guard let host = URL(string: origin)?.host?.lowercased() else { return false }
-        if host == "localhost" || host.hasSuffix(".local") { return true }
-
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 4, parts.allSatisfy({ $0 >= 0 && $0 <= 255 }) else { return false }
-        switch (parts[0], parts[1]) {
-        case (10, _), (127, _), (192, 168): return true
-        case (172, 16...31): return true
-        case (169, 254): return true
-        case (100, 64...127): return true   // CGNAT — Tailscale and friends
-        default: return false
-        }
+        RelayProbe.isLocalHost(origin)
     }
 }
 
