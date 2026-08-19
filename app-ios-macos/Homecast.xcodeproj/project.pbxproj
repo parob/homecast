@@ -63,6 +63,7 @@
 		C100000BA /* RelayWebSocketBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000BF /* RelayWebSocketBridge.swift */; };
 		C100000CA /* RelayDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000CF /* RelayDiscovery.swift */; };
 		C100000EA /* RelayProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000EF /* RelayProbe.swift */; };
+		C100000FA /* SavedRelays.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000FF /* SavedRelays.swift */; };
 		C100000DA /* TelemetryReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000DF /* TelemetryReporter.swift */; };
 		D1000001A /* PurchaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000001F /* PurchaseManager.swift */; };
 		D1000002A /* PurchaseBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000002F /* PurchaseBridge.swift */; };
@@ -162,6 +163,7 @@
 		C100000BF /* RelayWebSocketBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayWebSocketBridge.swift; sourceTree = "<group>"; };
 		C100000CF /* RelayDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDiscovery.swift; sourceTree = "<group>"; };
 		C100000EF /* RelayProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProbe.swift; sourceTree = "<group>"; };
+		C100000FF /* SavedRelays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedRelays.swift; sourceTree = "<group>"; };
 		C100000DF /* TelemetryReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryReporter.swift; sourceTree = "<group>"; };
 		D1000001F /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
 		D1000002F /* PurchaseBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseBridge.swift; sourceTree = "<group>"; };
@@ -343,6 +345,7 @@
 				C100000BF /* RelayWebSocketBridge.swift */,
 				C100000CF /* RelayDiscovery.swift */,
 				C100000EF /* RelayProbe.swift */,
+				C100000FF /* SavedRelays.swift */,
 				C100000DF /* TelemetryReporter.swift */,
 				C1000004F /* MQTTClient.swift */,
 				C1000005F /* MQTTBridge.swift */,
@@ -529,6 +532,7 @@
 				C100000BA /* RelayWebSocketBridge.swift in Sources */,
 				C100000CA /* RelayDiscovery.swift in Sources */,
 				C100000EA /* RelayProbe.swift in Sources */,
+				C100000FA /* SavedRelays.swift in Sources */,
 				C100000DA /* TelemetryReporter.swift in Sources */,
 				D1000001A /* PurchaseManager.swift in Sources */,
 				D1000002A /* PurchaseBridge.swift in Sources */,

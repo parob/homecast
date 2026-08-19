@@ -558,6 +558,16 @@ struct RelayConnector: View {
     @State private var showUnprotectedWarning = false
     @State private var pendingOrigin: String?
     @State private var acknowledgedUnprotected = false
+    /// Relays this device has connected to before. Loaded once on appear; the
+    /// picker is the only thing that writes it while this view is up.
+    @State private var savedRelays: [SavedRelay] = []
+    /// Which saved relay we are currently racing addresses for, so its row can
+    /// show a spinner instead of the whole screen locking up.
+    @State private var connectingRelayId: String?
+    /// How the address in the field got there. Only affects the provenance
+    /// recorded against the address, but "somebody typed this" is exactly what
+    /// stops a later merge treating it as disposable.
+    @State private var pendingSource: AddressSource = .manual
 
     private var logoImage: UIImage? {
         if let path = Bundle.main.path(forResource: "web-dist/icon-192", ofType: "png"),
@@ -590,6 +600,7 @@ struct RelayConnector: View {
                 }
 
                 VStack(spacing: 12) {
+                    savedRelaySection
                     discoverySection
 
                     TextField("http://192.168.1.50:5656", text: $address)
@@ -640,7 +651,11 @@ struct RelayConnector: View {
         .padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
-        .onAppear { discovery.start() }
+        .onAppear {
+            SavedRelayStore.migrateLegacyIfNeeded()
+            savedRelays = SavedRelayStore.load()
+            discovery.start()
+        }
         .onDisappear { discovery.stop() }
         .alert("This relay has no password", isPresented: $showUnprotectedWarning) {
             Button("Cancel", role: .cancel) { pendingOrigin = nil }
@@ -654,6 +669,106 @@ struct RelayConnector: View {
         } message: {
             Text("Anyone who can reach this address can control your home. "
                  + "Turn on authentication in Homecast on your Mac, under Settings.")
+        }
+    }
+
+    /// Relays this device has paired with before.
+    ///
+    /// The point of the list is that a relay is not one address. Tapping a row
+    /// races every address we hold for it — LAN, mesh, a tunnel someone typed —
+    /// and connects to whichever answers, so coming home and leaving home need
+    /// no action at all.
+    @ViewBuilder
+    private var savedRelaySection: some View {
+        if !savedRelays.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("Your relays")
+
+                ForEach(savedRelays) { relay in
+                    Button {
+                        connectSaved(relay)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "desktopcomputer")
+                                .foregroundColor(.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(relay.displayName)
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.primary)
+                                HStack(spacing: 6) {
+                                    Text(addressSummary(relay))
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                    if relay.authEnabled == false {
+                                        Label("No password", systemImage: "lock.open")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.orange)
+                                    }
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            if connectingRelayId == relay.id {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(10)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isConnecting)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            SavedRelayStore.forget(relay.id)
+                            savedRelays = SavedRelayStore.load()
+                        } label: {
+                            Label("Forget this relay", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// "2 addresses" beats listing them: the row is about which Mac this is,
+    /// and the addresses are an implementation detail until one stops working.
+    private func addressSummary(_ relay: SavedRelay) -> String {
+        let n = relay.addresses.count
+        return n == 1 ? (URL(string: relay.addresses[0].origin)?.host ?? relay.addresses[0].origin)
+                      : "\(n) addresses"
+    }
+
+    /// Race every address we hold for this relay and connect to the winner.
+    private func connectSaved(_ relay: SavedRelay) {
+        isConnecting = true
+        connectingRelayId = relay.id
+        error = ""
+        Task { @MainActor in
+            let health = await RelayProbe.pickReachable(
+                relay.candidateOrigins,
+                // Refuse a different Mac that has since been handed this
+                // address — connecting would open someone else's home.
+                expectedId: relay.id,
+                prefer: relay.lastConnectedOrigin
+            )
+            isConnecting = false
+            connectingRelayId = nil
+            guard let health = health else {
+                error = "Couldn't reach \(relay.displayName) at any of its addresses."
+                return
+            }
+            if let wsPort = health.wsPort { AppConfig.relayWsPort = wsPort }
+            AppConfig.pairedRelayInstanceId = relay.id
+            SavedRelayStore.remember(health, source: .manual)
+            savedRelays = SavedRelayStore.load()
+
+            if health.authEnabled == false, !Self.isLocalHost(health.origin), !acknowledgedUnprotected {
+                pendingOrigin = health.origin
+                showUnprotectedWarning = true
+                return
+            }
+            onConnect(health.origin)
         }
     }
 
@@ -693,6 +808,7 @@ struct RelayConnector: View {
                 ForEach(discovery.relays) { relay in
                     Button {
                         address = relay.origin
+                        pendingSource = .discovered
                         if let wsPort = relay.wsPort { AppConfig.relayWsPort = wsPort }
                         // Distinct from com.homecast.relayInstanceId, which is *this* device's
                         // own advertised id. A Mac can run a relay and connect to
@@ -831,6 +947,13 @@ struct RelayConnector: View {
             // well as a discovered one, and lets us find this relay again
             // after it changes network.
             if let instanceId = health.instanceId { AppConfig.pairedRelayInstanceId = instanceId }
+
+            // File it, learning every address the relay just told us about.
+            // This is what makes pairing on the sofa enough to work from a
+            // train: /health lists the mesh address, and it lands here.
+            SavedRelayStore.remember(health, source: self.pendingSource)
+            self.savedRelays = SavedRelayStore.load()
+            self.pendingSource = .manual
 
             // A relay with no password is a nuisance on your own network and a
             // genuine exposure off it, so reaching one at a public address is
