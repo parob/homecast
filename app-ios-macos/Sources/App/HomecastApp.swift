@@ -279,6 +279,14 @@ struct ContentView: View {
         AppConfig.modeSelected && AppConfig.isCommunity && AppConfig.relayAddress == nil
     #endif
     @State private var webViewId = UUID()
+    #if !targetEnvironment(macCatalyst)
+    /// Watches for the phone moving between networks, so the relay can be
+    /// looked for again at whichever of its addresses now works.
+    @StateObject private var pathWatcher = NetworkPathWatcher()
+    /// The in-flight re-check, kept so a burst of path changes collapses into
+    /// one race rather than starting several.
+    @State private var relayRecheck: Task<Void, Never>?
+    #endif
 
     /// Where the WebView starts on a cold launch.
     ///
@@ -314,6 +322,20 @@ struct ContentView: View {
     /// Only when it is genuinely dead do we look elsewhere, and then we try
     /// every address we know for this relay before asking Bonjour.
     private func refreshRelayAddressIfMoved() async {
+        await reevaluateRelayAddress(trustCurrent: true)
+    }
+
+    /// Work out which of the relay's addresses to be using, and switch if it
+    /// is not the one we are on.
+    ///
+    /// - Parameter trustCurrent: at launch the address we have is almost always
+    ///   right, so confirming it is cheaper than racing everything and avoids
+    ///   pointless churn. After the network changes underneath us that
+    ///   assumption is exactly what is wrong — the LAN address can still be
+    ///   *answering* on a link that no longer reaches the relay, and coming
+    ///   home should hand us back the fast address rather than leaving us on a
+    ///   mesh relay hop. So a path change races everything by rank instead.
+    private func reevaluateRelayAddress(trustCurrent: Bool) async {
         guard AppConfig.isCommunity, let current = AppConfig.relayAddress else { return }
         guard let pairedId = AppConfig.pairedRelayInstanceId else {
             // Paired before the relay published an id, or the id was cleared.
@@ -335,7 +357,8 @@ struct ContentView: View {
         // also where an already-paired device picks up the addresses the relay
         // advertises — it never visits the picker again, so without this it
         // would never learn the mesh address that works away from home.
-        if let health = await RelayProbe.probe(current),
+        if trustCurrent,
+           let health = await RelayProbe.probe(current),
            health.instanceId == nil || health.instanceId == pairedId {
             let saved = SavedRelayStore.remember(health)
             NSLog("[Homecast] Relay confirmed at %@ — %d address(es) known",
@@ -347,17 +370,32 @@ struct ContentView: View {
         // Bonjour can see — a relay on a new lease is at an address no store
         // has yet, and a browse is the only way to learn it.
         var candidates = (SavedRelayStore.load().first { $0.id == pairedId })?.candidateOrigins ?? []
-        candidates.removeAll { $0 == current }
-        if let found = await RelayDiscovery.locate(pairedId: pairedId) {
+        if trustCurrent {
+            // Already known dead — do not spend a probe on it again.
+            candidates.removeAll { $0 == current }
+        } else if !candidates.contains(current) {
+            candidates.append(current)
+        }
+        // Bonjour only when the LAN is a plausible answer. Off-network it is
+        // five seconds of nothing, and this path runs when the user is
+        // standing somewhere new and waiting.
+        if trustCurrent || candidates.isEmpty,
+           let found = await RelayDiscovery.locate(pairedId: pairedId) {
             candidates.insert(found, at: 0)   // freshly observed beats remembered
         }
 
+        // No `prefer` when reconsidering: rank alone decides, which is what
+        // walks us back onto the LAN when we get home.
         guard let health = await RelayProbe.pickReachable(candidates, expectedId: pairedId) else { return }
 
-        NSLog("[Homecast] Relay reachable at %@ (was %@)", health.origin, current)
         SavedRelayStore.remember(health)
         if let wsPort = health.wsPort { AppConfig.relayWsPort = wsPort }
+        guard health.origin != current else { return }   // already there; no reload
+
+        NSLog("[Homecast] Relay moved %@ -> %@", current, health.origin)
         AppConfig.relayAddress = health.origin
+        // The web app freezes its API and WebSocket URLs at import, so the new
+        // origin only takes effect on a fresh load.
         webViewId = UUID()
     }
 
@@ -416,6 +454,24 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .id(webViewId)
                 .task { await refreshRelayAddressIfMoved() }
+                #if !targetEnvironment(macCatalyst)
+                .onAppear { pathWatcher.start() }
+                .onDisappear { pathWatcher.stop(); relayRecheck?.cancel() }
+                .onChange(of: pathWatcher.generation) { _ in
+                    // Wi-Fi off, cellular up, a VPN connecting — each of these
+                    // arrives as several changes in a second, and each would
+                    // otherwise start its own race.
+                    relayRecheck?.cancel()
+                    relayRecheck = Task { @MainActor in
+                        // Let the new path settle. NWPathMonitor reports
+                        // satisfied as soon as an interface associates, which
+                        // is before it can actually carry anything.
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        guard !Task.isCancelled else { return }
+                        await reevaluateRelayAddress(trustCurrent: false)
+                    }
+                }
+                #endif
                 .onReceive(NotificationCenter.default.publisher(for: .environmentDidChange)) { _ in
                     if !AppConfig.modeSelected {
                         showModeSelector = true
@@ -580,6 +636,35 @@ struct ModeSelector: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+    }
+}
+
+
+/// Fires whenever the network path changes.
+///
+/// The relay lives at a different address depending on where this phone is
+/// standing, and nothing else notices when that changes: the WebView stays
+/// loaded, so its requests simply start failing — "failed to control group" —
+/// with no navigation error to hang a retry off.
+@MainActor
+final class NetworkPathWatcher: ObservableObject {
+    /// Bumped on every change. The value means nothing; the change is the event.
+    @Published private(set) var generation = 0
+    private var monitor: NWPathMonitor?
+
+    func start() {
+        guard monitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in self?.generation &+= 1 }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        self.monitor = monitor
+    }
+
+    func stop() {
+        monitor?.cancel()
+        monitor = nil
     }
 }
 
@@ -2260,7 +2345,14 @@ struct WebViewContainer: UIViewRepresentable {
                 // Pressing Start Over again just repeated it.
                 UserDefaults.standard.set(false, forKey: "com.homecast.modeSelected")
                 UserDefaults.standard.set(false, forKey: "com.homecast.communityMode")
+                // All three, not just the address. Leaving the ws port and the
+                // paired id behind meant the next relay inherited the last
+                // one's port and identity — and a mismatched identity is now
+                // load-bearing, because the address race refuses a relay whose
+                // id does not match.
                 AppConfig.relayAddress = nil
+                AppConfig.relayWsPort = nil
+                UserDefaults.standard.removeObject(forKey: "com.homecast.pairedRelayInstanceId")
                 NotificationCenter.default.post(name: .environmentDidChange, object: nil)
 
                 // Then tear down, with the mode selector already on screen.
