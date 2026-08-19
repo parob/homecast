@@ -2181,8 +2181,14 @@ struct WebViewContainer: UIViewRepresentable {
                 }
                 guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
                       let bridge = appDelegate.ensureMQTTBridge() else {
+                    // ensureMQTTBridge() returns nil for exactly one reason:
+                    // this Mac is in Cloud mode, where brokers live server-side.
+                    // The old wording claimed MQTT was "only available in
+                    // Community mode" — which, since Community is the only mode
+                    // that can reach this line without the bridge existing, read
+                    // as the opposite of the truth to anyone who saw it.
                     sendMQTTError(callbackId: mqttCallbackId,
-                                  message: "The MQTT bridge is only available in Community mode")
+                                  message: "This Mac is in Cloud mode — MQTT brokers are stored in your account, not on the Mac")
                     return
                 }
                 let callbackId = mqttCallbackId
