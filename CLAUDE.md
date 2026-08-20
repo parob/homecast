@@ -251,6 +251,9 @@ Messages use this JSON format:
 | `app-web/src/server/local-broadcast.ts` | Event broadcasting to clients |
 | `app-web/src/relay/local-handler.ts` | HomeKit action execution |
 | `app-web/src/lib/config.ts` | Mode detection (Community vs Cloud) |
+| `app-web/src/contexts/HistoryContext.tsx` | **The** Analytics gate — every affordance reads it. `HistoryProvider` (signed in, polls per home) and `SharedHistoryProvider` (`/s/:hash`, one flag, no query) |
+| `app-web/src/components/home-analytics/AnalyticsContent.tsx` | The whole Analytics surface. Never fetches relay data — accessories arrive as props |
+| `homecast-cloud/server/homecast/sharing/scope.py` | What a share link expands to, resolved once and cached (cloud) |
 | `app-web/src/server/local-mode.ts` | Local Mode policy — pure, unit-tested (when to serve HomeKit from this device) |
 | `app-web/src/server/local-mode-controller.ts` | Local Mode runtime: tick, write publisher, observation keep-alive |
 | `app-web/src/server/local-identity.ts` | This device's live HomeKit UUIDs ↔ the account's stable hc_ids |
@@ -315,6 +318,63 @@ Hiding an Apple Home scene only hides the card — the scene stays in Apple Home
 card has nothing to right-click, so Edit Layout reveals hidden ones with an Unhide button,
 and the home's own Scenes settings page lists both kinds with a switch each. Settings →
 Home Screen carries the two half-switches.
+
+## Analytics on a share link
+
+A public share (`/s/{hash}`) can show Analytics for what it shares, but only if the
+home's owner says so. **Settings → Homes → *home* → Analytics** carries a second switch,
+**Analytics on shared links**, nested under the recording toggle and **off by default**.
+
+The two flags are separate and **ANDed at read time** (`history_enabled AND
+shared_analytics_enabled`). Turning recording off does not clear the sharing flag —
+otherwise switching recording back on would silently re-publish.
+
+**Home members are not governed by this.** `_find_home_with_access` grants them the
+history the owner sees and always has; this is about anonymous link holders only.
+
+### The gate is the context, not the absence of one
+
+Before this existed, a shared page hid its analytics buttons **by accident**: `/s/:hash`
+mounts outside `MainRoutes`, so no `HistoryProvider` was rendered, `useHistory()` fell
+through to the module default and every predicate answered false. Nothing had decided it,
+nothing tested it, and it was one hoisted provider away from leaking.
+
+`SharedHistoryProvider` (same file, same context) now answers with a real flag from
+`publicEntity.analyticsEnabled`. Every consumer — `WidgetCard`'s menu and expanded-panel
+button, `ServiceGroupWidget`'s, `AreaSummary`'s status charts, `HistoryDialog`'s "Open in
+Analytics" — is covered **without being touched**, and so is anything added later.
+
+It is a second provider rather than a `mode` prop for one structural reason:
+`HistoryProvider` polls `GET_HISTORY_STORAGE_STATS`, which is authenticated. On an
+anonymous page that must not merely be skipped — it must be absent.
+
+### The data path
+
+`HistoryContextValue.transport` picks the documents. The whole Analytics surface fetches
+in exactly **two** places — `useRecordedSeries` and `useMultiSeriesHistory` — so swapping
+the transport there covers the entire screen with no component forks.
+
+| Signed in | Share link |
+|---|---|
+| `historySeries` | `publicEntityHistorySeries` |
+| `history` | `publicEntityHistory` |
+
+Both public resolvers verify the share **on every call** (`verify_access_by_hash`, which
+also re-evaluates the access schedule), re-check both flags, and test every
+client-supplied accessory id against the share's scope. **A ref outside the scope is
+refused, not skipped** — an empty answer is indistinguishable from "recorded nothing" and
+would let a link holder enumerate a home by asking.
+
+There is deliberately **no** public `exportHistory` (dumps the whole home, past the
+share's scope), `purgeHistory` or `setHistorySeriesConfig` (administration; a share hash
+is not an admin credential).
+
+Scope resolution is not re-derived: `homecast/sharing/scope.py` calls
+`public_entity_accessories` and reads the answer, because a room, room-group or
+accessory-group share can only be expanded **by the relay** — the server holds no
+accessory→room map (`entity_identity.parent_hc_id` points at the *home*). The result is
+cached per share (60s); a wide Analytics view is 100+ chunked queries and a relay round
+trip each would be unusable. Permission is never cached, only membership.
 
 ## Advanced Automation Engine
 
