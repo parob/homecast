@@ -376,6 +376,75 @@ accessory→room map (`entity_identity.parent_hc_id` points at the *home*). The 
 cached per share (60s); a wide Analytics view is 100+ chunked queries and a relay round
 trip each would be unusable. Permission is never cached, only membership.
 
+## Long press means edit, on touch
+
+A hold on a touch device enters **Edit Layout** and picks the held thing up in
+the same gesture — tiles, group tiles, scene and shortcut cards, sidebar rows,
+tab-bar tabs and automations. A hold on empty dashboard background enters the
+mode with nothing lifted. On anything with a mouse (the Mac app, a browser, the
+Windows/Linux build) nothing changed: right-click still opens the same menus,
+and the gesture never fires.
+
+The discriminator is the device-level `touchMode` from `LayoutEditContext`, not
+per-gesture `pointerType`.
+
+**Touch has no context menus at all.** Not a timing choice: Radix opens one on a
+native `contextmenu` as well as on its own 700ms hold timer, and an open menu
+puts `pointer-events: none` on the body — which kills the drag the press just
+started. There is no delay that separates them, so every trigger is gated on
+`!touchMode`. The actions that lived only there moved to the tile's expanded
+panel (`ExpandedActionBar`): Analytics, Price & Deals, Edit, Share, **Pin**, and
+**Delete** for a virtual accessory. Sidebar rows keep no menu on touch and their
+extra actions (Share, Analytics, Set Background, Create Virtual Accessory) have
+no touch route — a deliberate trade. `SharedAccessoryView` is the one exception
+and keeps its menu: no DndContext, no edit mode, nowhere else for its actions.
+
+### The lift
+
+`LayoutEditState` carries `beginLift`/`endLift`; **every `DndContext` must call
+`beginLift` from `onDragStart` and `endLift` from both `onDragEnd` and
+`onDragCancel`** (a missing cancel is what the 8s watchdog in Dashboard exists
+for). `beginLift` is a no-op on desktop — without that guard a mouse drag would
+switch the mode on, and `CollectionDetail` reads `editMode` raw.
+
+Edit mode splits in two while a lift is in flight:
+
+| Flips at the lift | Waits for the drop (`liftInFlight`) |
+|---|---|
+| wiggle, badges, inert tiles, the toolbar, pull-to-refresh | sidebar width, the summary edit pills, revealing hidden items |
+
+Anything that changes the *layout* under the finger has to wait: new droppables
+make dnd-kit re-measure every rect, so the grid moves and the drop lands
+somewhere else. `setEditModeAndTidy` (menu and background routes) is unchanged
+and still collapses the pills; a lift **never** collapses them — arriving from a
+card inside a section means that section is where you are working.
+
+Holds are `LIFT_DELAY_IDLE` (500ms) before the mode is running and
+`LIFT_DELAY_EDITING` (250ms) after, both in `src/lib/long-press.ts` so the tile
+sensors and the background handler resolve at the same moment. `tolerance: 5`
+is what keeps scrolling intact. There is **no haptic** — no bridge exists in
+either the web app or the Swift app.
+
+| File | Purpose |
+|------|---------|
+| `app-web/src/lib/long-press.ts` | Delays, slop, and what counts as background — pure, unit-tested |
+| `app-web/src/hooks/useBackgroundLongPress.ts` | The listeners for the empty-space hold |
+| `app-web/src/lib/automation-cards.ts` | Automations ordering + visibility (pure, mirrors `home-cards.ts`) |
+| `app-web/src/components/settings/home/HomeAutomationsSection.tsx` | Unhide an automation from a desktop — hiding is touch-only |
+
+### Automations are arrangeable
+
+The Automations grid now drags and hides like the Scenes grid, across both
+engines. `HomeLayoutData.automationCardOrder` is a flat list of prefixed keys
+(`hk:<uuid>`, `hc:<id>`) because the two share no id space, and
+`visibility.hiddenAutomations` is a *hidden* list so absent means shown. An
+unresolvable key is skipped, not pruned — the Homecast half is only fetched once
+the section is open, so that is the normal state, not an edge case.
+
+Hiding is offered only on the card in Edit Layout, i.e. only on touch, so
+**Settings → Homes → *home* → Automations** exists to bring one back from a
+desktop. Without it the feature would be a one-way door.
+
 ## Advanced Automation Engine
 
 The web app includes an n8n-style visual automation engine with data flow between nodes.
