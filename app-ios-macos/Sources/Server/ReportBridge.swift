@@ -307,21 +307,45 @@ final class ReportBridge: NSObject, WKScriptMessageHandler {
 #if os(iOS)
 
 extension Notification.Name {
-    /// Posted when the device is shaken. See the `UIWindow` override below.
+    /// Posted when the device is shaken. See `FocusableWebView.motionEnded`.
     static let homecastDeviceDidShake = Notification.Name("homecastDeviceDidShake")
 }
 
+/// Forward a shake to anyone listening.
+///
+/// Called from **two** places on purpose — `FocusableWebView.motionEnded` and
+/// the `UIWindow` extension below.
+///
+/// A motion event is delivered to the first responder and then walks up the
+/// responder chain, so where you put the override decides whether you see it.
+/// The web view is first responder (it calls `becomeFirstResponder` in
+/// `didMoveToWindow`) and the window is the far end of the same chain; anything
+/// in between that consumes the event — WKWebView's own shake-to-undo handling
+/// in editable content is the obvious candidate — takes the window's copy with
+/// it. Build 51 had only the window override and the gesture did not fire on a
+/// real device, so both ends now listen and the debounce below makes the
+/// overlap harmless.
+///
+/// The debounce is what makes this safe rather than sloppy: when both overrides
+/// do see the same shake, the second post lands within microseconds of the
+/// first and is dropped.
+private var lastShakePost: TimeInterval = 0
+
+func postShakeNotification() {
+    let now = Date().timeIntervalSince1970
+    guard now - lastShakePost > 0.5 else { return }
+    lastShakePost = now
+    NSLog("[Report] shake detected")
+    NotificationCenter.default.post(name: .homecastDeviceDidShake, object: nil)
+}
+
 extension UIWindow {
-    /// Re-post the shake gesture as a notification.
-    ///
-    /// A shake arrives through the responder chain, and with the interface
-    /// hosted in a WKWebView inside SwiftUI there is no natural first responder
-    /// to catch it. Overriding here is the least invasive place that reliably
-    /// sees it, and it does nothing except forward.
+    /// The far end of the responder chain. See `postShakeNotification()` for why
+    /// this is not the only place the gesture is caught.
     open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
         super.motionEnded(motion, with: event)
         if motion == .motionShake {
-            NotificationCenter.default.post(name: .homecastDeviceDidShake, object: nil)
+            postShakeNotification()
         }
     }
 }
