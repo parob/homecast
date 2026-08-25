@@ -1135,6 +1135,28 @@ struct RelayConnector: View {
 class FocusableWebView: WKWebView {
     override var canBecomeFirstResponder: Bool { true }
 
+    #if os(iOS)
+    /// Shake to report.
+    ///
+    /// A shake is a motion event, and motion events are delivered to the first
+    /// responder and then up the responder chain — so the override has to be on
+    /// something in that chain. This view is it: `didMoveToWindow` below already
+    /// makes it first responder, and it is a real subclass we own.
+    ///
+    /// It must be a real subclass. The first attempt put this on
+    /// `extension UIWindow`, which compiles and does nothing — Swift cannot
+    /// override a method in an extension, so `motionEnded:with:` never reached
+    /// the binary and the gesture was dead in build 51. Check with
+    /// `strings -a <binary> | grep -x 'motionEnded:with:'` before believing it
+    /// works; the symbol being absent is the whole bug, and it is silent.
+    override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        super.motionEnded(motion, with: event)
+        if motion == .motionShake {
+            postShakeNotification()
+        }
+    }
+    #endif
+
     #if targetEnvironment(macCatalyst)
     // On Mac, override safe area insets for full-bleed content
     override var safeAreaInsets: UIEdgeInsets { .zero }
