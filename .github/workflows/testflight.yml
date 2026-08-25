@@ -1,0 +1,173 @@
+# Build the iOS app and upload it to TestFlight.
+#
+# This exists so the build is not tied to one laptop. The issue routine runs on
+# Linux and cannot compile an iOS app at all — no Xcode — so the only way it can
+# ship one is to ask a macOS runner to do it. A human can run it the same way.
+#
+# Signing uses the App Store Connect API key, not an exported .p12. Xcode fetches
+# or creates the distribution certificate and profile on the runner
+# (-allowProvisioningUpdates), so there is no certificate to export, rotate, or
+# leak into a secret.
+name: TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "ship" to build and upload to TestFlight'
+        required: true
+      notes:
+        description: 'What changed (recorded in the run summary)'
+        required: false
+
+concurrency:
+  # Two concurrent uploads would race for the same build number.
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event.inputs.confirm == 'ship'
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      # Only main ships. The issue routine is allowed to run this, and a build
+      # that reaches testers must be code a human has already reviewed and
+      # merged — not a branch the routine opened five minutes ago. Checked here
+      # rather than trusted, because workflow_dispatch takes any ref.
+      - name: Refuse to ship anything but main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::TestFlight builds only ship from main. Got ${{ github.ref }}."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      # The app bundles the web app for Community mode. Built from homecast-web
+      # main, the same source the cloud site serves.
+      - uses: actions/checkout@v4
+        with:
+          repository: parob/homecast-web
+          path: app-web
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-web/package-lock.json
+
+      - name: Bundle the web app
+        run: |
+          set -euo pipefail
+          cd app-web && npm ci && npm run build && cd ..
+          rm -rf app-ios-macos/Resources/web-dist
+          cp -r app-web/dist app-ios-macos/Resources/web-dist
+
+      - name: Select the newest Xcode
+        run: |
+          ls /Applications | grep -i '^Xcode' || true
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Write the App Store Connect key
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/private_keys
+          printf '%s' "$ASC_PRIVATE_KEY" > ~/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          chmod 600 ~/private_keys/*.p8
+
+      # Never trust the number in project.pbxproj — it drifts, and both stores
+      # reject a build that does not exceed everything previously uploaded. Ask
+      # App Store Connect what the highest is, across BOTH platforms, since they
+      # share one numbering train.
+      - name: Work out the next build number
+        id: build_number
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          python3 -m pip install --quiet pyjwt cryptography
+          NEXT=$(python3 - <<'PY'
+          import json, os, time, urllib.request, jwt
+          kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+          key = open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
+          now = int(time.time())
+          tok = jwt.encode({"iss": iss, "iat": now, "exp": now + 900,
+                            "aud": "appstoreconnect-v1"}, key,
+                           algorithm="ES256", headers={"kid": kid, "typ": "JWT"})
+          url = ("https://api.appstoreconnect.apple.com/v1/builds"
+                 "?filter[app]=6759559232&sort=-uploadedDate&limit=50")
+          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {tok}"})
+          builds = json.load(urllib.request.urlopen(req))["data"]
+          highest = max((int(b["attributes"]["version"]) for b in builds
+                         if b["attributes"]["version"].isdigit()), default=0)
+          print(highest + 1)
+          PY
+          )
+          echo "next=$NEXT" >> $GITHUB_OUTPUT
+          echo "Highest uploaded build + 1 = $NEXT"
+
+      - name: Archive
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          # CURRENT_PROJECT_VERSION is passed as a build setting rather than
+          # committed. It applies to every target at once, which is what the
+          # stores require — an app-extension version that does not match the
+          # app gets the upload rejected — and it leaves no version churn in git.
+          xcodebuild archive \
+            -project Homecast.xcodeproj \
+            -scheme Homecast \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Homecast-ios.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
+
+      - name: Export
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/Homecast-ios.xcarchive \
+            -exportPath build/export-ios \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          export API_PRIVATE_KEYS_DIR=~/private_keys
+          xcrun altool --upload-app -t ios \
+            -f build/export-ios/Homecast.ipa \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### TestFlight"
+            echo
+            echo "- build: \`${{ steps.build_number.outputs.next }}\`"
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- notes: ${{ github.event.inputs.notes || '_none_' }}"
+          } >> $GITHUB_STEP_SUMMARY
