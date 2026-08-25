@@ -19,6 +19,12 @@ on:
       notes:
         description: 'What changed (recorded in the run summary)'
         required: false
+      platforms:
+        description: 'Which apps to ship'
+        required: false
+        default: both
+        type: choice
+        options: [both, ios, mac]
 
 concurrency:
   # Two concurrent uploads would race for the same build number.
@@ -114,7 +120,8 @@ jobs:
           echo "next=$NEXT" >> $GITHUB_OUTPUT
           echo "Highest uploaded build + 1 = $NEXT"
 
-      - name: Archive
+      - name: Archive (iOS)
+        if: inputs.platforms != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -153,7 +160,8 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
-      - name: Export
+      - name: Export (iOS)
+        if: inputs.platforms != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -169,7 +177,8 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
-      - name: Upload to TestFlight
+      - name: Upload to TestFlight (iOS)
+        if: inputs.platforms != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -181,6 +190,60 @@ jobs:
             -f build/export-ios/Homecast.ipa \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
+      # Mac Catalyst, after iOS and never alongside it. Concurrent xcodebuild
+      # archive runs share DerivedData and corrupt each other's intermediates —
+      # the project's own release notes say to do these one at a time, and a
+      # single job running steps in order is what enforces it.
+      #
+      # Same build number as the iOS leg on purpose: the two platforms share one
+      # numbering train in App Store Connect, and shipping them as a matched
+      # pair is what makes "build 54" mean one thing.
+      - name: Archive (Mac Catalyst)
+        if: inputs.platforms != 'ios'
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Homecast.xcodeproj \
+            -scheme Homecast \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            -archivePath build/Homecast-mac.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
+
+      - name: Export (Mac Catalyst)
+        if: inputs.platforms != 'ios'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/Homecast-mac.xcarchive \
+            -exportPath build/export-mac \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Upload to TestFlight (Mac Catalyst)
+        if: inputs.platforms != 'ios'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          export API_PRIVATE_KEYS_DIR=~/private_keys
+          xcrun altool --upload-app -t macos \
+            -f build/export-mac/Homecast.pkg \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
       - name: Summary
         if: always()
         run: |
@@ -189,5 +252,6 @@ jobs:
             echo
             echo "- build: \`${{ steps.build_number.outputs.next }}\`"
             echo "- commit: \`${{ github.sha }}\`"
+            echo "- platforms: ${{ inputs.platforms }}"
             echo "- notes: ${{ github.event.inputs.notes || '_none_' }}"
           } >> $GITHUB_STEP_SUMMARY
