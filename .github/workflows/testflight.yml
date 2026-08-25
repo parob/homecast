@@ -157,7 +157,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (iOS)
@@ -186,9 +185,20 @@ jobs:
         run: |
           set -euo pipefail
           export API_PRIVATE_KEYS_DIR=~/private_keys
+          # altool exits 0 even when it prints "UPLOAD FAILED", so its exit code
+          # is not the answer. It once reported a green step for a Mac build
+          # Apple had rejected outright, and the only way to notice was to go
+          # and look at App Store Connect. Check the words, not the status.
+          set +e
           xcrun altool --upload-app -t ios \
             -f build/export-ios/Homecast.ipa \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/altool-ios.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] || ! grep -q "UPLOAD SUCCEEDED" "$RUNNER_TEMP/altool-ios.log"; then
+            echo "::error::altool did not report UPLOAD SUCCEEDED for ios (exit $status)"
+            exit 1
+          fi
 
       # Mac Catalyst, after iOS and never alongside it. Concurrent xcodebuild
       # archive runs share DerivedData and corrupt each other's intermediates —
@@ -211,7 +221,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (Mac Catalyst)
@@ -240,9 +249,20 @@ jobs:
         run: |
           set -euo pipefail
           export API_PRIVATE_KEYS_DIR=~/private_keys
+          # altool exits 0 even when it prints "UPLOAD FAILED", so its exit code
+          # is not the answer. It once reported a green step for a Mac build
+          # Apple had rejected outright, and the only way to notice was to go
+          # and look at App Store Connect. Check the words, not the status.
+          set +e
           xcrun altool --upload-app -t macos \
             -f build/export-mac/Homecast.pkg \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/altool-mac.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] || ! grep -q "UPLOAD SUCCEEDED" "$RUNNER_TEMP/altool-mac.log"; then
+            echo "::error::altool did not report UPLOAD SUCCEEDED for mac (exit $status)"
+            exit 1
+          fi
 
       - name: Summary
         if: always()
