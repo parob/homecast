@@ -121,6 +121,23 @@ jobs:
         working-directory: app-ios-macos
         run: |
           set -euo pipefail
+          # Archived UNSIGNED, signed at export.
+          #
+          # A signed archive wants a *development* certificate — that is what
+          # Xcode picks for the build step under automatic signing, and it is
+          # what a laptop already has sitting in its keychain. A fresh runner
+          # has none, so Xcode tries to create one and hits Apple's per-account
+          # certificate cap:
+          #
+          #   error: Your account has reached the maximum number of
+          #   certificates. To create a new one, you must choose one to revoke.
+          #
+          # Nothing about an App Store build needs that certificate. Export is
+          # where distribution signing actually happens, so skip it here and let
+          # the export step below do the one signing that matters. It also means
+          # this workflow never adds a certificate to the account, however many
+          # times it runs.
+          #
           # CURRENT_PROJECT_VERSION is passed as a build setting rather than
           # committed. It applies to every target at once, which is what the
           # stores require — an app-extension version that does not match the
@@ -130,10 +147,10 @@ jobs:
             -scheme Homecast \
             -destination 'generic/platform=iOS' \
             -archivePath build/Homecast-ios.xcarchive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export
