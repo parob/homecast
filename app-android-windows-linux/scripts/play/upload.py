@@ -72,11 +72,27 @@ def main():
             # document to the same file the success path reads; this used to
             # raise without ever opening it, so a rejection arrived as the bare
             # word "403" and every diagnosis after that was guesswork.
+            detail = '(no response body captured)'
             try:
                 with open(response_path) as f:
-                    detail = f.read().strip()
-            except OSError:
-                detail = '(no response body captured)'
+                    raw = f.read().strip()
+                # Print the parsed fields rather than the whole document. CI
+                # masks any secret value it spots in a log line, and Play's
+                # error envelope quotes enough context to trip that — the first
+                # time this fired, the entire body came out as "***" and said
+                # nothing at all. status/message/reason carry the answer and
+                # none of the credential.
+                import json as _je
+                err = (_je.loads(raw) or {}).get('error', {})
+                if err:
+                    reasons = ', '.join(
+                        d.get('reason', '') for d in err.get('errors', [])) or '-'
+                    detail = (f"status={err.get('status')} code={err.get('code')} "
+                              f"reason={reasons} message={err.get('message')}")
+                else:
+                    detail = raw[:500]
+            except (OSError, ValueError):
+                pass
             raise RuntimeError(f"curl exited {ret}; Play said: {detail}")
         import json as _j
         with open(response_path) as f:
