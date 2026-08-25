@@ -2,6 +2,7 @@
 """Create the edit + resumable session in Python, then PUT the AAB via curl."""
 import argparse
 import os
+import tempfile
 import subprocess
 import sys
 import requests
@@ -51,19 +52,34 @@ def main():
 
         # Use curl --upload-file for the big PUT
         print("Uploading via curl...", flush=True)
+        # `--retry` without `--retry-all-errors`: curl then retries only what is
+        # actually transient (5xx, timeouts, connection failures). It used to
+        # retry everything, which meant a 403 — a permission or validation
+        # answer that will never change — re-uploaded the whole 16 MB bundle
+        # four times before failing anyway.
+        response_path = os.path.join(tempfile.gettempdir(), 'play_upload_response.json')
         cmd = [
             'curl', '--http1.1', '--fail-with-body', '--progress-bar',
-            '--retry', '3', '--retry-all-errors', '--max-time', '1800',
+            '--retry', '3', '--max-time', '1800',
             '-H', f'Authorization: Bearer {token}',
             '-H', 'Content-Type: application/octet-stream',
             '--upload-file', args.aab,
-            upload_url, '-o', '/tmp/play_upload_response.json',
+            upload_url, '-o', response_path,
         ]
         ret = subprocess.call(cmd)
         if ret != 0:
-            raise RuntimeError(f"curl exited {ret}")
+            # Say WHAT Play objected to. `--fail-with-body` wrote the error
+            # document to the same file the success path reads; this used to
+            # raise without ever opening it, so a rejection arrived as the bare
+            # word "403" and every diagnosis after that was guesswork.
+            try:
+                with open(response_path) as f:
+                    detail = f.read().strip()
+            except OSError:
+                detail = '(no response body captured)'
+            raise RuntimeError(f"curl exited {ret}; Play said: {detail}")
         import json as _j
-        with open('/tmp/play_upload_response.json') as f:
+        with open(response_path) as f:
             bundle = _j.load(f)
         version_code = bundle['versionCode']
         print(f"  uploaded versionCode={version_code}", flush=True)
