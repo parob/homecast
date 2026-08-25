@@ -129,15 +129,37 @@ jobs:
           echo "next=$NEXT" >> $GITHUB_OUTPUT
           echo "Highest version code on any track + 1 = $NEXT"
 
-      - name: Pin the version code for this build
+      # Written into tauri.conf.json, NOT gen/android/tauri.properties.
+      #
+      # `tauri android build` regenerates tauri.properties from tauri.conf.json
+      # before it calls gradle, so writing the properties file first accomplishes
+      # nothing — the value is silently replaced and the AAB ships with whatever
+      # the conf says. That is exactly what happened: the log showed
+      # versionCode=1001004 pinned, and Play answered
+      #
+      #   Version code 1001003 has already been used.
+      #
+      # Tauri derives the code from the semver as major*1000000 + minor*1000 +
+      # patch, so the version STRING is the only real input. Decode the next
+      # free code back into a version and set that.
+      - name: Set the version for this build
         run: |
           set -euo pipefail
-          PROPS=src-tauri/gen/android/tauri.properties
-          # Written, not committed — same reasoning as the iOS build number.
-          # tauri reads this file at build time, so it has to exist on disk, but
-          # nothing is gained by carrying the churn in git.
-          sed -i "s/^tauri.android.versionCode=.*/tauri.android.versionCode=${{ steps.version_code.outputs.next }}/" "$PROPS"
-          grep '^tauri.android.version' "$PROPS"
+          python3 - "${{ steps.version_code.outputs.next }}" <<'PY'
+          import json, sys, pathlib
+          code = int(sys.argv[1])
+          major, rest = divmod(code, 1_000_000)
+          minor, patch = divmod(rest, 1_000)
+          version = f"{major}.{minor}.{patch}"
+
+          for path, key in (("src-tauri/tauri.conf.json", "version"),
+                            ("package.json", "version")):
+              f = pathlib.Path(path)
+              d = json.loads(f.read_text())
+              d[key] = version
+              f.write_text(json.dumps(d, indent=2) + "\n")
+          print(f"version {version} -> versionCode {code}")
+          PY
 
       - name: Build the web app and the AAB
         run: |
