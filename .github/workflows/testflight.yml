@@ -208,8 +208,20 @@ jobs:
       # Same build number as the iOS leg on purpose: the two platforms share one
       # numbering train in App Store Connect, and shipping them as a matched
       # pair is what makes "build 54" mean one thing.
+      # Signed, unlike the iOS leg above. Entitlements are embedded at signing
+      # time, so an unsigned Mac archive carries none — and the Mac App Store
+      # requires com.apple.security.app-sandbox, which the project declares but
+      # which never reached the package:
+      #
+      #   Validation failed (409) App sandbox not enabled.
+      #
+      # iOS gets away with it because export re-applies entitlements from the
+      # provisioning profile. The Mac package carries its own, so it cannot.
       - name: Archive (Mac Catalyst)
         if: inputs.platforms != 'ios'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         working-directory: app-ios-macos
         run: |
           set -euo pipefail
@@ -218,9 +230,10 @@ jobs:
             -scheme Homecast \
             -destination 'generic/platform=macOS,variant=Mac Catalyst' \
             -archivePath build/Homecast-mac.xcarchive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (Mac Catalyst)
