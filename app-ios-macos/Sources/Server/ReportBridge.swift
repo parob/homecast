@@ -291,6 +291,9 @@ final class ReportBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func reject(_ callbackId: String?, _ code: String) {
+        // Every refusal, with its reason. Without this a failed capture reaches
+        // the user as one generic sentence and reaches us as nothing at all.
+        NSLog("[Report] rejected: \(code)")
         guard let callbackId else { return }
         let escaped = code.replacingOccurrences(of: "'", with: "\\'")
         evaluate("window.homecastReport._reject('\(callbackId)', '\(escaped)');")
