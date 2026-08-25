@@ -411,9 +411,14 @@ struct ContentView: View {
                 // address that no longer answers.
                 NSLog("[Homecast] In-place switch unavailable, reloading: %@",
                       error?.localizedDescription ?? "?")
+                Log.warning("Recreating WebView: in-place relay switch unavailable",
+                            category: "webview",
+                            metadata: ["error": error?.localizedDescription ?? "-"])
                 webViewId = UUID()
             }
         } else {
+            Log.warning("Recreating WebView: relay moved with no live web view",
+                        category: "webview")
             webViewId = UUID()
         }
     }
@@ -424,6 +429,9 @@ struct ContentView: View {
                 let isCommunity = mode == .community
                 UserDefaults.standard.set(true, forKey: "com.homecast.modeSelected")
                 UserDefaults.standard.set(isCommunity, forKey: "com.homecast.communityMode")
+                Log.info("Recreating WebView: mode selected",
+                         category: "webview",
+                         metadata: ["community": String(isCommunity)])
                 webViewId = UUID()
                 if isCommunity {
                     #if targetEnvironment(macCatalyst)
@@ -460,6 +468,7 @@ struct ContentView: View {
         } else if showRelayConnect {
             RelayConnector(onConnect: { address in
                 AppConfig.relayAddress = address
+                Log.info("Recreating WebView: relay address set", category: "webview")
                 webViewId = UUID()
                 showRelayConnect = false
             }, onBack: {
@@ -506,6 +515,7 @@ struct ContentView: View {
                             return
                         }
                         #endif
+                        Log.info("Recreating WebView: host changed", category: "webview")
                         webViewId = UUID()
                     }
                 }
@@ -1268,6 +1278,11 @@ struct WebViewContainer: UIViewRepresentable {
         // separate wiring path.
         #if targetEnvironment(macCatalyst)
         config.userContentController.add(context.coordinator.relayWSBridge, name: "relayWs")
+        #if os(iOS)
+        // Shake-to-report capture. iOS only: ReplayKit and a real screenshot
+        // are exactly what WKWebView cannot do for itself.
+        config.userContentController.add(context.coordinator.reportBridge, name: "homecastReport")
+        #endif
         #endif
 
         // Set platform detection flags and HomeKit bridge for the web app
@@ -1284,6 +1299,47 @@ struct WebViewContainer: UIViewRepresentable {
         // HomeKit. It used to live only in the Catalyst branch; iPhone and iPad
         // need exactly the same object for Local Mode, and keeping one copy is
         // the only way the two stay identical.
+        // The JS half of the report bridge. Same callback-id convention as the
+        // HomeKit bridge: call() returns a promise that Swift settles by id.
+        let reportBridgeScript = """
+        window.__report_callbacks = {};
+        window.__report_shake_handlers = [];
+        window.isNativeCaptureCapable = true;
+        window.isNativeRecordingCapable = true;
+        window.homecastReport = {
+            call: function(method, payload) {
+                return new Promise(function(resolve, reject) {
+                    var id = 'r' + Date.now() + Math.random().toString(36).slice(2);
+                    window.__report_callbacks[id] = { resolve: resolve, reject: reject };
+                    window.webkit.messageHandlers.homecastReport.postMessage({
+                        method: method, payload: payload || {}, callbackId: id
+                    });
+                });
+            },
+            onShake: function(handler) {
+                window.__report_shake_handlers.push(handler);
+                return function() {
+                    var i = window.__report_shake_handlers.indexOf(handler);
+                    if (i >= 0) window.__report_shake_handlers.splice(i, 1);
+                };
+            },
+            _resolve: function(id, value) {
+                var cb = window.__report_callbacks[id];
+                if (cb) { delete window.__report_callbacks[id]; cb.resolve(value); }
+            },
+            _reject: function(id, code) {
+                var cb = window.__report_callbacks[id];
+                if (cb) { delete window.__report_callbacks[id]; cb.reject(new Error(code)); }
+            },
+            _onShake: function() {
+                window.__report_shake_handlers.slice().forEach(function(h) {
+                    try { h(); } catch (e) { console.error('[Report] shake handler failed:', e); }
+                });
+            }
+        };
+        console.log('[Homecast] Native report bridge ready');
+        """
+
         let homeKitBridgeScript = """
         // HomeKit bridge setup
         window.__homekit_callbacks = {};
@@ -1411,6 +1467,7 @@ struct WebViewContainer: UIViewRepresentable {
         console.log('[Homecast] iOS app detected - HomeKit local capable');
 
         \(homeKitBridgeScript)
+        \(reportBridgeScript)
         """
         #endif
         config.userContentController.addUserScript(WKUserScript(
@@ -1668,6 +1725,7 @@ struct WebViewContainer: UIViewRepresentable {
         context.coordinator.authToken = authToken
         context.coordinator.webView = webView
         Coordinator.liveWebView = webView
+        Log.info("WebView created", category: "webview")
         // Watch for the connected-but-not-executing state; see the watchdog.
         context.coordinator.beginLivenessWatch()
 
@@ -1681,6 +1739,11 @@ struct WebViewContainer: UIViewRepresentable {
         // Attach the HomeKit bridge on every platform that has HomeKit: the Mac
         // uses it to serve as the relay, iPhone/iPad for Local Mode.
         homeKitBridge.attach(webView: webView)
+
+        #if os(iOS)
+        context.coordinator.reportBridge.webView = webView
+        context.coordinator.reportBridge.observeShakes()
+        #endif
 
         #if targetEnvironment(macCatalyst)
         // Attach native relay WebSocket bridge
@@ -1781,6 +1844,20 @@ struct WebViewContainer: UIViewRepresentable {
         context.coordinator.authToken = authToken
     }
 
+    /// SwiftUI is discarding this container — `.id(webViewId)` changed, or the
+    /// view left the hierarchy.
+    ///
+    /// The coordinator's `deinit` already invalidates its timers once ARC gets
+    /// there; this exists so the teardown is *visible* and its timing is
+    /// deterministic. A WebView that was thrown away and never replaced looks
+    /// exactly like a hung one from the outside, and neither left a trace.
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        Log.info("WebView container dismantled",
+                 category: "webview",
+                 metadata: ["url": uiView.url?.absoluteString ?? "-"])
+        coordinator.tearDown()
+    }
+
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var authToken: String?
         weak var webView: WKWebView?
@@ -1806,6 +1883,11 @@ struct WebViewContainer: UIViewRepresentable {
         // teardown, and lifecycle events shipped through LogShipper.
         #if targetEnvironment(macCatalyst)
         let relayWSBridge = RelayWebSocketBridge()
+        #endif
+
+        #if os(iOS)
+        // Shake-to-report capture (screenshot + ReplayKit).
+        let reportBridge = ReportBridge()
         #endif
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
@@ -1861,6 +1943,16 @@ struct WebViewContainer: UIViewRepresentable {
             ) { [weak self] _ in
                 self?.handleAutoReload()
             }
+        }
+
+        /// Stop everything this coordinator owns, at a known moment.
+        func tearDown() {
+            stopLivenessWatchdog()
+            reloadTimer?.invalidate()
+            reloadTimer = nil
+            stallTimer?.invalidate()
+            stallTimer = nil
+            stopNetworkMonitor()
         }
 
         deinit {
@@ -2120,7 +2212,26 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         private func checkWebViewLiveness() {
-            guard let webView = webView else { return }
+            // A nil reference here is not "nothing to do". `webView` is weak,
+            // so this is exactly what a deallocated WebView looks like from in
+            // here — SwiftUI rebuilt the container (`.id(webViewId)`) and this
+            // is the outgoing coordinator. Returning silently is how a blank
+            // screen survives indefinitely: the timer keeps firing, nothing is
+            // ever probed, nothing is ever reloaded, and nothing is ever
+            // logged. Observed 2026-08-24: a grey screen with zero probes and
+            // zero watchdog output, which is unreadable from the outside.
+            guard let webView = webView else {
+                livenessOutstandingSince = nil
+                if Coordinator.liveWebView == nil {
+                    Log.error("WebView watchdog stopping: no live web view to probe",
+                              category: "watchdog")
+                } else {
+                    Log.info("WebView watchdog stopping: this coordinator's web view was replaced",
+                             category: "watchdog")
+                }
+                stopLivenessWatchdog()
+                return
+            }
 
             // Check the bridge before the page. The page can be executing
             // perfectly while the native bridge underneath it has stopped
@@ -2600,7 +2711,20 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            // Pairs with didFinish and the two failure delegates below. Without
+            // it, a navigation that starts and never ends — which is what a
+            // blank screen actually is — leaves no trace whatsoever.
+            Log.info("WebView navigation started",
+                     category: "webview",
+                     metadata: ["url": webView.url?.absoluteString ?? "-"])
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            Log.info("WebView navigation finished",
+                     category: "webview",
+                     metadata: ["url": webView.url?.absoluteString ?? "-",
+                                "errorPage": String(isShowingErrorPage)])
             // When the error page HTML finishes loading, didFinish fires.
             // Don't stop the network monitor — we need it to detect restoration.
             if isShowingErrorPage { return }
@@ -2649,22 +2773,29 @@ struct WebViewContainer: UIViewRepresentable {
 
             webView.evaluateJavaScript(js) { _, error in
                 if let error = error {
-                    print("[WebView] Failed to inject token: \(error.localizedDescription)")
+                    Log.warning("WebView token injection failed",
+                                category: "webview",
+                                metadata: ["error": error.localizedDescription])
                 }
             }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            print("[WebView] Navigation failed: \(error.localizedDescription)")
-            if let url = webView.url {
-                print("[WebView] Failed URL: \(url)")
-            }
+            let nsError = error as NSError
+            Log.error("WebView navigation failed",
+                      category: "webview",
+                      metadata: ["error": nsError.localizedDescription,
+                                 "domain": nsError.domain,
+                                 "code": String(nsError.code),
+                                 "url": webView.url?.absoluteString ?? "-"])
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             // WKWebView's content process was terminated by the OS (memory pressure, etc.)
             // The WebView shows a blank white screen until we reload.
-            print("[WebView] Content process terminated, reloading...")
+            Log.error("WebView content process terminated — reloading",
+                      category: "webview",
+                      metadata: ["url": webView.url?.absoluteString ?? "-"])
             if let url = webView.url {
                 webView.load(URLRequest(url: url))
             } else {
@@ -2675,7 +2806,12 @@ struct WebViewContainer: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             let nsError = error as NSError
-            print("[WebView] Provisional navigation failed: \(nsError.localizedDescription) (domain: \(nsError.domain), code: \(nsError.code))")
+            Log.error("WebView provisional navigation failed",
+                      category: "webview",
+                      metadata: ["error": nsError.localizedDescription,
+                                 "domain": nsError.domain,
+                                 "code": String(nsError.code),
+                                 "url": webView.url?.absoluteString ?? "-"])
 
             let networkErrorCodes: Set<Int> = [
                 NSURLErrorNotConnectedToInternet,   // -1009
@@ -2694,7 +2830,8 @@ struct WebViewContainer: UIViewRepresentable {
             if AppConfig.isCommunity {
                 let server = LocalHTTPServer.shared
                 if server == nil || server?.isRunning != true {
-                    print("[WebView] Local server not running — restarting before reporting offline")
+                    Log.warning("Local server not running — restarting before reporting offline",
+                                category: "webview")
                     let revived = server ?? {
                         #if targetEnvironment(macCatalyst)
                         return LocalHTTPServer(exposure: .network)
