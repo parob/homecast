@@ -2,6 +2,9 @@ import SwiftUI
 import WebKit
 import HomeKit
 import UIKit
+#if os(iOS)
+import ReplayKit
+#endif
 import UniformTypeIdentifiers
 import Network
 
@@ -1323,11 +1326,29 @@ struct WebViewContainer: UIViewRepresentable {
         // the only way the two stay identical.
         // The JS half of the report bridge. Same callback-id convention as the
         // HomeKit bridge: call() returns a promise that Swift settles by id.
+        // Whether the screen can actually be recorded on THIS device, not
+        // whether the platform supports it in principle. A Record button that
+        // rejects the moment it is pressed is worse than no button.
+        //
+        // The simulator check is not belt-and-braces, it is the load-bearing
+        // half: `RPScreenRecorder.isAvailable` returns **true** in the
+        // Simulator (measured, 2026-08-25) and `startCapture` then fails every
+        // time, so availability alone gates nothing there. `isAvailable` still
+        // earns its place on a real device, where it goes false during a call
+        // or another capture.
+        #if targetEnvironment(simulator)
+        let canRecordScreen = false
+        #elseif os(iOS)
+        let canRecordScreen = RPScreenRecorder.shared().isAvailable
+        #else
+        let canRecordScreen = false
+        #endif
+
         let reportBridgeScript = """
         window.__report_callbacks = {};
         window.__report_shake_handlers = [];
         window.isNativeCaptureCapable = true;
-        window.isNativeRecordingCapable = true;
+        window.isNativeRecordingCapable = \(canRecordScreen);
         window.homecastReport = {
             call: function(method, payload) {
                 return new Promise(function(resolve, reject) {
