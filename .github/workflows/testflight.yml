@@ -90,8 +90,11 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          python3 -m pip install --quiet pyjwt cryptography
-          NEXT=$(python3 - <<'PY'
+          # A venv, not `pip install`: the runner's Python is externally
+          # managed (PEP 668) and a bare install exits 1.
+          python3 -m venv /tmp/ascvenv
+          /tmp/ascvenv/bin/pip install --quiet pyjwt cryptography
+          NEXT=$(/tmp/ascvenv/bin/python - <<'PY'
           import json, os, time, urllib.request, jwt
           kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
           key = open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
