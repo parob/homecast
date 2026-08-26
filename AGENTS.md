@@ -755,6 +755,12 @@ serving `1001001`. Tauri's versionCode is `major*1000000 + minor*1000 + patch`.
    They appear **6× each** (3 targets × Debug/Release). `grep -c` to confirm the count rather
    than trusting this number — every new target adds two more, and an app-extension version that
    doesn't match the app gets the upload **rejected**. Finish with `plutil -lint project.pbxproj`.
+
+   The drift is real and it is not small: on 2026-08-26 the file said **53** while the highest
+   build Apple had was **56**, so the next usable number was 57 and anything lower would have
+   been rejected on upload. Nothing keeps the file in step with the store — the build number is
+   not the previous number plus one, it is *the store's highest* plus one, across **both**
+   platforms. Query it (above) before every release.
 2. Bundle the web app: `./scripts/bundle-web-app.sh`. ⚠️ That script builds from your **working
    tree**. If it contains unfinished work, that work ships inside the binary for Community-mode
    users. To bundle only committed code, build in a clean worktree and copy `dist/` to
@@ -779,7 +785,12 @@ serving `1001001`. Tauri's versionCode is `major*1000000 + minor*1000 + patch`.
 old bundle until the **app restarts**, so "I deployed and nothing changed" usually means the
 relay hasn't been restarted.
 
-**CI builds Mac Catalyst only**, so iOS-only breakage ships green. Build both locally.
+**CI builds both Mac Catalyst and iOS** (`ci.yml`), because they are different compilations
+and it used to build only the first. Anything behind `#if targetEnvironment(macCatalyst)` —
+which is most of the relay — is absent on iOS, so an unguarded reference to it passed CI and
+failed only at the App Store archive. That cost build 57 on 2026-08-26 (`cannot find
+'relayWSBridge' in scope`, after a green run). Both are unsigned compile checks; signing and
+upload stay in `testflight.yml`.
 
 ### Android (Play)
 
