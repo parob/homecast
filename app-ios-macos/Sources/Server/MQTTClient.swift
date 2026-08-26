@@ -42,6 +42,13 @@ class MQTTClient {
     /// Keep-alive
     private var keepAliveTimer: DispatchSourceTimer?
     private let keepAliveInterval: UInt16 = 60
+    /// A PINGREQ has gone out and its PINGRESP has not come back yet.
+    private var awaitingPingResponse = false
+    private var missedPingResponses = 0
+    /// Consecutive unanswered PINGREQs before the socket is declared dead.
+    /// Two keepalive periods (~2 min) tolerates one lost round trip on a
+    /// flaky link without calling a working connection dead.
+    private let maxMissedPingResponses = 2
 
     /// Packet ID for SUBSCRIBE (incremented per use)
     private var nextPacketId: UInt16 = 1
@@ -246,7 +253,9 @@ class MQTTClient {
         case 11: // UNSUBACK
             break
         case 13: // PINGRESP
-            break
+            // Proof the broker is still there — see sendPingreq.
+            awaitingPingResponse = false
+            missedPingResponses = 0
         default:
             break
         }
@@ -314,6 +323,7 @@ class MQTTClient {
 
     private func startKeepAlive() {
         keepAliveTimer?.cancel()
+        missedPingResponses = 0
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .seconds(Int(keepAliveInterval)),
                        repeating: .seconds(Int(keepAliveInterval)))
@@ -325,12 +335,36 @@ class MQTTClient {
     }
 
     private func sendPingreq() {
+        // A PINGRESP for the previous PINGREQ should have arrived by now.
+        //
+        // The client used to discard PINGRESP entirely and track nothing, so
+        // it could not tell a live connection from a half-open one — TCP up,
+        // broker gone, no FIN, which is what a broker restart, a NAT timeout
+        // or a Mac waking from sleep leaves behind. `state` stayed
+        // `.connected`, every publish was accepted into a dead socket, and
+        // recovery waited on TCP retransmission timeouts (tens of minutes) or
+        // never came. Meanwhile the broker had already fired the LWT, so
+        // everything else saw the home as offline while this said connected.
+        if awaitingPingResponse {
+            missedPingResponses += 1
+            if missedPingResponses >= maxMissedPingResponses {
+                NSLog("[MQTTClient] %d missed PINGRESP — treating socket as dead",
+                      missedPingResponses)
+                handleDisconnect()
+                return
+            }
+            NSLog("[MQTTClient] PINGRESP miss %d/%d", missedPingResponses, maxMissedPingResponses)
+        }
+
         // PINGREQ: 0xC0 0x00
         let packet = Data([0xC0, 0x00])
-        connection?.send(content: packet, completion: .contentProcessed { error in
-            if let error = error {
-                NSLog("[MQTTClient] PINGREQ error: %@", error.localizedDescription)
-            }
+        awaitingPingResponse = true
+        connection?.send(content: packet, completion: .contentProcessed { [weak self] error in
+            guard let error = error else { return }
+            NSLog("[MQTTClient] PINGREQ error: %@", error.localizedDescription)
+            // A send that fails outright is a dead socket now, not in two more
+            // keepalive periods.
+            self?.queue.async { self?.handleDisconnect() }
         })
     }
 
@@ -339,6 +373,8 @@ class MQTTClient {
     private func handleDisconnect() {
         keepAliveTimer?.cancel()
         keepAliveTimer = nil
+        awaitingPingResponse = false
+        missedPingResponses = 0
         connection?.cancel()
         connection = nil
         readBuffer.removeAll()

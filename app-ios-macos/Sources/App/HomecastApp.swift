@@ -2013,6 +2013,11 @@ struct WebViewContainer: UIViewRepresentable {
             stallTimer?.invalidate()
             stallTimer = nil
             stopNetworkMonitor()
+            // The WebView this bridge served is going away. Without this the
+            // bridge, its URLSession (which retains it as delegate) and any
+            // socket the page did not close outlive it — and the cloud keeps
+            // seeing a relay whose events now go nowhere.
+            relayWSBridge.shutdown()
         }
 
         deinit {

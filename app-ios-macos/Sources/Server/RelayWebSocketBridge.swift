@@ -442,4 +442,55 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         socketsLock.lock(); defer { socketsLock.unlock() }
         if let s = sockets[id] { mutate(s) }
     }
+
+    // MARK: - Teardown
+
+    /// Close every socket and release everything this bridge holds.
+    ///
+    /// A bridge belongs to one WKWebView, and the app makes a new WebView
+    /// whenever the mode, relay address, host or environment changes — so
+    /// bridges are replaced routinely, not just at quit. Nothing used to
+    /// release the old one: no `deinit` ran (the URLSession holds its
+    /// delegate, which is this object, so the two kept each other alive),
+    /// the path monitor kept running, and any socket the dying page had not
+    /// explicitly closed kept its ping timer *and* its App Nap assertion.
+    ///
+    /// The visible symptom was on the server: a relay answering pings whose
+    /// events went to a WebView that no longer existed, so the cloud believed
+    /// a home was online that nothing could actually reach.
+    ///
+    /// Safe to call more than once, and safe to call from any thread.
+    func shutdown() {
+        pathMonitor.cancel()
+
+        socketsLock.lock()
+        let live = Array(sockets.values)
+        sockets.removeAll()
+        // Releases the App Nap assertion now that the table is empty — a
+        // stranded assertion keeps the Mac from idling for the rest of the
+        // session.
+        syncNapAssertionLocked()
+        socketsLock.unlock()
+
+        for state in live {
+            state.pingTimer?.cancel()
+            state.task.cancel(with: .goingAway, reason: nil)
+        }
+
+        // Breaks the session↔delegate retain cycle. Without this the session,
+        // its delegate queue and this bridge all leak, once per WebView.
+        session.invalidateAndCancel()
+
+        webView = nil
+        if !live.isEmpty {
+            Log.info("relay-ws bridge shut down (\(live.count) socket(s) closed)",
+                     category: "relay-ws")
+        }
+    }
+
+    deinit {
+        // Belt and braces: shutdown() is the intended path, but a bridge that
+        // is released without one must not leave a live path monitor behind.
+        pathMonitor.cancel()
+    }
 }
