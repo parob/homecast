@@ -26,6 +26,18 @@ struct MQTTBrokerConfig: Codable {
 /// Bridges between MQTT clients and the WKWebView JavaScript context.
 /// Supports multiple brokers per home. Publishes HomeKit state changes to MQTT
 /// topics and routes incoming MQTT commands to HomeKit via the existing JS bridge.
+/// HomeKit ↔ MQTT bridge.
+///
+/// **Threading: every stored property below is owned by the main thread.**
+/// The bridge is driven from three places that are all main-resident — the
+/// WKScriptMessageHandler callbacks, the `evaluateJavaScript` completions that
+/// build the slug map, and the timers — so the maps can be plain dictionaries
+/// with no lock. The one exception is `MQTTClient`, which invokes its
+/// callbacks on its own socket queue; those hop to main at the boundary (see
+/// where `onMessage`/`onStateChange` are assigned). Anything added here that
+/// touches this state from another thread must do the same: `processSlugMap`
+/// rebuilds the maps with `removeAll()`, and a concurrent read during that is
+/// undefined behavior in a process users expect to run for months.
 class MQTTBridge: NSObject, WKScriptMessageHandler {
 
     weak var webView: WKWebView?
@@ -248,13 +260,23 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
         client.willMessage = Data("offline".utf8)
         client.willRetain = true
 
+        // Both callbacks arrive on MQTTClient's socket queue, and both read the
+        // slug/broker maps that `processSlugMap` rebuilds (removeAll, then
+        // repopulate) on main. Reading a Swift Dictionary mid-`removeAll` from
+        // another thread is undefined behavior — a crash, or a command routed
+        // to whatever the half-built map happened to contain. Hop to main so
+        // every access to this object's state happens on one thread.
         client.onMessage = { [weak self] topic, payload in
-            self?.handleIncomingMessage(topic: topic, payload: payload, brokerId: config.id)
+            DispatchQueue.main.async {
+                self?.handleIncomingMessage(topic: topic, payload: payload, brokerId: config.id)
+            }
         }
 
         client.onStateChange = { [weak self] state in
             if case .connected = state {
-                self?.onBrokerConnected(brokerId: config.id)
+                DispatchQueue.main.async {
+                    self?.onBrokerConnected(brokerId: config.id)
+                }
             }
         }
 
@@ -265,19 +287,34 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
 
     // MARK: - Broker Connected
 
+    /// Subscribe a broker to this home's command topics.
+    ///
+    /// Called both when a broker connects and when the slug map is (re)built,
+    /// because the first of those can happen before the second: brokers
+    /// connect at launch while the slug map needs the WebView, which is
+    /// seconds behind. The old code subscribed only `if let homeSlug` and had
+    /// no retry, so on every normal launch the guard failed silently and the
+    /// relay accepted no MQTT commands at all until something else happened to
+    /// reconnect the broker. Re-subscribing is safe: an MQTT SUBSCRIBE to a
+    /// filter already held simply replaces it.
+    private func subscribeCommandTopics(client: MQTTClient, homeId: String, config: MQTTBrokerConfig) {
+        guard let homeSlug = homeSlugs[homeId] else {
+            NSLog("[MQTTBridge] Broker '%@' connected before the slug map; will subscribe when it builds", config.name)
+            return
+        }
+        let prefix = config.topicPrefix
+        client.subscribe(topic: "\(prefix)/\(homeSlug)/+/+/set")
+        client.subscribe(topic: "\(prefix)/\(homeSlug)/+/set")
+        client.subscribe(topic: "\(prefix)/\(homeSlug)/scene/+/execute")
+        NSLog("[MQTTBridge] Broker '%@' subscribed to commands for %@", config.name, homeSlug)
+    }
+
     private func onBrokerConnected(brokerId: String) {
         guard let client = clients[brokerId],
               let homeId = brokerHomeMap[brokerId],
               let config = brokerConfigs[homeId]?.first(where: { $0.id == brokerId }) else { return }
 
-        let prefix = config.topicPrefix
-        // Subscribe to command topics for this home's slug
-        if let homeSlug = homeSlugs[homeId] {
-            client.subscribe(topic: "\(prefix)/\(homeSlug)/+/+/set")
-            client.subscribe(topic: "\(prefix)/\(homeSlug)/+/set")
-            client.subscribe(topic: "\(prefix)/\(homeSlug)/scene/+/execute")
-        }
-        NSLog("[MQTTBridge] Broker '%@' connected, subscribed to commands", config.name)
+        subscribeCommandTopics(client: client, homeId: homeId, config: config)
 
         if isReady {
             publishFullStateForHome(homeId: homeId, client: client, config: config)
@@ -411,6 +448,9 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
             guard case .connected = client.state,
                   let homeId = brokerHomeMap[brokerId],
                   let config = brokerConfigs[homeId]?.first(where: { $0.id == brokerId }) else { continue }
+            // Any broker that connected before this map existed could not
+            // subscribe then — the slugs it needed did not exist yet.
+            subscribeCommandTopics(client: client, homeId: homeId, config: config)
             publishFullStateForHome(homeId: homeId, client: client, config: config)
             if config.haDiscovery {
                 publishHADiscoveryForHome(homeId: homeId, client: client, config: config)
