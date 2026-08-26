@@ -13,8 +13,18 @@ class LocalHTTPServer {
     private var wsListener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let queue = DispatchQueue(label: "com.homecast.localserver", qos: .userInitiated)
+    /// Marks `queue` so `onQueue` can tell "already there" from "must hop".
+    private static let queueKey = DispatchSpecificKey<Void>()
 
-    /// Connected WebSocket clients (for broadcasting)
+    /// Connected WebSocket clients (for broadcasting).
+    ///
+    /// Owned by `queue`. Every read and write must happen there: the listener
+    /// and connection handlers already run on it, but the WKWebView bridge
+    /// calls in from the main thread on every broadcast — i.e. on every
+    /// HomeKit state change, the hottest path this server has. A Swift
+    /// Dictionary mutated on one thread while iterated on another is undefined
+    /// behavior, and a crash here takes the user's whole bridge down (HTTP, WS,
+    /// MQTT and the HomeKit relay all die with the process).
     private(set) var wsClients: [String: NWConnection] = [:]
 
     /// Bridge for forwarding WebSocket messages to/from the WKWebView JS context
@@ -120,6 +130,8 @@ class LocalHTTPServer {
 
     init(exposure: Exposure = .network) {
         self.exposure = exposure
+        // Lets `onQueue` recognise work already running on `queue`.
+        queue.setSpecific(key: Self.queueKey, value: ())
 
         // Resolve bundled web app path
         if let path = Bundle.main.path(forResource: "web-dist", ofType: nil) {
@@ -149,10 +161,12 @@ class LocalHTTPServer {
 
     /// Start the server on the first free candidate port.
     func start() {
-        guard !isRunning else { return }
-        bindGeneration &+= 1
-        candidateIndex = 0
-        attemptBind(generation: bindGeneration)
+        onQueue { [weak self] in
+            guard let self = self, !self.isRunning else { return }
+            self.bindGeneration &+= 1
+            self.candidateIndex = 0
+            self.attemptBind(generation: self.bindGeneration)
+        }
     }
 
     /// Try `portCandidates[candidateIndex]`, falling through to the next on failure.
@@ -221,7 +235,13 @@ class LocalHTTPServer {
                 NSLog("[LocalHTTPServer] Port %d failed: %@", candidatePort, error.localizedDescription)
                 guard !self.isRunning else {
                     // Already serving — this is a later collapse, not a bind
-                    // failure. Wake-from-sleep restarts us; don't re-ladder.
+                    // failure, so don't re-ladder: the ports we'd walk are the
+                    // ones we already own. Clearing isRunning is what hands
+                    // this to AppDelegate's watchdog, which restarts the pair
+                    // from the top of the ladder. (It used to say
+                    // "wake-from-sleep restarts us" — that observer was on the
+                    // wrong notification centre and never fired, so nothing
+                    // recovered this at all.)
                     self.isRunning = false
                     return
                 }
@@ -501,27 +521,47 @@ class LocalHTTPServer {
         "[" + allAddresses.map { Self.jsonString("http://\($0):\(port)") }.joined(separator: ",") + "]"
     }
 
+    /// Run `work` on the queue that owns this server's state.
+    ///
+    /// Synchronous, so callers keep their ordering — `restart()` must not
+    /// start a listener before the old one is torn down. The specific-key
+    /// check makes it re-entrant: work already running on `queue` (listener
+    /// and connection handlers) executes inline rather than deadlocking.
+    /// Nothing in this app dispatches synchronously to main, so a `sync` from
+    /// main cannot deadlock the other way either.
+    private func onQueue(_ work: @escaping () -> Void) {
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+            work()
+        } else {
+            queue.sync(execute: work)
+        }
+    }
+
     /// Stop the server and disconnect all clients.
     func stop() {
-        // Invalidate any in-flight bind ladder, so a listener cancelled here
-        // cannot advance to the next candidate after we've been told to stop.
-        bindGeneration &+= 1
-        listener?.cancel()
-        listener = nil
-        wsListener?.cancel()
-        wsListener = nil
-        for (_, connection) in connections {
-            connection.cancel()
+        onQueue { [weak self] in
+            guard let self = self else { return }
+            // Invalidate any in-flight bind ladder, so a listener cancelled
+            // here cannot advance to the next candidate after we've been told
+            // to stop.
+            self.bindGeneration &+= 1
+            self.listener?.cancel()
+            self.listener = nil
+            self.wsListener?.cancel()
+            self.wsListener = nil
+            for (_, connection) in self.connections {
+                connection.cancel()
+            }
+            self.connections.removeAll()
+            for (_, connection) in self.wsClients {
+                connection.cancel()
+            }
+            self.wsClients.removeAll()
+            self.isRunning = false
+            self.port = 0
+            self.wsPort = 0
+            print("[LocalHTTPServer] Stopped")
         }
-        connections.removeAll()
-        for (_, connection) in wsClients {
-            connection.cancel()
-        }
-        wsClients.removeAll()
-        isRunning = false
-        port = 0
-        wsPort = 0
-        print("[LocalHTTPServer] Stopped")
     }
 
     /// Restart the server (e.g., after wake from sleep).
@@ -1017,9 +1057,15 @@ class LocalHTTPServer {
     }
 
     /// Broadcast a message to ALL connected WebSocket clients.
+    ///
+    /// Called from the main thread by the WKWebView bridge; hops to `queue`,
+    /// which owns `wsClients`.
     func broadcastToWSClients(_ text: String) {
-        for (_, connection) in wsClients {
-            sendWSMessage(text, on: connection)
+        onQueue { [weak self] in
+            guard let self = self else { return }
+            for (_, connection) in self.wsClients {
+                self.sendWSMessage(text, on: connection)
+            }
         }
     }
 
@@ -1036,9 +1082,14 @@ class LocalHTTPServer {
     }
 
     /// Send a WebSocket message to a specific client (used by bridge for responses).
+    ///
+    /// Called from the main thread by the WKWebView bridge; hops to `queue`,
+    /// which owns `wsClients`.
     func sendToWSClient(clientId: String, message: String) {
-        guard let connection = wsClients[clientId] else { return }
-        sendWSMessage(message, on: connection)
+        onQueue { [weak self] in
+            guard let self = self, let connection = self.wsClients[clientId] else { return }
+            self.sendWSMessage(message, on: connection)
+        }
     }
 
     // MARK: - GraphQL Stub Responses
