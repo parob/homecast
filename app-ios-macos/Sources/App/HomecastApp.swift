@@ -2017,7 +2017,12 @@ struct WebViewContainer: UIViewRepresentable {
             // bridge, its URLSession (which retains it as delegate) and any
             // socket the page did not close outlive it — and the cloud keeps
             // seeing a relay whose events now go nowhere.
+            //
+            // Mac only, like the bridge itself: the native relay socket
+            // exists to serve relay duty, and only the Mac is ever the relay.
+            #if targetEnvironment(macCatalyst)
             relayWSBridge.shutdown()
+            #endif
         }
 
         deinit {
