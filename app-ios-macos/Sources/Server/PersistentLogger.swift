@@ -121,8 +121,21 @@ public enum Log {
             PersistentLogStore.shared.appendToFile(entry)
         }
 
-        // 4) Ship WARN+ to the server (fire-and-forget; queues if offline).
-        if level.ordinal >= LogLevel.warn.ordinal {
+        // 4) Ship WARN+ to the server (fire-and-forget; queues if offline),
+        //    plus INFO from the two categories that explain a dead screen.
+        //
+        //    A WebView that was thrown away, or a navigation that started and
+        //    never finished, is not a warning in its own right — but it is the
+        //    context that makes the entries which ARE warnings readable, and
+        //    without it a frozen app reaching us over the network says only
+        //    that something went wrong, never what. Both are document-level
+        //    events (launch, reload, deep link), not per-route, so the volume
+        //    is small. See the 2026-08-24 freeze: every WebView failure path
+        //    logged via print(), which reaches neither os_log nor the server.
+        let contextCategories: Set<String> = ["webview", "watchdog"]
+        let shipAsContext = level.ordinal >= LogLevel.info.ordinal
+            && contextCategories.contains(category)
+        if level.ordinal >= LogLevel.warn.ordinal || shipAsContext {
             LogShipper.shared.enqueue(entry)
         }
     }

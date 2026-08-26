@@ -282,13 +282,21 @@ class MQTTClient {
     }
 
     private func handlePublish(_ data: Data) {
-        guard data.count >= 4 else { return }
+        // The Remaining Length after the first byte is a varint: one byte
+        // only while fewer than 128 bytes remain. This used to hardcode the
+        // topic length at data[2]/data[3], which is wrong for any PUBLISH of
+        // 128+ remaining bytes — our topics alone run ~60 characters, so a
+        // multi-field /set payload crossed the boundary, the topic was read
+        // from the wrong offset, and the command was silently dropped as an
+        // unknown topic while small commands worked.
+        guard let (_, varHeaderStart) = decodeRemainingLength(from: data, offset: 1),
+              data.count >= varHeaderStart + 2 else { return }
 
         // Parse variable header: topic length + topic
-        let topicLenHigh = Int(data[2])
-        let topicLenLow = Int(data[3])
+        let topicLenHigh = Int(data[varHeaderStart])
+        let topicLenLow = Int(data[varHeaderStart + 1])
         let topicLen = (topicLenHigh << 8) | topicLenLow
-        let topicStart = 4
+        let topicStart = varHeaderStart + 2
         let topicEnd = topicStart + topicLen
 
         guard data.count >= topicEnd else { return }
