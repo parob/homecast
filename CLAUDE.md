@@ -20,6 +20,18 @@ Homecast is a single product split across multiple repos. When working in any on
 
 All repos live as siblings under `~/Documents/GitHub/`. The web app is a separate git repo checked out inside `homecast/app-web/`.
 
+## Reporting problems, and what happens next
+
+Users file reports from inside the app — shake the phone, or `⌃⇧R` — and they become GitHub issues that a scheduled cloud agent then reproduces, diagnoses and opens pull requests for.
+
+  - The sheet is `app-web/src/components/report/` (`ShakeToReport`, `ReportSheet`), capture is `app-web/src/lib/report/`.
+  - The browser never holds the reporting credential: it posts a multipart form to `POST /rest/issue-report` on **homecast-cloud**, which attaches the API key server-side.
+  - Reports land on **parob/homecast-cloud** regardless of which repo the fault is in. Repeat reports of the same fault are grouped onto one issue by a `fp-…` fingerprint label.
+  - The **Homecast issue routine** then works them. It may change code in `homecast`, `homecast-web` and `homecast-cloud`, must reproduce a fault before touching it, opens pull requests but never merges, and files upstream faults against the project that owns them rather than working around them here. Labels it writes: `claude-attempted`, `claude-pr-open`, `blocked-upstream`.
+  - Its debug connector points at **production and is read-only**.
+
+The whole loop — sources, dedup, the label vocabulary, both routine modes, and the operational traps — is documented in **[parob/issue-reporter › docs/lifecycle.md](https://github.com/parob/issue-reporter/blob/main/docs/lifecycle.md)**. Read that before changing anything about how reports are filed or triaged.
+
 ## Project Structure
 
 | Directory | Description |
