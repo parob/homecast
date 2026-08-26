@@ -26,7 +26,11 @@ jobs:
           cache-dependency-path: app-web/package-lock.json
 
       - run: npm ci
-      - run: npx tsc --noEmit
+      # npm run typecheck, NOT bare `npx tsc --noEmit`: the web app's root
+      # tsconfig is solution-style (`"files": []`), so bare tsc checks zero
+      # files and passes on anything. The typecheck script runs the real
+      # check against the committed error baseline.
+      - run: npm run typecheck
       - run: npm run build
 
   build-mac:
