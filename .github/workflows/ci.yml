@@ -84,3 +84,27 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # iOS as well as Catalyst, because they are different compilations and
+      # this job used to run only the second one. Anything inside
+      # `#if targetEnvironment(macCatalyst)` — which is most of the relay —
+      # is simply absent on iOS, so a reference to it from unguarded code
+      # builds green here and fails only when someone archives for the App
+      # Store. That is exactly how build 57 was lost: `cannot find
+      # 'relayWSBridge' in scope`, discovered by the TestFlight archive after
+      # a green CI run.
+      #
+      # Unsigned and generic/platform=iOS: this proves it compiles, which is
+      # the part CI was missing. Signing and upload stay in the release
+      # workflow.
+      - name: Build iOS
+        run: |
+          cd app-ios-macos
+          xcodebuild -project Homecast.xcodeproj \
+            -scheme Homecast \
+            -destination 'generic/platform=iOS' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
