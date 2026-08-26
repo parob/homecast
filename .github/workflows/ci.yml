@@ -31,7 +31,14 @@ jobs:
 
   build-mac:
     name: Build Mac App
-    runs-on: macos-14
+    # macos-15, not macos-14. This job had been red on main since 19 August with
+    # four Swift concurrency errors — BridgeLoad is @MainActor and three call
+    # sites in HomecastApp.swift are synchronous — that no local Xcode raises.
+    # They were the older image's compiler, not the code: the TestFlight
+    # workflow compiles the same commit cleanly on macos-15 and ships it to the
+    # store. A permanently red job teaches everyone to ignore CI, and this one
+    # is the only thing guarding against iOS-only breakage.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +61,13 @@ jobs:
           cd ..
           mkdir -p app-ios-macos/Resources/web-dist
           cp -r app-web/dist/* app-ios-macos/Resources/web-dist/
+
+      # Match the release workflow's toolchain, so a build that passes here is
+      # a build that can actually ship.
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
 
       - name: Build Mac Catalyst
         run: |
