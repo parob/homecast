@@ -14,6 +14,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     /// MQTT bridge — Mac only. It's the relay that publishes HomeKit state.
     #if targetEnvironment(macCatalyst)
     var mqttBridge: MQTTBridge?
+    /// Polls for a Community server that has died — see `startLocalServerWatchdog`.
+    private var localServerWatchdog: Timer?
     #endif
 
     func application(
@@ -62,17 +64,23 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         #if targetEnvironment(macCatalyst)
         loadMenuBarPlugin()
 
-        // Listen for sleep/wake to restart the local server
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("NSWorkspaceDidWakeNotification"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self = self, AppConfig.isCommunity else { return }
-            print("[Homecast] Mac woke from sleep — restarting local server")
-            self.localHTTPServer?.restart()
-            NotificationCenter.default.post(name: .reloadWebView, object: nil)
-        }
+        // Keep the local server alive without depending on a wake notification.
+        //
+        // This used to observe "NSWorkspaceDidWakeNotification" on
+        // NotificationCenter.default. That notification is only ever posted on
+        // NSWorkspace.shared.notificationCenter — a different centre — and
+        // nothing reposts it, so the handler had never once run. Worse, it was
+        // load-bearing in absentia: LocalHTTPServer declines to re-ladder a
+        // listener that collapses after it was serving, on the stated grounds
+        // that "wake-from-sleep restarts us". Between the two, a relay whose
+        // listener died (sleep, a network transition, an interface change) just
+        // stayed dead — HTTP, WebSocket and Bonjour all gone — until somebody
+        // noticed and relaunched the app.
+        //
+        // A poll fixes the whole class rather than the one trigger: whatever
+        // killed the listener, the server is either running or it isn't, and
+        // that question is a boolean read every 30 seconds.
+        startLocalServerWatchdog()
 
         #endif
 
@@ -200,6 +208,33 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         bridge.loadAndConnectSavedBrokers()
         Log.info("mqtt bridge started", category: "lifecycle")
         return bridge
+    }
+    #endif
+
+    #if targetEnvironment(macCatalyst)
+    /// Restarts the Community server if it is down when it ought to be up.
+    ///
+    /// The relay is expected to serve for months unattended, and the listener
+    /// can die without anything asking it to: sleep/wake, an interface change,
+    /// a DHCP lease moving. `NWListener` reports that asynchronously as
+    /// `.failed`, which LocalHTTPServer records by clearing `isRunning` — so
+    /// "should be serving but isn't" is a plain boolean, and nothing was
+    /// reading it. Cheap enough to poll: one comparison every 30 seconds.
+    private func startLocalServerWatchdog() {
+        localServerWatchdog?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            guard let self = self, AppConfig.isCommunity else { return }
+            guard let server = self.localHTTPServer, !server.isRunning else { return }
+            Log.warning("local server found down — restarting", category: "lifecycle")
+            server.start()
+            // The page is talking to a socket that just came back on a
+            // possibly different port; webBaseURL is rebuilt on ready.
+            NotificationCenter.default.post(name: .reloadWebView, object: nil)
+        }
+        // The relay Mac's window is usually in the background, and a default
+        // run-loop timer stops firing while a menu or a resize is tracking.
+        RunLoop.main.add(timer, forMode: .common)
+        localServerWatchdog = timer
     }
     #endif
 
