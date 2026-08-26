@@ -655,22 +655,30 @@ The web app (`app-web/`) runs in **two different ways** depending on mode:
 | Mode | Where web app loads from | How to deploy |
 |------|-------------------------|---------------|
 | **Community** | Bundled in Mac app (`Resources/web-dist/`) | `./scripts/bundle-web-app.sh` → rebuild Mac app |
-| **Cloud** | Served from Firebase Hosting (`homecast.cloud`) | Push to `app-web` repo → promote via CI |
+| **Cloud** | Served from Firebase Hosting (`homecast.cloud`) | Merge to `app-web` main → CI ships it to production |
 
 ### Cloud deployment pipeline
 
+**A merge to `app-web` main goes to production.** There is no promotion step and no
+human in the loop — staging is a gate the build passes through, not a place it stops:
+
 ```
 app-web push to main
-  → CI triggers "Deploy Web App to Staging" on homecast-cloud (automatic)
-  → staging.homecast.cloud updated
-
-To promote to production:
-  → Run "Deploy Web App to Production" workflow on homecast-cloud
-  → gh workflow run "Deploy Web App to Production" --ref main -f confirm=deploy
+  → tests (typecheck, vitest --coverage, build) — the dispatch below is gated on these
+  → "Deploy Web App to Staging" on homecast-cloud
+  → staging.homecast.cloud updated, and verified to be serving the new bundle
+  → "Deploy Web App to Production" (workflow_run, automatic)
   → homecast.cloud updated
 ```
 
-**Critical:** Changes to relay code (`src/relay/local-handler.ts`, `src/server/`) affect the Mac app's WKWebView behavior. In cloud mode, the Mac app loads this code from `homecast.cloud`, NOT from the local bundle. You MUST deploy to production for cloud relay fixes to take effect. Rebuilding the Mac app alone is NOT sufficient for cloud mode.
+A hand-run staging deploy stays on staging: the production step requires the staging run
+to have been an automatic one. To ship or roll back by hand:
+`gh workflow run "Deploy Web App to Production" --repo parob/homecast-cloud -f confirm=deploy`.
+
+**Critical:** Changes to relay code (`src/relay/local-handler.ts`, `src/server/`) affect the Mac app's WKWebView behavior. In cloud mode, the Mac app loads this code from `homecast.cloud`, NOT from the local bundle — so a merge to main changes relay behaviour in production. Rebuilding the Mac app alone is NOT sufficient for cloud mode; conversely, a running relay keeps its old bundle until the app **restarts**.
+
+**The server does not follow.** It is still promoted by hand, so a web change that needs
+new API surface must not be merged until the server carrying it is in production.
 
 ### Verify deployment
 
