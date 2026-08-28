@@ -442,7 +442,7 @@ either the web app or the Swift app.
 | `app-web/src/lib/long-press.ts` | Delays, slop, and what counts as background — pure, unit-tested |
 | `app-web/src/hooks/useBackgroundLongPress.ts` | The listeners for the empty-space hold |
 | `app-web/src/lib/automation-cards.ts` | Automations ordering + visibility (pure, mirrors `home-cards.ts`) |
-| `app-web/src/components/settings/home/HomeAutomationsSection.tsx` | Unhide an automation from a desktop — hiding is touch-only |
+| `app-web/src/components/automations/AutomationCard.tsx` | One automation card — the badge on touch, the right-click menu on a desktop |
 
 ### Automations are arrangeable
 
@@ -453,9 +453,20 @@ engines. `HomeLayoutData.automationCardOrder` is a flat list of prefixed keys
 unresolvable key is skipped, not pruned — the Homecast half is only fetched once
 the section is open, so that is the normal state, not an edge case.
 
-Hiding is offered only on the card in Edit Layout, i.e. only on touch, so
-**Settings → Homes → *home* → Automations** exists to bring one back from a
-desktop. Without it the feature would be a one-way door.
+Hiding is offered on the card, by whichever route that device has. Touch enters
+Edit Layout and uses the badge; a desktop never enters that mode at all, and
+right-clicks the card instead — the same menu a scene card has always had.
+
+Both halves have to exist together, because a hidden card has nothing to
+right-click. Touch reveals hidden cards by entering Edit Layout; a desktop
+reveals them with **Show Hidden Items**, which is why `AutomationsSection` takes
+a `showHidden` prop rather than reading `editMode` alone. Drop either half and
+hiding becomes a one-way door on that platform.
+
+There used to be a **Settings → Homes → *home* → Automations** page of switches,
+which was the desktop way back before the card had a menu. It is gone. Scenes
+still have their equivalent (`HomeActionsSection`) and still need it — the
+scenes grid reveals on `editMode` alone.
 
 ## Advanced Automation Engine
 
