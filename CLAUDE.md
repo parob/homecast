@@ -276,7 +276,7 @@ Messages use this JSON format:
 | `app-web/src/pages/mqtt-browser/TreePane.tsx` | MQTT browser tree pane (home/room/group sections, `TreeRow.tsx` rows) |
 | `app-web/src/pages/mqtt-browser/InspectorPanel.tsx` | Selected-topic inspector (widget + publish editor; pane/sheet variants) |
 | `app-web/src/components/settings/HomeDetailView.tsx` | One home's settings: live-home poll + router over its sub-sections |
-| `app-web/src/components/settings/home/` | The per-home sub-pages (overview, actions, notifications, MQTT, mobile row list) |
+| `app-web/src/components/settings/home/` | The per-home sub-pages (overview, notifications, MQTT, mobile row list) |
 | `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
 | `app-web/src/lib/marketing-routes.ts` | Which paths are the website, not the app — pure, unit-tested (collapsed to the dashboard inside the native shell) |
 | `app-web/src/lib/swipe.ts` | Left-menu swipe decisions — axis lock, travel/flick thresholds, what yields to a scroller (pure, unit-tested) |
@@ -327,9 +327,12 @@ so the list is empty while it is offline, and filtering through it would drop ev
 scene the moment anything was toggled. Sorted on write instead, for stable JSON.
 
 Hiding an Apple Home scene only hides the card — the scene stays in Apple Home. A hidden
-card has nothing to right-click, so Edit Layout reveals hidden ones with an Unhide button,
-and the home's own Scenes settings page lists both kinds with a switch each. Settings →
-Home Screen carries the two half-switches.
+card has nothing to right-click, so it has to be revealed before it can be brought back:
+touch enters Edit Layout, a desktop uses **Show Hidden Items**, and the revealed card
+carries the Unhide badge or menu item. `ScenesSection` takes a `showHidden` prop and
+computes one `reveal` for the whole grid — both kinds obey it, because it is one grid and
+revealing half of it would be a puzzle. Settings → Home Screen still carries the two
+half-switches, which hide each *kind* wholesale and are a different control.
 
 ## Analytics on a share link
 
@@ -464,9 +467,15 @@ a `showHidden` prop rather than reading `editMode` alone. Drop either half and
 hiding becomes a one-way door on that platform.
 
 There used to be a **Settings → Homes → *home* → Automations** page of switches,
-which was the desktop way back before the card had a menu. It is gone. Scenes
-still have their equivalent (`HomeActionsSection`) and still need it — the
-scenes grid reveals on `editMode` alone.
+which was the desktop way back before the card had a menu. It is gone, and so is
+the Scenes equivalent (`HomeActionsSection`) that followed it. Both grids now
+reveal on `editMode || showHidden`.
+
+The Scenes one closed a wider hole than this: `visibleActions` took no reveal
+argument at all, so a hidden **Homecast** scene came back on no platform — not
+even in Edit Layout — and `ActionCard`'s badge was one-way (`kind: 'remove'`,
+not `kind: 'hide'`). Hiding a shortcut was a one-way door everywhere, and that
+settings screen was genuinely the only route back.
 
 ## Advanced Automation Engine
 
