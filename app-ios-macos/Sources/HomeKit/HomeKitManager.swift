@@ -697,8 +697,40 @@ class HomeKitManager: NSObject, ObservableObject {
     /// in the house.
     nonisolated static let unreachableWriteTimeoutSeconds: Double = 2.0
 
-    /// Write a characteristic, giving up after `seconds`. Returns false on
-    /// write failure or timeout.
+    /// What became of one characteristic write.
+    ///
+    /// HomeKit answering "no, and here is why" in 90ms and an accessory saying
+    /// nothing at all for ten seconds are different facts, and only one of them
+    /// is a timeout. This used to be a `Bool`, so both arrived as `false` and
+    /// every caller then told the same story about a ten-second silence —
+    /// including for writes HomeKit had refused instantly, with a reason, that
+    /// nothing kept. parob/homecast-cloud#28 is what that reads like from the
+    /// outside: a lock that answered in 87ms, reported as unreachable.
+    ///
+    /// `refused` carries the HomeKit error rather than a summary of it, so
+    /// `HomeKitError.writeFailed` can go on recognising the cases it has real
+    /// guidance for — the Apple Home edit-permission one above all, which was
+    /// unreachable from this path for exactly as long as this was a `Bool`.
+    /// `@unchecked Sendable` because it crosses a `TaskGroup` boundary carrying
+    /// an `any Error` — in practice always an `NSError`/`HMError` the callback
+    /// handed us and nothing else holds. `nonisolated` on the member for the
+    /// same reason `BulkWrite.init` has it: a type nested in a `@MainActor`
+    /// class inherits that isolation, and the write helper runs off it.
+    enum WriteOutcome: @unchecked Sendable {
+        /// HomeKit confirmed the write.
+        case confirmed
+        /// HomeKit answered, and the answer was an error.
+        case refused(Error)
+        /// We stopped waiting. The write is still in flight; see below.
+        case timedOut(Double)
+
+        nonisolated var isConfirmed: Bool {
+            if case .confirmed = self { return true }
+            return false
+        }
+    }
+
+    /// Write a characteristic, giving up after `seconds`.
     ///
     /// The underlying HomeKit write is deliberately left in flight — it can't
     /// be cancelled, and in practice it often still lands once the accessory
@@ -716,8 +748,8 @@ class HomeKitManager: NSObject, ObservableObject {
         serviceName: String,
         seconds: Double = HomeKitManager.writeTimeoutSeconds,
         quiet: Bool = false
-    ) async -> Bool {
-        await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+    ) async -> WriteOutcome {
+        await withTaskGroup(of: WriteOutcome.self, returning: WriteOutcome.self) { group in
             group.addTask {
                 do {
                     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -731,17 +763,17 @@ class HomeKitManager: NSObject, ObservableObject {
                             }
                         }
                     }
-                    return true
+                    return .confirmed
                 } catch {
-                    return false
+                    return .refused(error)
                 }
             }
             group.addTask {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 print("[HomeKit] ⏱️ Write timed out after \(seconds)s for '\(serviceName)' — leaving it in flight")
-                return false
+                return .timedOut(seconds)
             }
-            let first = await group.next() ?? false
+            let first = await group.next() ?? WriteOutcome.timedOut(seconds)
             group.cancelAll()
             return first
         }
@@ -841,7 +873,9 @@ class HomeKitManager: NSObject, ObservableObject {
         let successCount = await withTaskGroup(of: Bool.self, returning: Int.self) { taskGroup in
             for (serviceName, characteristic, convertedValue) in writeTasks {
                 taskGroup.addTask {
-                    await HomeKitManager.writeValue(characteristic, convertedValue, serviceName: serviceName)
+                    await HomeKitManager.writeValue(
+                        characteristic, convertedValue, serviceName: serviceName
+                    ).isConfirmed
                 }
             }
 
@@ -994,15 +1028,22 @@ class HomeKitManager: NSObject, ObservableObject {
         // Bounded — an unreachable accessory can leave writeValue's completion
         // handler unfired indefinitely, which used to hang the request until
         // the cloud timed out at 30s.
-        let wrote = await HomeKitManager.writeValue(
+        let outcome = await HomeKitManager.writeValue(
             characteristic, convertedValue, serviceName: accessory.name
         )
-        guard wrote else {
+        switch outcome {
+        case .confirmed:
+            break
+        case .refused(let error):
+            // HomeKit's own error, carried rather than described. It is the only
+            // account of what went wrong that exists, and it used to end here.
+            throw HomeKitError.writeFailed(error)
+        case .timedOut(let seconds):
             throw HomeKitError.writeFailed(
                 NSError(domain: "Homecast", code: -1, userInfo: [
                     NSLocalizedDescriptionKey:
                         "\(AccessoryModel.userFacingName(of: accessory)) did not confirm the write "
-                        + "within \(Int(HomeKitManager.writeTimeoutSeconds))s — it may be unreachable.",
+                        + "within \(Int(seconds))s — it may be unreachable.",
                 ])
             )
         }
@@ -1046,6 +1087,25 @@ class HomeKitManager: NSObject, ObservableObject {
         /// the difference the caller needs in order to decide whether anyone
         /// should be told about it.
         let unreachable: Bool
+    }
+
+    /// The `error` line for one entry of a bulk write, or nil if it landed.
+    ///
+    /// An accessory HomeKit had already written off keeps its short sentence
+    /// whatever it says on the way down: "Not responding." is both true and
+    /// more use to a reader than an HMError describing the same silence. Every
+    /// other failure gets the reason it actually came back with.
+    private nonisolated static func bulkWriteError(_ outcome: WriteOutcome, wasReachable: Bool) -> String? {
+        switch outcome {
+        case .confirmed:
+            return nil
+        case .refused(let error):
+            return wasReachable ? error.localizedDescription : "Not responding."
+        case .timedOut(let seconds):
+            return wasReachable
+                ? "Did not confirm the write within \(Int(seconds))s."
+                : "Not responding."
+        }
     }
 
     /// A resolved write, ready to go out.
@@ -1166,17 +1226,19 @@ class HomeKitManager: NSObject, ObservableObject {
         bulkWritesInFlight += 1
         defer { bulkWritesInFlight -= 1 }
 
-        let written: [(Int, Bool)] = await withTaskGroup(of: (Int, Bool).self, returning: [(Int, Bool)].self) { group in
+        let written: [(Int, WriteOutcome)] = await withTaskGroup(
+            of: (Int, WriteOutcome).self, returning: [(Int, WriteOutcome)].self
+        ) { group in
             for item in resolved {
                 group.addTask {
-                    let ok = await HomeKitManager.writeValue(
+                    let outcome = await HomeKitManager.writeValue(
                         item.characteristic, item.value, serviceName: item.serviceName,
                         seconds: item.seconds, quiet: true
                     )
-                    return (item.position, ok)
+                    return (item.position, outcome)
                 }
             }
-            var collected: [(Int, Bool)] = []
+            var collected: [(Int, WriteOutcome)] = []
             for await result in group {
                 collected.append(result)
             }
@@ -1186,8 +1248,9 @@ class HomeKitManager: NSObject, ObservableObject {
         let valuesByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.value) })
         let reachableByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.reachable) })
         var okCount = 0
-        for (position, ok) in written {
+        for (position, outcome) in written {
             let write = writes[position]
+            let ok = outcome.isConfirmed
             if ok {
                 okCount += 1
                 // A confirmed write is strong evidence the accessory is
@@ -1202,13 +1265,13 @@ class HomeKitManager: NSObject, ObservableObject {
                 characteristicType: write.characteristicType,
                 value: ok ? valuesByPosition[position] : nil,
                 success: ok,
-                // Two different facts, said differently. An unreachable
+                // Three different facts, said differently. An unreachable
                 // accessory is not responding — a sentence about the light. A
-                // reachable one that did not confirm is a sentence about our
-                // timeout, and only that case deserves the number.
-                error: ok ? nil : (wasReachable
-                    ? "Did not confirm the write within \(Int(HomeKitManager.bulkWriteTimeoutSeconds))s."
-                    : "Not responding."),
+                // reachable one that HomeKit refused has a reason, and the
+                // reason is the whole point of asking. Only a reachable one
+                // that went quiet is a sentence about our timeout, and only
+                // that case deserves the number.
+                error: HomeKitManager.bulkWriteError(outcome, wasReachable: wasReachable),
                 unreachable: !wasReachable
             )
         }
