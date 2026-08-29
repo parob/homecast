@@ -749,7 +749,9 @@ class HomeKitManager: NSObject, ObservableObject {
         seconds: Double = HomeKitManager.writeTimeoutSeconds,
         quiet: Bool = false
     ) async -> WriteOutcome {
-        await withTaskGroup(of: WriteOutcome.self, returning: WriteOutcome.self) { group in
+        // The element is optional so the timer arm can say "not me" when it is
+        // woken rather than elapsed, without that answer ending the race.
+        await withTaskGroup(of: Optional<WriteOutcome>.self, returning: WriteOutcome.self) { group in
             group.addTask {
                 do {
                     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -763,19 +765,51 @@ class HomeKitManager: NSObject, ObservableObject {
                             }
                         }
                     }
-                    return .confirmed
+                    return WriteOutcome.confirmed
                 } catch {
-                    return .refused(error)
+                    return WriteOutcome.refused(error)
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                let started = DispatchTime.now()
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                } catch {
+                    // Woken, not elapsed. `cancelAll()` below fires the instant
+                    // the write answers, and a cancelled `Task.sleep` throws
+                    // straight away — so this is the ordinary end of the happy
+                    // path, and the one thing it must not be mistaken for is an
+                    // accessory that went quiet. This arm used to `try?` the
+                    // sleep, which threw that distinction away and let the very
+                    // next line assert a ten-second silence that never happened.
+                    return nil
+                }
+                // Belt and braces: only the clock gets to say a write went
+                // unanswered, so any other early return also leaves the race to
+                // the write rather than inventing a timeout. Monotonic, because
+                // a wall clock stepping backwards would dismiss a real one.
+                // The tolerance is for clock-source skew between `Task.sleep`'s
+                // deadline and `uptimeNanoseconds`, not for slack in the bound:
+                // a sleep that returns without throwing has already waited the
+                // full duration, so this only ever catches an exotic early
+                // return, and must not misfire on a rounding difference.
+                let elapsed = Double(DispatchTime.now().uptimeNanoseconds
+                    - started.uptimeNanoseconds) / 1_000_000_000
+                guard elapsed >= seconds - 0.05 else { return nil }
                 print("[HomeKit] ⏱️ Write timed out after \(seconds)s for '\(serviceName)' — leaving it in flight")
-                return .timedOut(seconds)
+                return WriteOutcome.timedOut(seconds)
             }
-            let first = await group.next() ?? WriteOutcome.timedOut(seconds)
+            // `nil` means "I have nothing to say about this write" — only the
+            // timer arm ever produces it, and it must not end the race.
+            var first: WriteOutcome?
+            while let result = await group.next() {
+                if let result = result {
+                    first = result
+                    break
+                }
+            }
             group.cancelAll()
-            return first
+            return first ?? WriteOutcome.timedOut(seconds)
         }
     }
 
