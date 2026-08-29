@@ -40,7 +40,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             }
             return granted
         } catch {
-            NSLog("[NotificationManager] Permission request failed: %@", error.localizedDescription)
+            Log.error("permission request failed: \(error.localizedDescription)", category: "push")
             return false
         }
     }
@@ -55,8 +55,18 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func checkAuthorizationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         isAuthorized = settings.authorizationStatus == .authorized
+        // Authorised-but-no-token and denied are the same silence from the web
+        // app's side — it only ever sees `getAPNsToken` answer nil. Recording
+        // the status here is what separates them afterwards, and only the
+        // unauthorised case is worth shipping (WARN+ is what LogShipper posts).
         if isAuthorized {
+            Log.info("notifications authorized", category: "push")
             registerForRemoteNotifications()
+        } else {
+            Log.warning(
+                "notifications not authorized (status=\(settings.authorizationStatus.rawValue)) — no APNs token will be minted",
+                category: "push"
+            )
         }
     }
 
@@ -125,13 +135,18 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func didRegisterForRemoteNotifications(deviceToken: Data) {
         let tokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         apnsToken = tokenString
-        NSLog("[NotificationManager] APNs token: %@...", String(tokenString.prefix(16)))
+        Log.info("APNs token minted \(tokenString.prefix(16))…", category: "push")
         // The web app will read this token via the JS bridge and register it with the server
     }
 
     /// Called from AppDelegate when APNs registration fails.
+    ///
+    /// Shipped rather than NSLog'd, because this is the only place the reason
+    /// exists. Without it the failure is invisible off-device: the web app sees
+    /// `getAPNsToken` answer nil, gives up, and the server carries on pushing to
+    /// whatever token was registered last — accepted by APNs, delivered nowhere.
     func didFailToRegisterForRemoteNotifications(error: Error) {
-        NSLog("[NotificationManager] APNs registration failed: %@", error.localizedDescription)
+        Log.error("APNs registration failed: \(error.localizedDescription)", category: "push")
     }
 
     // MARK: - UNUserNotificationCenterDelegate
