@@ -3,9 +3,23 @@
 # Same reason as the TestFlight workflow: the build should not depend on one
 # laptop, and the issue routine has no Android toolchain either. Everything the
 # local scripts/play/release.sh does, done on a runner.
+#
+# Two ways in, same as TestFlight. `workflow_dispatch` for a person with `gh`;
+# `repository_dispatch` for the issue routine, whose GitHub App token has
+# Contents: write but not the Actions: write that `gh workflow run` needs:
+#
+#   gh api repos/parob/homecast/dispatches --input - <<'JSON'
+#   {"event_type":"play","client_payload":{"confirm":"ship","track":"internal","notes":"why"}}
+#   JSON
+#   gh run list --workflow play.yml --event repository_dispatch --limit 1
+#
+# A dispatch event runs on the default branch, so the main-only guard holds for
+# it by construction; `confirm` and `track` are checked the same way either way.
 name: Play
 
 on:
+  repository_dispatch:
+    types: [play]
   workflow_dispatch:
     inputs:
       confirm:
@@ -28,9 +42,14 @@ concurrency:
 
 jobs:
   build:
-    if: github.event.inputs.confirm == 'ship'
+    if: github.event.inputs.confirm == 'ship' || github.event.client_payload.confirm == 'ship'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # `inputs.*` is empty on a repository_dispatch, so every step reads these
+      # rather than the event it happened to arrive on.
+      TRACK: ${{ github.event.inputs.track || github.event.client_payload.track || 'internal' }}
+      NOTES: ${{ github.event.inputs.notes || github.event.client_payload.notes || '' }}
     defaults:
       run:
         working-directory: app-android-windows-linux
@@ -47,10 +66,13 @@ jobs:
             echo "::error::Play builds only ship from main. Got ${{ github.ref }}."
             exit 1
           fi
-          if [ "${{ inputs.track }}" = "production" ]; then
-            echo "::error::This workflow does not ship to production. Upload to a test track, then promote deliberately."
-            exit 1
-          fi
+          case "$TRACK" in
+            internal|alpha|beta) ;;
+            production)
+              echo "::error::This workflow does not ship to production. Upload to a test track, then promote deliberately."
+              exit 1 ;;
+            *) echo "::error::track must be internal, alpha or beta. Got '$TRACK'."; exit 1 ;;
+          esac
 
       - uses: actions/checkout@v4
 
@@ -170,8 +192,8 @@ jobs:
 
       - name: Upload to Play
         env:
-          PLAY_TRACK: ${{ inputs.track }}
-          PLAY_NOTES: ${{ github.event.inputs.notes }}
+          PLAY_TRACK: ${{ env.TRACK }}
+          PLAY_NOTES: ${{ env.NOTES }}
         run: |
           set -euo pipefail
           AAB=src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
@@ -191,7 +213,8 @@ jobs:
             echo "### Play"
             echo
             echo "- version code: \`${{ steps.version_code.outputs.next }}\`"
-            echo "- track: \`${{ inputs.track }}\`"
+            echo "- track: \`${{ env.TRACK }}\`"
             echo "- commit: \`${{ github.sha }}\`"
-            echo "- notes: ${{ github.event.inputs.notes || '_none_' }}"
+            echo "- trigger: ${{ github.event_name }}"
+            echo "- notes: ${{ env.NOTES || '_none_' }}"
           } >> $GITHUB_STEP_SUMMARY

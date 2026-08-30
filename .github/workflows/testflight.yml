@@ -8,9 +8,28 @@
 # or creates the distribution certificate and profile on the runner
 # (-allowProvisioningUpdates), so there is no certificate to export, rotate, or
 # leak into a secret.
+#
+# Two ways in, same job. `workflow_dispatch` is for a person with `gh` (the
+# `workflow` scope). `repository_dispatch` is for the issue routine: it acts
+# through a GitHub App whose token can push branches and open PRs (Contents:
+# write) but cannot start a workflow (Actions: write), so `gh workflow run`
+# answers it with "403 Resource not accessible by integration". Creating a
+# repository dispatch event needs only Contents: write, which it has:
+#
+#   gh api repos/parob/homecast/dispatches --input - <<'JSON'
+#   {"event_type":"testflight","client_payload":{"confirm":"ship","platforms":"ios","notes":"why"}}
+#   JSON
+#   gh run list --workflow testflight.yml --event repository_dispatch --limit 1
+#
+# The API answers 204 with no run id, hence the `run list`. A dispatch event
+# always runs on the default branch, so the main-only guard below holds for it
+# by construction; the payload's `confirm` and `platforms` are checked exactly
+# as the form's are, because a payload can say anything.
 name: TestFlight
 
 on:
+  repository_dispatch:
+    types: [testflight]
   workflow_dispatch:
     inputs:
       confirm:
@@ -33,9 +52,14 @@ concurrency:
 
 jobs:
   build:
-    if: github.event.inputs.confirm == 'ship'
+    if: github.event.inputs.confirm == 'ship' || github.event.client_payload.confirm == 'ship'
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # `inputs.*` is empty on a repository_dispatch, so every step reads these
+      # rather than the event it happened to arrive on.
+      PLATFORMS: ${{ github.event.inputs.platforms || github.event.client_payload.platforms || 'both' }}
+      NOTES: ${{ github.event.inputs.notes || github.event.client_payload.notes || '' }}
 
     steps:
       # Only main ships. The issue routine is allowed to run this, and a build
@@ -48,6 +72,10 @@ jobs:
             echo "::error::TestFlight builds only ship from main. Got ${{ github.ref }}."
             exit 1
           fi
+          case "$PLATFORMS" in
+            both|ios|mac) ;;
+            *) echo "::error::platforms must be both, ios or mac. Got '$PLATFORMS'."; exit 1 ;;
+          esac
 
       - uses: actions/checkout@v4
 
@@ -121,7 +149,7 @@ jobs:
           echo "Highest uploaded build + 1 = $NEXT"
 
       - name: Archive (iOS)
-        if: inputs.platforms != 'mac'
+        if: env.PLATFORMS != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -160,7 +188,7 @@ jobs:
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (iOS)
-        if: inputs.platforms != 'mac'
+        if: env.PLATFORMS != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -177,7 +205,7 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Upload to TestFlight (iOS)
-        if: inputs.platforms != 'mac'
+        if: env.PLATFORMS != 'mac'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -218,7 +246,7 @@ jobs:
       # iOS gets away with it because export re-applies entitlements from the
       # provisioning profile. The Mac package carries its own, so it cannot.
       - name: Archive (Mac Catalyst)
-        if: inputs.platforms != 'ios'
+        if: env.PLATFORMS != 'ios'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -237,7 +265,7 @@ jobs:
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (Mac Catalyst)
-        if: inputs.platforms != 'ios'
+        if: env.PLATFORMS != 'ios'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -254,7 +282,7 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Upload to TestFlight (Mac Catalyst)
-        if: inputs.platforms != 'ios'
+        if: env.PLATFORMS != 'ios'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -291,7 +319,7 @@ jobs:
       # keeps runs serial, so this cannot revoke a certificate another run is
       # still using.
       - name: Revoke the certificate this run created
-        if: always() && inputs.platforms != 'ios'
+        if: always() && env.PLATFORMS != 'ios'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -335,6 +363,7 @@ jobs:
             echo
             echo "- build: \`${{ steps.build_number.outputs.next }}\`"
             echo "- commit: \`${{ github.sha }}\`"
-            echo "- platforms: ${{ inputs.platforms }}"
-            echo "- notes: ${{ github.event.inputs.notes || '_none_' }}"
+            echo "- platforms: ${{ env.PLATFORMS }}"
+            echo "- trigger: ${{ github.event_name }}"
+            echo "- notes: ${{ env.NOTES || '_none_' }}"
           } >> $GITHUB_STEP_SUMMARY
