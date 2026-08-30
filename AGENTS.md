@@ -812,6 +812,25 @@ failed only at the App Store archive. That cost build 57 on 2026-08-26 (`cannot 
 'relayWSBridge' in scope`, after a green run). Both are unsigned compile checks; signing and
 upload stay in `testflight.yml`.
 
+### Triggering a build from a GitHub App token (the issue routine)
+
+`gh workflow run testflight.yml …` needs **Actions: write**. The issue routine acts through a
+GitHub App whose token has **Contents: write** (it pushes branches and opens PRs) but not
+that, so it gets `403 Resource not accessible by integration`. Both `testflight.yml` and
+`play.yml` therefore also listen for `repository_dispatch`, which needs only Contents: write:
+
+```bash
+gh api repos/parob/homecast/dispatches --input - <<'JSON'
+{"event_type":"testflight","client_payload":{"confirm":"ship","platforms":"ios","notes":"why"}}
+JSON
+gh run list --workflow testflight.yml --repo parob/homecast --event repository_dispatch --limit 1
+```
+
+Android is `"event_type":"play"` with `{"confirm":"ship","track":"internal","notes":"…"}`. The
+API answers 204 with no run id — find the run with `gh run list`, then `gh run watch`. A
+dispatch event runs on the default branch, so the main-only guard holds by construction;
+`confirm` and `platforms`/`track` are validated the same way the form's `choice` inputs are.
+
 ### Android (Play)
 
 ```bash
