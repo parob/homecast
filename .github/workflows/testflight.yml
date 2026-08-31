@@ -9,25 +9,52 @@
 # (-allowProvisioningUpdates), so there is no certificate to export, rotate, or
 # leak into a secret.
 #
-# Two ways in, same job. `workflow_dispatch` is for a person with `gh` (the
-# `workflow` scope). `repository_dispatch` is for the issue routine: it acts
-# through a GitHub App whose token can push branches and open PRs (Contents:
-# write) but cannot start a workflow (Actions: write), so `gh workflow run`
-# answers it with "403 Resource not accessible by integration". Creating a
-# repository dispatch event needs only Contents: write, which it has:
+# Three ways in, same job, all funnelled through the `gate` job below.
 #
-#   gh api repos/parob/homecast/dispatches --input - <<'JSON'
-#   {"event_type":"testflight","client_payload":{"confirm":"ship","platforms":"ios","notes":"why"}}
-#   JSON
-#   gh run list --workflow testflight.yml --event repository_dispatch --limit 1
+#   1. `workflow_dispatch` — a person with `gh` and the `workflow` scope.
+#   2. `push` to main touching `.github/ship/testflight.json` — the ship file.
+#      This is the one the issue routine can actually reach. See below.
+#   3. `repository_dispatch` — kept for anything holding a token that can POST
+#      to /dispatches. The issue routine CANNOT: see below.
 #
-# The API answers 204 with no run id, hence the `run list`. A dispatch event
-# always runs on the default branch, so the main-only guard below holds for it
-# by construction; the payload's `confirm` and `platforms` are checked exactly
-# as the form's are, because a payload can say anything.
+# Why the ship file exists. The routine acts through a GitHub App token with
+# Contents: write but not Actions: write, so `gh workflow run` answers
+# "403 Resource not accessible by integration". `repository_dispatch` was added
+# for it on the theory that creating a dispatch event needs only Contents:
+# write — true of the token, and beside the point: the routine has no route to
+# api.github.com at all. Every call it makes goes through the GitHub MCP
+# server, which exposes no repository-dispatch tool, and a direct request is
+# refused before it reaches GitHub:
+#
+#   $ curl https://api.github.com/repos/parob/homecast
+#   403 {"message":"GitHub access is not enabled for this session."}
+#
+# So neither dispatch trigger is reachable, whatever the token holds. The only
+# write primitive the routine actually has is a git push. Hence a trigger a
+# push can pull: it opens a PR that edits the ship file, and merging that PR
+# starts the build.
+#
+# ⚠️  Merging a PR that touches .github/ship/testflight.json ships a build to
+#     TestFlight. That is the whole point of the file, but it means the file is
+#     not somewhere to leave half-finished edits.
+#
+# The human stays in the loop by construction: the routine can only *request* a
+# ship, and a merge is what grants it. Deliberately not a `ship/**` branch
+# trigger, which would need no merge — GitHub runs the workflow file from the
+# ref that triggered it, so a pushed branch would control the workflow that
+# uploads to Apple, and unreviewed code could ship. Trigger on main and the
+# workflow is always main's reviewed copy.
+#
+# A dispatch event always runs on the default branch, so the main-only guard
+# holds for it by construction; `confirm` and `platforms` are validated the
+# same way whichever door they arrive through, because a payload — or a file on
+# a branch — can say anything.
 name: TestFlight
 
 on:
+  push:
+    branches: [main]
+    paths: ['.github/ship/testflight.json']
   repository_dispatch:
     types: [testflight]
   workflow_dispatch:
@@ -51,15 +78,108 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Work out whether to ship, and on what, before booking a macOS runner.
+  #
+  # The three doors carry their arguments in three different places — form
+  # inputs, a dispatch payload, a file in the tree — and `inputs.*` is empty on
+  # everything but the form. One cheap Linux job reads whichever applies and
+  # hands the build a single answer, so no step below has to know which door it
+  # came through.
+  #
+  # Everything read here is untrusted: a payload can say anything, and so can a
+  # file on a branch someone opened a PR from. `confirm` and `platforms` are
+  # validated the same way in every case, and values reach the script as env
+  # vars rather than `${{ }}` interpolation — `notes` is free text, and
+  # interpolating it into a shell script would run whatever it contained.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+      platforms: ${{ steps.decide.outputs.platforms }}
+      notes: ${{ steps.decide.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether this is a ship
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_CONFIRM: ${{ github.event.inputs.confirm }}
+          IN_PLATFORMS: ${{ github.event.inputs.platforms }}
+          IN_NOTES: ${{ github.event.inputs.notes }}
+          CP_CONFIRM: ${{ github.event.client_payload.confirm }}
+          CP_PLATFORMS: ${{ github.event.client_payload.platforms }}
+          CP_NOTES: ${{ github.event.client_payload.notes }}
+        run: |
+          set -euo pipefail
+          SHIP_FILE=.github/ship/testflight.json
+
+          case "$EVENT" in
+            workflow_dispatch)
+              CONFIRM="${IN_CONFIRM:-}"
+              PLATFORMS="${IN_PLATFORMS:-both}"
+              NOTES="${IN_NOTES:-}"
+              ;;
+            repository_dispatch)
+              CONFIRM="${CP_CONFIRM:-}"
+              PLATFORMS="${CP_PLATFORMS:-both}"
+              NOTES="${CP_NOTES:-}"
+              ;;
+            push)
+              if [ ! -f "$SHIP_FILE" ]; then
+                echo "::notice::$SHIP_FILE is gone — nothing to ship."
+                echo "go=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # `// empty` so a null or absent key reads as "", not "null".
+              CONFIRM=$(jq -r '.confirm // empty' "$SHIP_FILE")
+              PLATFORMS=$(jq -r '.platforms // "both"' "$SHIP_FILE")
+              NOTES=$(jq -r '.notes // empty' "$SHIP_FILE")
+              ;;
+            *)
+              echo "::error::Unexpected event '$EVENT'."
+              exit 1
+              ;;
+          esac
+
+          # Not a ship is a clean no-op, not a failure: the ship file lives in
+          # the tree permanently, and setting confirm to anything else is how it
+          # is disarmed. Editing it for any other reason must not go red.
+          if [ "$CONFIRM" != "ship" ]; then
+            echo "::notice::confirm is '$CONFIRM', not 'ship' — not building."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A typo here, though, is loud. Someone asked for a ship and would
+          # otherwise be left waiting on a build that silently never ran.
+          case "$PLATFORMS" in
+            both|ios|mac) ;;
+            *) echo "::error::platforms must be both, ios or mac. Got '$PLATFORMS'."; exit 1 ;;
+          esac
+
+          # Flattened: a newline would end the value early and the rest would be
+          # read as further output lines.
+          NOTES=$(printf '%s' "$NOTES" | tr '\n\r' '  ')
+
+          {
+            echo "go=true"
+            echo "platforms=$PLATFORMS"
+            echo "notes=$NOTES"
+          } >> "$GITHUB_OUTPUT"
+          echo "Shipping $PLATFORMS (via $EVENT)."
+
   build:
-    if: github.event.inputs.confirm == 'ship' || github.event.client_payload.confirm == 'ship'
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      # `inputs.*` is empty on a repository_dispatch, so every step reads these
-      # rather than the event it happened to arrive on.
-      PLATFORMS: ${{ github.event.inputs.platforms || github.event.client_payload.platforms || 'both' }}
-      NOTES: ${{ github.event.inputs.notes || github.event.client_payload.notes || '' }}
+      # Whichever door this arrived through, `gate` has already resolved and
+      # validated both of these.
+      PLATFORMS: ${{ needs.gate.outputs.platforms }}
+      NOTES: ${{ needs.gate.outputs.notes }}
 
     steps:
       # Only main ships. The issue routine is allowed to run this, and a build
@@ -67,15 +187,13 @@ jobs:
       # merged — not a branch the routine opened five minutes ago. Checked here
       # rather than trusted, because workflow_dispatch takes any ref.
       - name: Refuse to ship anything but main
+        env:
+          REF: ${{ github.ref }}
         run: |
-          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            echo "::error::TestFlight builds only ship from main. Got ${{ github.ref }}."
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::TestFlight builds only ship from main. Got $REF."
             exit 1
           fi
-          case "$PLATFORMS" in
-            both|ios|mac) ;;
-            *) echo "::error::platforms must be both, ios or mac. Got '$PLATFORMS'."; exit 1 ;;
-          esac
 
       - uses: actions/checkout@v4
 
@@ -358,12 +476,14 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          # $NOTES, not ${{ env.NOTES }}: it is free text from a form, a payload
+          # or a file, and interpolating it into the script would run it.
           {
             echo "### TestFlight"
             echo
             echo "- build: \`${{ steps.build_number.outputs.next }}\`"
             echo "- commit: \`${{ github.sha }}\`"
-            echo "- platforms: ${{ env.PLATFORMS }}"
+            echo "- platforms: $PLATFORMS"
             echo "- trigger: ${{ github.event_name }}"
-            echo "- notes: ${{ env.NOTES || '_none_' }}"
+            echo "- notes: ${NOTES:-_none_}"
           } >> $GITHUB_STEP_SUMMARY
