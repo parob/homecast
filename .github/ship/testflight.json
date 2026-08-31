@@ -1,0 +1,7 @@
+{
+  "confirm": "ship",
+  "platforms": "both",
+  "notes": "write-path fixes f52aabc + da622d2, Mac included (refs #28, #31, parob/homecast-cloud#44)",
+  "requested_at": "2026-08-31T00:00:00Z",
+  "requested_by": "issue routine"
+}

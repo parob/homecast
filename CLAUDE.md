@@ -814,22 +814,46 @@ upload stay in `testflight.yml`.
 
 ### Triggering a build from a GitHub App token (the issue routine)
 
-`gh workflow run testflight.yml …` needs **Actions: write**. The issue routine acts through a
-GitHub App whose token has **Contents: write** (it pushes branches and opens PRs) but not
-that, so it gets `403 Resource not accessible by integration`. Both `testflight.yml` and
-`play.yml` therefore also listen for `repository_dispatch`, which needs only Contents: write:
+**The routine ships a build by editing a file, because it cannot call an API.**
 
-```bash
-gh api repos/parob/homecast/dispatches --input - <<'JSON'
-{"event_type":"testflight","client_payload":{"confirm":"ship","platforms":"ios","notes":"why"}}
-JSON
-gh run list --workflow testflight.yml --repo parob/homecast --event repository_dispatch --limit 1
+`gh workflow run testflight.yml …` needs **Actions: write**. The routine acts through a
+GitHub App whose token has **Contents: write** (it pushes branches and opens PRs) but not
+that, so it gets `403 Resource not accessible by integration`.
+
+`repository_dispatch` was added to work around that, on the theory that creating a dispatch
+event needs only Contents: write. That is true of the token and **beside the point** — the
+routine has no route to `api.github.com` at all. Every call it makes goes through the GitHub
+MCP server, which exposes no repository-dispatch tool, and a direct request never reaches
+GitHub:
+
+```
+$ curl https://api.github.com/repos/parob/homecast
+403 {"message":"GitHub access is not enabled for this session."}
 ```
 
-Android is `"event_type":"play"` with `{"confirm":"ship","track":"internal","notes":"…"}`. The
-API answers 204 with no run id — find the run with `gh run list`, then `gh run watch`. A
-dispatch event runs on the default branch, so the main-only guard holds by construction;
-`confirm` and `platforms`/`track` are validated the same way the form's `choice` inputs are.
+So **neither dispatch trigger is reachable, whatever the token holds**. Don't reach for
+`repository_dispatch` from a routine and expect it to work; it is kept only for a caller that
+really can POST. The one write primitive the routine has is a **git push**, so `testflight.yml`
+also triggers on a push to `main` touching `.github/ship/testflight.json`:
+
+```json
+{"confirm": "ship", "platforms": "both", "notes": "why", "requested_at": "2026-08-31T00:00:00Z"}
+```
+
+The routine opens a PR editing that file; **merging the PR starts the build**. A human still
+grants every ship — the routine can only ask. `requested_at` is what makes two identical ships
+two distinct pushes. Set `confirm` to anything but `ship` to disarm the file without deleting
+it: that is a clean no-op, not a failed run. See `.github/ship/README.md`.
+
+Deliberately **not** a `ship/**` branch trigger, which would need no merge: GitHub runs the
+workflow file from the ref that triggered it, so a pushed branch would control the workflow
+that uploads to Apple. Triggering on `main` means the workflow is always main's reviewed copy.
+
+All three doors are validated identically by the `gate` job, which resolves `confirm`,
+`platforms` and `notes` from whichever place they arrived in and hands `build` one answer.
+
+**Android has no ship file yet.** `play.yml` still listens only for the two dispatch triggers,
+so the routine cannot start it either; mirror this pattern when an Android build is blocked.
 
 ### Android (Play)
 
