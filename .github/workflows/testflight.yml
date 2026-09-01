@@ -274,22 +274,24 @@ jobs:
         working-directory: app-ios-macos
         run: |
           set -euo pipefail
-          # Archived UNSIGNED, signed at export.
+          # Archived SIGNED, like the Mac lane — because the entitlements ride
+          # in the signature, and an unsigned archive has none to keep.
           #
-          # A signed archive wants a *development* certificate — that is what
-          # Xcode picks for the build step under automatic signing, and it is
-          # what a laptop already has sitting in its keychain. A fresh runner
-          # has none, so Xcode tries to create one and hits Apple's per-account
-          # certificate cap:
+          # This step used to pass CODE_SIGNING_ALLOWED=NO on the theory that
+          # export is where the one signing that matters happens. The upload
+          # even succeeds that way. But -exportArchive re-signs with only the
+          # defaults it can derive from the provisioning profile
+          # (application-identifier, team, get-task-allow, beta-reports-active)
+          # — NOT capability entitlements like aps-environment. Every IPA built
+          # that way shipped without the push entitlement, and iOS said so only
+          # on the device itself, at registration time:
           #
-          #   error: Your account has reached the maximum number of
-          #   certificates. To create a new one, you must choose one to revoke.
+          #   APNs registration failed: no valid "aps-environment" entitlement
+          #   string found for application
           #
-          # Nothing about an App Store build needs that certificate. Export is
-          # where distribution signing actually happens, so skip it here and let
-          # the export step below do the one signing that matters. It also means
-          # this workflow never adds a certificate to the account, however many
-          # times it runs.
+          # (build 58, homecast-cloud#41.) The signed archive costs a runner
+          # development certificate, which is why the revoke step below runs
+          # for iOS builds too.
           #
           # CURRENT_PROJECT_VERSION is passed as a build setting rather than
           # committed. It applies to every target at once, which is what the
@@ -300,9 +302,10 @@ jobs:
             -scheme Homecast \
             -destination 'generic/platform=iOS' \
             -archivePath build/Homecast-ios.xcarchive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.next }}
 
       - name: Export (iOS)
@@ -321,6 +324,25 @@ jobs:
             -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Refuse an IPA without the push entitlement
+        if: env.PLATFORMS != 'mac'
+        working-directory: app-ios-macos
+        run: |
+          set -euo pipefail
+          # The failure mode this guards is silent everywhere else: the upload
+          # is accepted, TestFlight installs it, and the only symptom is a
+          # device-side log line at APNs registration. Check the artifact here,
+          # where it can still stop the ship.
+          rm -rf "$RUNNER_TEMP/ipa" && mkdir -p "$RUNNER_TEMP/ipa"
+          unzip -q build/export-ios/Homecast.ipa -d "$RUNNER_TEMP/ipa"
+          APP=$(ls -d "$RUNNER_TEMP"/ipa/Payload/*.app | head -1)
+          if ! codesign -d --entitlements - "$APP" 2>/dev/null | grep -q "aps-environment"; then
+            echo "::error::Exported IPA carries no aps-environment entitlement — push would be dead on this build (see homecast-cloud#41). Refusing to upload."
+            codesign -d --entitlements - "$APP" || true
+            exit 1
+          fi
+          echo "aps-environment present in $APP"
 
       - name: Upload to TestFlight (iOS)
         if: env.PLATFORMS != 'mac'
@@ -432,12 +454,14 @@ jobs:
       # workflow could sign anything at all. Left alone it would refill the cap
       # in about ten builds and break itself again.
       #
+      # Runs for every platform choice now that the iOS archive signs too.
+      #
       # Only ever the API-created ones: a human's certificate is named after
       # them, and revoking that would break their laptop. `concurrency` above
       # keeps runs serial, so this cannot revoke a certificate another run is
       # still using.
       - name: Revoke the certificate this run created
-        if: always() && env.PLATFORMS != 'ios'
+        if: always()
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
