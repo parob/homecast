@@ -855,6 +855,25 @@ All three doors are validated identically by the `gate` job, which resolves `con
 **Android has no ship file yet.** `play.yml` still listens only for the two dispatch triggers,
 so the routine cannot start it either; mirror this pattern when an Android build is blocked.
 
+### Why CI does not create a certificate per build
+
+Automatic signing on an empty keychain makes Xcode mint a **new Development certificate via
+the ASC API for every build** — that is how the account once hit Apple's certificate cap
+(eleven, ten of them `Created via API`). The cleanup that followed then emailed the account
+holder *"null null has revoked your certificate"* after every run; "null null" is Apple's
+template failing to name an API key.
+
+So `testflight.yml` restores a **CI-only Development certificate** into a temporary keychain
+before archiving (`IOS_SIGNING_CERT_P12` + `IOS_SIGNING_CERT_PASSWORD`). A certificate already
+in the keychain is reused rather than replaced, so nothing is created and nothing needs
+revoking. It signs the **archive** only; the uploaded build is re-signed at export with the
+cloud-managed distribution certificate Apple holds.
+
+**It expires 2027-09-02.** To reissue: generate a key and CSR, `POST /v1/certificates` with
+`certificateType: DEVELOPMENT`, build a `.p12` from the key plus the returned certificate and
+the WWDR G3 intermediate, then replace both secrets. Revoke the old one afterwards — it is
+separate from any laptop identity, which is the point of it being CI-only.
+
 ### Android (Play)
 
 ```bash

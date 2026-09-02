@@ -223,6 +223,65 @@ jobs:
           sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           xcodebuild -version
 
+      # Give the runner a development certificate to reuse.
+      #
+      # Without this, automatic signing finds an empty keychain and Xcode
+      # creates a NEW development certificate through the App Store Connect
+      # API for every build. That is how the account once reached Apple's
+      # certificate cap (eleven, ten of them "Created via API"), and the
+      # cleanup that used to follow every build emailed the account holder
+      # "null null has revoked your certificate" every single time — "null
+      # null" being Apple's template failing to name an API key.
+      #
+      # A certificate already in the keychain is simply reused: verified by
+      # running this exact archive on a Mac that has one, which signed with
+      # the existing identity, embedded the entitlements, and created nothing.
+      #
+      # This is a CI-only Development certificate, separate from anyone's
+      # laptop identity, so it can be revoked on its own if it ever leaks.
+      # When it expires, issue a new one and replace both secrets; nothing
+      # else changes. It signs the archive only — the uploaded build is
+      # re-signed at export with the cloud-managed distribution certificate,
+      # which Apple holds and which never touches this keychain.
+      - name: Restore the signing certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.IOS_SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.IOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERT_P12_BASE64:-}" ]; then
+            echo "::error::IOS_SIGNING_CERT_P12 is not set. Without it Xcode mints a throwaway certificate per build; see this step's comment."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          # Ephemeral, and the runner is destroyed after the job, so this
+          # password protects nothing beyond this process.
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign blocks on a GUI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Prepend rather than replace: the login keychain still holds what
+          # the runner image ships with.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          echo "Identities available to codesign:"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Apple Development"; then
+            echo "::error::No Apple Development identity after import — Xcode would create one and the emails would resume."
+            exit 1
+          fi
+
       - name: Write the App Store Connect key
         env:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
@@ -454,49 +513,6 @@ jobs:
       # workflow could sign anything at all. Left alone it would refill the cap
       # in about ten builds and break itself again.
       #
-      # Runs for every platform choice now that the iOS archive signs too.
-      #
-      # Only ever the API-created ones: a human's certificate is named after
-      # them, and revoking that would break their laptop. `concurrency` above
-      # keeps runs serial, so this cannot revoke a certificate another run is
-      # still using.
-      - name: Revoke the certificate this run created
-        if: always()
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/ascvenv/bin/python" - <<'PY'
-          import json, os, time, urllib.request, urllib.error, jwt
-          kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
-          key = open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
-
-          def token():
-              now = int(time.time())
-              return jwt.encode({"iss": iss, "iat": now, "exp": now + 900,
-                                 "aud": "appstoreconnect-v1"}, key,
-                                algorithm="ES256", headers={"kid": kid, "typ": "JWT"})
-
-          req = urllib.request.Request(
-              "https://api.appstoreconnect.apple.com/v1/certificates?limit=200",
-              headers={"Authorization": f"Bearer {token()}"})
-          certs = json.load(urllib.request.urlopen(req))["data"]
-          doomed = [c for c in certs
-                    if c["attributes"]["certificateType"] == "DEVELOPMENT"
-                    and c["attributes"].get("displayName") == "Created via API"]
-          for c in doomed:
-              r = urllib.request.Request(
-                  f"https://api.appstoreconnect.apple.com/v1/certificates/{c['id']}",
-                  headers={"Authorization": f"Bearer {token()}"}, method="DELETE")
-              try:
-                  urllib.request.urlopen(r)
-                  print(f"revoked {c['id']}")
-              except urllib.error.HTTPError as e:
-                  print(f"could not revoke {c['id']}: {e.code}")
-          print(f"{len(doomed)} API-created development certificate(s) revoked")
-          PY
-
       - name: Summary
         if: always()
         run: |
