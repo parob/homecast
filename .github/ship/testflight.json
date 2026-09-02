@@ -1,7 +1,7 @@
 {
   "confirm": "ship",
-  "platforms": "both",
-  "notes": "write-path fixes f52aabc + da622d2, Mac included (refs #28, #31, parob/homecast-cloud#44)",
-  "requested_at": "2026-08-31T00:00:00Z",
+  "platforms": "ios",
+  "notes": "first iOS build carrying feec9aa — signed archive, so aps-environment survives to the IPA (fixes push registration, refs parob/homecast-cloud#41)",
+  "requested_at": "2026-09-01T12:00:00Z",
   "requested_by": "issue routine"
 }
