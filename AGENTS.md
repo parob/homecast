@@ -709,8 +709,26 @@ to have been an automatic one. To ship or roll back by hand:
 
 **Critical:** Changes to relay code (`src/relay/local-handler.ts`, `src/server/`) affect the Mac app's WKWebView behavior. In cloud mode, the Mac app loads this code from `homecast.cloud`, NOT from the local bundle — so a merge to main changes relay behaviour in production. Rebuilding the Mac app alone is NOT sufficient for cloud mode; conversely, a running relay keeps its old bundle until the app **restarts**.
 
-**The server does not follow.** It is still promoted by hand, so a web change that needs
-new API surface must not be merged until the server carrying it is in production.
+**The server now follows too, but not at the same speed.** A merge to `homecast-cloud`
+main ships the server to production on its own — gated on Server Tests passing and on
+staging carrying and serving that exact commit — so there is no promotion step there
+either. It is simply *slower* than the web: a Cloud Build, a staging rollout, health
+checks, then a second rollout, against the web's build-and-release.
+
+So the ordering rule survives automation: **a web change that needs new API surface must
+not be merged until the server carrying it is in production** — merged is not deployed.
+Check before merging the web half:
+
+```bash
+curl -s https://api.homecast.cloud/ -H 'Content-Type: application/json' \
+  -d '{"query":"{ __type(name:\"HistorySeriesData\"){fields{name}} }"}'
+```
+
+Better still, gate the web half so it degrades when the field is missing; that is the
+only version that survives both halves being merged together. On 2026-09-05 they were
+merged 23 seconds apart, the web won the race, and `GetHistory` failed validation —
+every history chart and the whole Analytics surface went empty for cloud users until
+the server landed.
 
 ### Verify deployment
 
