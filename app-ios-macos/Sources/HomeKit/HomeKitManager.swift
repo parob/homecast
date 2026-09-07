@@ -1177,8 +1177,49 @@ class HomeKitManager: NSObject, ObservableObject {
     ///
     /// Never throws. A batch reports per entry, because the entire point is to
     /// tell the caller which accessories moved and which did not.
-    func setCharacteristics(_ writes: [BulkWrite]) async -> [BulkWriteResult] {
-        guard !writes.isEmpty else { return [] }
+    /// Where a bulk write's time actually went.
+    ///
+    /// `characteristics.set` on a large home has been seen to outrun the relay's
+    /// 15s JS ceiling even though this function's own bound is 10s and every
+    /// timer in the batch starts together (parob/homecast#36). One of those two
+    /// statements is wrong on a batch of ~130, and the three phases below are
+    /// what tell them apart: resolution runs on the main actor before the batch
+    /// is even claimed, the dispatch is the writes themselves, and the results
+    /// pass hops back onto the main actor while it is also serving a WKWebView.
+    ///
+    /// Reported rather than merely printed, because a `print` only ever reaches
+    /// the Mac's stdout and this question has to be answerable from a report.
+    struct BulkWriteTiming {
+        let resolveMs: Int
+        let dispatchMs: Int
+        let resultsMs: Int
+        let totalMs: Int
+        let resolved: Int
+        let requested: Int
+
+        var asDictionary: [String: Any] {
+            [
+                "resolveMs": resolveMs, "dispatchMs": dispatchMs,
+                "resultsMs": resultsMs, "totalMs": totalMs,
+                "resolved": resolved, "requested": requested,
+            ]
+        }
+    }
+
+    func setCharacteristics(
+        _ writes: [BulkWrite]
+    ) async -> (results: [BulkWriteResult], timing: BulkWriteTiming) {
+        let startedAt = DispatchTime.now()
+        func msSince(_ mark: DispatchTime) -> Int {
+            Int((DispatchTime.now().uptimeNanoseconds &- mark.uptimeNanoseconds) / 1_000_000)
+        }
+
+        guard !writes.isEmpty else {
+            return ([], BulkWriteTiming(
+                resolveMs: 0, dispatchMs: 0, resultsMs: 0, totalMs: 0,
+                resolved: 0, requested: 0
+            ))
+        }
 
         // One index for the whole batch, built once rather than rescanned per
         // write. This is the change that keeps a large press off the main
@@ -1241,7 +1282,9 @@ class HomeKitManager: NSObject, ObservableObject {
             }
         }
 
-        print("[HomeKit] 📝 setCharacteristics: \(resolved.count) resolved of \(writes.count), writing as one batch")
+        let resolveMs = msSince(startedAt)
+        print("[HomeKit] 📝 setCharacteristics: \(resolved.count) resolved of \(writes.count) in \(resolveMs)ms, writing as one batch")
+        let dispatchMark = DispatchTime.now()
 
         // Claimed around the dispatch itself, not the resolution: the reads we
         // are keeping out of the way only matter once the writes are travelling.
@@ -1266,6 +1309,9 @@ class HomeKitManager: NSObject, ObservableObject {
             }
             return collected
         }
+
+        let dispatchMs = msSince(dispatchMark)
+        let resultsMark = DispatchTime.now()
 
         let valuesByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.value) })
         let reachableByPosition = Dictionary(uniqueKeysWithValues: resolved.map { ($0.position, $0.reachable) })
@@ -1297,12 +1343,21 @@ class HomeKitManager: NSObject, ObservableObject {
                 unreachable: !wasReachable
             )
         }
-        print("[HomeKit] 📝 setCharacteristics: \(okCount)/\(writes.count) confirmed")
+        let timing = BulkWriteTiming(
+            resolveMs: resolveMs,
+            dispatchMs: dispatchMs,
+            resultsMs: msSince(resultsMark),
+            totalMs: msSince(startedAt),
+            resolved: resolved.count,
+            requested: writes.count
+        )
+        print("[HomeKit] 📝 setCharacteristics: \(okCount)/\(writes.count) confirmed in \(timing.totalMs)ms "
+            + "(resolve \(timing.resolveMs)ms, dispatch \(timing.dispatchMs)ms, results \(timing.resultsMs)ms)")
 
         // Defensive rather than force-unwrapped: every position is filled above,
         // but a batch that quietly returned fewer results than it was asked for
         // would be a very bad thing to discover downstream.
-        return results.enumerated().map { position, result in
+        let filled = results.enumerated().map { position, result in
             result ?? BulkWriteResult(
                 accessoryId: writes[position].accessoryId,
                 characteristicType: writes[position].characteristicType,
@@ -1312,6 +1367,7 @@ class HomeKitManager: NSObject, ObservableObject {
                 unreachable: false
             )
         }
+        return (filled, timing)
     }
 
     // MARK: - Scene Operations

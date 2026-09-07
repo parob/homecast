@@ -786,7 +786,7 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             ))
         }
 
-        let results = await homeKitManager.setCharacteristics(requests)
+        let (results, timing) = await homeKitManager.setCharacteristics(requests)
         var changes: [[String: Any]] = results.map { result in
             var entry: [String: Any] = [
                 "accessoryId": result.accessoryId,
@@ -806,6 +806,11 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             "ok": ok,
             "total": writes.count,
             "changes": changes,
+            // Where the time went, so a slow batch can be diagnosed from a
+            // report instead of from someone's Mac. The JS bridge records a
+            // call's response into the relay activity buffer, so this is
+            // readable remotely via `debug.getActivity`. See homecast#36.
+            "_timing": timing.asDictionary,
         ]
     }
 
