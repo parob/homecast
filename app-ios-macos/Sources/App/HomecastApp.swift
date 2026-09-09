@@ -1322,6 +1322,12 @@ struct WebViewContainer: UIViewRepresentable {
 
         // Set platform detection flags and HomeKit bridge for the web app
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        // CFBundleVersion is the number App Store Connect and TestFlight number
+        // a build by — the one "which build are you on?" is actually asking
+        // for. BuildInfo.gitHash says which commit that build was cut from,
+        // which is a different question; the web app printed the hash in the
+        // build number's place for want of anything else.
+        let appBuildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
         let appBuild = BuildInfo.gitHash
         // Host metadata for the cloud relay handshake — JS can't read any of
         // this itself. The relay sends it as WebSocket query params so the
@@ -1469,6 +1475,7 @@ struct WebViewContainer: UIViewRepresentable {
         // Both flags are true here; on iPhone only the second one is.
         window.isHomeKitLocalCapable = true;
         window.homecastAppVersion = "\(appVersion)";
+        window.homecastAppBuildNumber = "\(appBuildNumber)";
         window.homecastAppBuild = "\(appBuild)";
         window.homecastOSVersion = "\(osVersion)";
         window.homecastDeviceModel = "\(deviceModel)";
@@ -1518,6 +1525,7 @@ struct WebViewContainer: UIViewRepresentable {
         // HomeKit, which is a different and smaller claim.
         window.isHomeKitLocalCapable = true;
         window.homecastAppVersion = "\(appVersion)";
+        window.homecastAppBuildNumber = "\(appBuildNumber)";
         window.homecastAppBuild = "\(appBuild)";
         window.homecastOSVersion = "\(osVersion)";
         window.homecastDeviceModel = "\(deviceModel)";
