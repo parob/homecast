@@ -1,7 +1,7 @@
 {
   "confirm": "ship",
-  "platforms": "ios",
-  "notes": "first iOS build carrying feec9aa — signed archive, so aps-environment survives to the IPA (fixes push registration, refs parob/homecast-cloud#41)",
-  "requested_at": "2026-09-01T12:00:00Z",
+  "platforms": "both",
+  "notes": "first build carrying fbc229a — window.homecastAppBuildNumber (CFBundleVersion), so the ⋮ menu and Settings → Account can show the store build number (refs parob/homecast-cloud#108)",
+  "requested_at": "2026-09-09T13:56:06Z",
   "requested_by": "issue routine"
 }
