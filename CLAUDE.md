@@ -269,7 +269,10 @@ Messages use this JSON format:
 | `app-web/src/server/local-mode.ts` | Local Mode policy — pure, unit-tested (when to serve HomeKit from this device) |
 | `app-web/src/server/local-mode-controller.ts` | Local Mode runtime: tick, write publisher, observation keep-alive |
 | `app-web/src/server/local-identity.ts` | This device's live HomeKit UUIDs ↔ the account's stable hc_ids |
-| `app-web/src/components/layout/LocalModeBadge.tsx` | The "Local Mode" badge (left of the search icon) |
+| `app-web/src/components/layout/StatusBadge.tsx` | The one status dot (right of the title). Its popover is the answer card — verdict, why, the chain only when a hop is not green, at most one action, two rows |
+| `app-web/src/lib/answer-card.ts` | What the popover says — pure, unit-tested, and pinned to agree with the dot's colour across the whole state matrix |
+| `app-web/src/lib/status-badge.ts` | What the dot says — the ranking of link quality against the home's `serving` fact (pure) |
+| `app-web/src/lib/connection-chain.ts` | The drawing: four nodes, three hops, which is painted which colour from which fact (pure) |
 | `app-web/src/pages/MQTTBrowser.tsx` | MQTT browser page (`/mqtt` and `mqtt.homecast.cloud`; `?mock=1` dev mode) |
 | `app-web/src/pages/mqtt-browser/widget-adapter.ts` | MQTT payload ↔ synthetic HomeKitAccessory (drives the real widgets in the browser) |
 | `app-web/src/pages/mqtt-browser/topic-tree.ts` | Pure home/room/group tree builder + slug→topic resolution (unit-tested) |
@@ -649,7 +652,7 @@ it directly. Targets iPhone/iPad and **non-relay** Macs; the relay Mac never use
 
 | Flag | Means | Set on |
 |------|-------|--------|
-| `window.isHomeKitRelayCapable` | "can **be** the relay" — drives relay claim, relay duties, `RelayStatusBadge`, the Settings relay pane, the `mac_` device-id prefix | Mac only |
+| `window.isHomeKitRelayCapable` | "can **be** the relay" — drives relay claim, relay duties, the `This Mac` row in the status popover, the Settings relay pane, the `mac_` device-id prefix | Mac only |
 | `window.isHomeKitLocalCapable` | "can serve **its own** HomeKit" | Mac **and** iOS |
 
 Setting the first on an iPhone would make phones claim relay duty and suppress genuine
