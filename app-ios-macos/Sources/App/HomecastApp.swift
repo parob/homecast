@@ -2621,11 +2621,6 @@ struct WebViewContainer: UIViewRepresentable {
             case "authSuccess":
                 print("[WebView] User authenticated")
 
-            // Both native-header cases end in a bare `break` that is OUTSIDE the
-            // `#if`, and it is not decoration: on Mac Catalyst the guarded body
-            // compiles to nothing, and a `case` with no executable statement is
-            // a hard Swift error rather than a warning. The web app sends these
-            // from any platform, so the cases have to exist on both.
             case "header.setState":
                 // The page publishing what the native bar should draw. Silently
                 // ignored on Mac and on a build with the preview off — the web
@@ -2635,7 +2630,6 @@ struct WebViewContainer: UIViewRepresentable {
                 #if os(iOS) && !targetEnvironment(macCatalyst)
                 nativeHeader?.merge(body)
                 #endif
-                break
 
             case "settings.setNativeHeaderPreview":
                 // Settings → Account → Developer Mode → Native header (preview).
@@ -2647,7 +2641,6 @@ struct WebViewContainer: UIViewRepresentable {
                     syncNativeHeader(on: webView)
                 }
                 #endif
-                break
             case "forgetRelay":
                 // "Change host". The web app cannot do this by clearing
                 // localStorage: on iOS the address is injected from
