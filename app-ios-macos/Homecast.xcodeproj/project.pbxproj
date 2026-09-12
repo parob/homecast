@@ -15,6 +15,7 @@
 		A1000001A /* HomecastApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001F /* HomecastApp.swift */; };
 		A1000002A /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002F /* AppDelegate.swift */; };
 		A1000003A /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000003F /* ConnectionManager.swift */; };
+		B3000001A /* NativeHeaderBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3000001F /* NativeHeaderBar.swift */; };
 		A1000004A /* HomeKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004F /* HomeKitManager.swift */; };
 		A1000005A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000005F /* Models.swift */; };
 		A1000006A /* CharacteristicMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000006F /* CharacteristicMapper.swift */; };
@@ -112,6 +113,7 @@
 		A1000001F /* HomecastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomecastApp.swift; sourceTree = "<group>"; };
 		A1000002F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000003F /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
+		B3000001F /* NativeHeaderBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHeaderBar.swift; sourceTree = "<group>"; };
 		A1000004F /* HomeKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitManager.swift; sourceTree = "<group>"; };
 		A1000005F /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A1000006F /* CharacteristicMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacteristicMapper.swift; sourceTree = "<group>"; };
@@ -272,6 +274,7 @@
 				A1000001F /* HomecastApp.swift */,
 				A1000002F /* AppDelegate.swift */,
 				A1000003F /* ConnectionManager.swift */,
+				B3000001F /* NativeHeaderBar.swift */,
 				B2000001F /* BuildInfo.swift */,
 			);
 			path = App;
@@ -518,6 +521,7 @@
 				A1000001A /* HomecastApp.swift in Sources */,
 				A1000002A /* AppDelegate.swift in Sources */,
 				A1000003A /* ConnectionManager.swift in Sources */,
+				B3000001A /* NativeHeaderBar.swift in Sources */,
 				A1000004A /* HomeKitManager.swift in Sources */,
 				42271B042F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */,
 				A1000005A /* Models.swift in Sources */,

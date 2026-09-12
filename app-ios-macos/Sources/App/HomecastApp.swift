@@ -89,6 +89,23 @@ enum AppConfig {
         UserDefaults.standard.bool(forKey: "com.homecast.stagingMode")
     }
 
+    /// Whether the native top-chrome preview is on. iOS only; see
+    /// `NativeHeaderBar`.
+    ///
+    /// **Defaults to `false`, and that is the point.** Native chrome reaches a
+    /// device through App Review rather than a deploy, so a preview that shipped
+    /// on by default could not be taken back by pushing again — it would be
+    /// weeks before an installed build stopped showing it. Off by default means
+    /// this can land while the decision is still open, and be judged by whoever
+    /// flips it rather than by everyone.
+    ///
+    /// Written by the web app through the `settings.setNativeHeaderPreview`
+    /// bridge action, from Settings → Account → Developer Mode.
+    static var nativeHeaderPreview: Bool {
+        get { UserDefaults.standard.bool(forKey: "com.homecast.nativeHeaderPreview") }
+        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.nativeHeaderPreview") }
+    }
+
     /// Whether the app is in Community mode (fully local, no cloud).
     static var isCommunity: Bool {
         UserDefaults.standard.bool(forKey: "com.homecast.communityMode")
@@ -1531,6 +1548,13 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastDeviceModel = "\(deviceModel)";
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "ios";
+        // Native top chrome (preview). `Available` says this build can draw it
+        // at all — the web app needs that to decide whether to offer the switch
+        // — and `Enabled` says whether it is drawing it right now. An older
+        // build sets neither, so the web app reads both as absent and behaves
+        // exactly as it does today.
+        window.homecastNativeHeaderAvailable = true;
+        window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
         console.log('[Homecast] iOS app detected - HomeKit local capable');
 
@@ -1956,6 +1980,19 @@ struct WebViewContainer: UIViewRepresentable {
         #if os(iOS)
         // Shake-to-report capture (screenshot + ReplayKit).
         let reportBridge = ReportBridge()
+        #endif
+
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        /// The native top chrome, present only while the preview flag is on.
+        ///
+        /// A subview of the `WKWebView` rather than a sibling, deliberately.
+        /// `WebViewContainer.makeUIView` is declared to return a `WKWebView`,
+        /// and wrapping it in a container to hold both would change that
+        /// signature on **both** platforms — for a preview that runs on one.
+        /// A `WKWebView` is an ordinary `UIView`, so a bar added on top of it
+        /// needs no change to the representable at all, and removing it leaves
+        /// no trace.
+        private var nativeHeader: NativeHeaderBar?
         #endif
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
@@ -2494,6 +2531,57 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        /// Put the native chrome on screen, or take it off, to match the flag —
+        /// and tell the page either way.
+        ///
+        /// Both halves matter. The bar and the web header draw the same four
+        /// controls, so exactly one of them has to be on screen: showing the bar
+        /// without telling the page gives you two burgers and two ⋮, which is a
+        /// worse look than either option on its own.
+        ///
+        /// Idempotent, because it is called both when the flag is toggled and
+        /// on every navigation — a page load discards the JS side of the
+        /// handshake, so the page has to be told again once it is back.
+        func syncNativeHeader(on webView: WKWebView) {
+            let enabled = AppConfig.nativeHeaderPreview
+
+            if enabled {
+                if nativeHeader == nil {
+                    let bar = NativeHeaderBar(frame: .zero)
+                    bar.onTap = { [weak self] control in
+                        // The bar knows which control was pressed and nothing
+                        // about what it opens. The page owns that, and still
+                        // does — this is the same handler its own button runs.
+                        self?.webView?.evaluateJavaScript(
+                            "window.__homecastNativeHeader && window.__homecastNativeHeader.tap('\(control.rawValue)');",
+                            completionHandler: nil
+                        )
+                    }
+                    webView.addSubview(bar)
+                    NSLayoutConstraint.activate([
+                        bar.topAnchor.constraint(equalTo: webView.topAnchor),
+                        bar.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
+                        bar.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
+                    ])
+                    nativeHeader = bar
+                }
+                // Keep it above anything WebKit adds to its own view later.
+                if let bar = nativeHeader {
+                    webView.bringSubviewToFront(bar)
+                }
+            } else {
+                nativeHeader?.removeFromSuperview()
+                nativeHeader = nil
+            }
+
+            webView.evaluateJavaScript(
+                "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled));",
+                completionHandler: nil
+            )
+        }
+        #endif
+
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "homecast",
@@ -2532,6 +2620,27 @@ struct WebViewContainer: UIViewRepresentable {
                 }
             case "authSuccess":
                 print("[WebView] User authenticated")
+
+            case "header.setState":
+                // The page publishing what the native bar should draw. Silently
+                // ignored on Mac and on a build with the preview off — the web
+                // app sends this unconditionally so that flipping the flag needs
+                // no reload, and a message with no bar to draw into is normal,
+                // not an error.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                nativeHeader?.merge(body)
+                #endif
+
+            case "settings.setNativeHeaderPreview":
+                // Settings → Account → Developer Mode → Native header (preview).
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                let enabled = body["enabled"] as? Bool ?? false
+                print("[WebView] Native header preview: \(enabled)")
+                AppConfig.nativeHeaderPreview = enabled
+                if let webView = self.webView {
+                    syncNativeHeader(on: webView)
+                }
+                #endif
             case "forgetRelay":
                 // "Change host". The web app cannot do this by clearing
                 // localStorage: on iOS the address is injected from
@@ -2807,6 +2916,14 @@ struct WebViewContainer: UIViewRepresentable {
             // Don't stop the network monitor — we need it to detect restoration.
             if isShowingErrorPage { return }
             stopNetworkMonitor()
+
+            // Re-establish the native header handshake. The bar is a UIKit view
+            // and survives a navigation; the page's half of the handshake does
+            // not, so a reload would otherwise leave the bar drawn over a web
+            // header that has just un-hidden itself.
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            syncNativeHeader(on: webView)
+            #endif
 
             // Attach local network bridge for Community mode (once, on first load)
             #if targetEnvironment(macCatalyst)
