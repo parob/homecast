@@ -2686,6 +2686,10 @@ struct WebViewContainer: UIViewRepresentable {
                 NativeHeaderModel.shared.merge(body)
                 #endif
 
+            case "header.refreshDone":
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                Task { @MainActor in NativeHeaderModel.shared.refreshDone?() }
+                #endif
             case "header.ready":
                 // The page's bridge has just mounted and wants the current
                 // state again — `didFinish` ran before React did, so the
