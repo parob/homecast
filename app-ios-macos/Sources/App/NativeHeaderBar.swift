@@ -330,6 +330,7 @@ enum WebHostingLayout {
 final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var cancellable: AnyCancellable?
     private var offsetObservation: NSKeyValueObservation?
+    private var boundsObservation: NSKeyValueObservation?
     private weak var webScrollView: UIScrollView?
     private let proxy = ProxyScrollView()
     /// The compact bar's inset (status bar + bar), as observed while shown.
@@ -400,7 +401,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // the pan recogniser and KVO on the offset are enough to know when a
         // drag ends and when the deceleration after it stops.
         scroll.panGestureRecognizer.addTarget(self, action: #selector(webPanChanged(_:)))
-        offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+        let onScroll: () -> Void = { [weak self] in
             guard let self else { return }
             self.mirrorOffset()
             if self.awaitingDecelerationEnd, let scroll = self.webScrollView, !scroll.isDragging, !scroll.isDecelerating {
@@ -408,6 +409,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 self.snapIfNeeded(scroll)
             }
         }
+        offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in onScroll() }
+        // Bounds too: a fast deceleration can land without a final
+        // contentOffset notification, and the title then stayed faded at
+        // the top (reported).
+        boundsObservation = scroll.observe(\.bounds, options: [.new]) { _, _ in onScroll() }
         // Above the web view, which SwiftUI has just added on top of us.
         view.bringSubviewToFront(largeTitleArea)
         mirrorOffset()
@@ -559,6 +565,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             awaitingDecelerationEnd = true
         } else {
             snapIfNeeded(scroll)
+        }
+        // Belt and braces for the same missed-notification case: settle the
+        // titles from wherever the page actually stopped.
+        for delay in [0.4, 1.2, 2.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, let scroll = self.webScrollView, !scroll.isDragging, !scroll.isDecelerating else { return }
+                self.mirrorOffset()
+                if self.awaitingDecelerationEnd {
+                    self.awaitingDecelerationEnd = false
+                    self.snapIfNeeded(scroll)
+                }
+            }
         }
     }
 
@@ -717,6 +735,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
         inlineTitle.sizeToFit()
         layoutLargeTitle()
+        // Now, not on the next layout pass: after a rotation back to
+        // portrait there may not be one, and the page kept the landscape
+        // padding under a large title that had come back (measured).
+        reportInsetsIfChanged()
     }
 
     private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
