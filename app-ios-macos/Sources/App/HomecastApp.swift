@@ -370,6 +370,8 @@ struct ContentView: View {
                 .id(webViewId)
         }
         .ignoresSafeArea()
+        // The status bar's light/dark follows the page while the bar is on.
+        .modifier(NativeHeaderColorScheme())
         #endif
     }
 
