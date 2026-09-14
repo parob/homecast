@@ -261,6 +261,33 @@ final class NativeHeaderModel: ObservableObject {
 /// own can answer UIKit's `contentScrollView(for:)` question itself, and then
 /// the whole large-title machinery — expand at rest, collapse on scroll, the
 /// scroll-edge effect — runs unmodified.
+/// The status bar follows the page too.
+///
+/// Its style is decided by SwiftUI's root hosting controller, which never asks
+/// a navigation controller embedded through a representable — so the bar's
+/// own appearance override left the status bar reading the system: a black
+/// clock and battery over a dark wallpaper. A preferred colour scheme is the
+/// one lever SwiftUI exposes that reaches the status bar. `nil` is "no
+/// preference", which is what every build without the bar gets. The page does
+/// not read `prefers-color-scheme` (its dark look is a class), so nothing in
+/// the web view changes.
+struct NativeHeaderColorScheme: ViewModifier {
+    @ObservedObject private var model = NativeHeaderModel.shared
+
+    func body(content: Content) -> some View {
+        content.preferredColorScheme(scheme)
+    }
+
+    private var scheme: ColorScheme? {
+        guard model.enabled else { return nil }
+        switch model.appearance {
+        case "dark": return .dark
+        case "light": return .light
+        default: return nil
+        }
+    }
+}
+
 struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
     let content: Content
 
@@ -411,7 +438,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // SwiftUI may re-add its content above us on a root-view update;
         // the title must stay on top of the web view.
         if largeTitleArea.superview === view, view.subviews.last !== largeTitleArea {
-            view.bringSubviewToFront(largeTitleArea)
+            largeTitleArea.superview?.bringSubviewToFront(largeTitleArea)
         }
         layoutLargeTitle()
         reportInsetsIfChanged()
@@ -443,6 +470,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         guard webScrollView == nil, let scroll = Self.findWebScrollView(in: view) else { return }
         webScrollView = scroll
         applyEdgeEffects()
+        // The large title lives INSIDE the web view's scroll view, so the
+        // compositor moves it with the page. It used to sit over the web
+        // view and be translated from a display link that read where the
+        // page was drawn — which is always at least a frame behind what is
+        // on screen, so the name trailed the content and jittered on every
+        // fling, and after a fast scroll to the top it could be left drawn
+        // partway down the page until the next sample. As a subview it is
+        // simply content: no sampling, no transform, no lag. Only the fade
+        // is still driven from the sampled offset, and a frame's lag on an
+        // alpha is invisible.
+        scroll.addSubview(largeTitleArea)
+        layoutLargeTitle()
         // Not the scroll view's delegate: that is WebKit's, and taking it is
         // the kind of thing that breaks a pan without saying so. A target on
         // the pan recogniser and KVO on the offset are enough to know when a
@@ -572,8 +611,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private func layoutLargeTitleNow() {
         let inset = compactInset > 0 ? compactInset : view.safeAreaInsets.top
         let height = largeTitleHeight
+        // In the scroll view's content space when it has one (content starts
+        // at 0: the insets are `.never`), which is the same numbers as in
+        // this view's space at offset 0.
         largeTitleArea.frame = CGRect(x: 0, y: inset, width: view.bounds.width, height: height)
         largeTitleArea.isHidden = !largeTitleEnabled || barHidden
+        largeTitleArea.superview?.bringSubviewToFront(largeTitleArea)
 
         let leading = max(view.layoutMargins.left, 16)
         let trailingRoom: CGFloat = 60
@@ -607,8 +650,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         min(1, pageOffsetY / largeTitleHeight)
     }
 
-    /// Move the large title up with the content and fade it; fade the inline
-    /// title in over the last part of that travel.
+    /// Fade the large title as it scrolls under the bar; fade the inline
+    /// title in over the last part of that travel. (Moving it is the scroll
+    /// view's job — the title is one of its subviews.)
     ///
     /// The large name is gone by a little over half the travel — before its
     /// top would pass under the bar's controls — so it fades rather than
@@ -624,10 +668,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             defer { CATransaction.commit() }
-            let pageY = pageOffsetY
-            largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
-            largeSubtitleButton.transform = largeTitleButton.transform
-            largeStatusButton.transform = largeTitleButton.transform
+            // Position is the scroll view's business now (see
+            // `attachWebScrollViewIfNeeded`); until it is found the title sits
+            // in this view at offset 0 and there is nothing to translate.
             if !largeTitleEnabled {
                 // Compact row only: the inline title is the title.
                 inlineTitle.alpha = 1
