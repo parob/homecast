@@ -391,11 +391,22 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         insetsChanged(now.bar, now.status)
     }
 
+    /// iOS 26 gives every scroll view under a bar a soft edge effect of its
+    /// own — the faint gradient at the top of the page. Wanted in portrait,
+    /// where it is part of how the bar reads; not in the sidebar layout, where
+    /// the bar is two floating buttons and the page should look untouched.
+    private func applyEdgeEffects() {
+        guard #available(iOS 26.0, *) else { return }
+        proxy.topEdgeEffect.isHidden = !largeTitleEnabled
+        webScrollView?.topEdgeEffect.isHidden = !largeTitleEnabled
+    }
+
     /// The web view is created by SwiftUI some time after this controller's
     /// view is; hook it the first time layout finds it.
     private func attachWebScrollViewIfNeeded() {
         guard webScrollView == nil, let scroll = Self.findWebScrollView(in: view) else { return }
         webScrollView = scroll
+        applyEdgeEffects()
         // Not the scroll view's delegate: that is WebKit's, and taking it is
         // the kind of thing that breaks a pan without saying so. A target on
         // the pan recogniser and KVO on the offset are enough to know when a
@@ -692,9 +703,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             // floating: no scroll-edge band, and taps beside them fall through.
             navigationItem.titleView = largeTitleEnabled ? inlineTitle : UIView()
             setContentScrollView(largeTitleEnabled ? proxy : nil, for: .top)
-            if #available(iOS 26.0, *) {
-                proxy.topEdgeEffect.isHidden = !largeTitleEnabled
-            }
+            applyEdgeEffects()
             if let bar = navigationController?.navigationBar as? PassthroughNavigationBar {
                 bar.passesThrough = !largeTitleEnabled
                 // With no scroll view to track, UIKit falls back to the bar's
