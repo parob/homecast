@@ -88,6 +88,25 @@ final class NativeHeaderModel: ObservableObject {
         let items: [MenuItem]
     }
 
+    /// What the ☰ button offers: rooms, room groups, collections. Homes moved
+    /// to the title menu. Empty means fall back to opening the web drawer.
+    @Published var navigation: [NavSection] = []
+
+    struct NavItem: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let symbol: String?
+        let selected: Bool
+        /// Non-empty makes this a submenu rather than an action.
+        let children: [NavItem]
+    }
+
+    struct NavSection: Identifiable, Equatable {
+        let id: String
+        let title: String?
+        let items: [NavItem]
+    }
+
     /// Runs JavaScript in the page. Installed by the web view's coordinator;
     /// nil until there is a page, in which case a tap does nothing.
     var runScript: ((String) -> Void)?
@@ -151,6 +170,18 @@ final class NativeHeaderModel: ObservableObject {
         }
         if let value = payload["appearance"] as? String { appearance = value }
         if let value = payload["covered"] as? Bool { covered = value }
+        if let raw = payload["navigation"] as? [[String: Any]] {
+            navigation = raw.compactMap { section in
+                guard let id = section["id"] as? String, let items = section["items"] as? [[String: Any]] else { return nil }
+                return NavSection(id: id, title: section["title"] as? String, items: items.compactMap(Self.navItem))
+            }
+        }
+    }
+
+    private static func navItem(_ raw: [String: Any]) -> NavItem? {
+        guard let id = raw["id"] as? String, let label = raw["label"] as? String else { return nil }
+        let children = (raw["children"] as? [[String: Any]])?.compactMap(navItem) ?? []
+        return NavItem(id: id, label: label, symbol: raw["symbol"] as? String, selected: raw["selected"] as? Bool ?? false, children: children)
     }
 
     // MARK: - Back into the page
@@ -163,6 +194,12 @@ final class NativeHeaderModel: ObservableObject {
 
     func tap(_ control: Control) {
         runScript?("window.__homecastNativeHeader && window.__homecastNativeHeader.tap('\(control.rawValue)');")
+    }
+
+    func navigate(_ id: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [id]),
+              let array = String(data: data, encoding: .utf8) else { return }
+        runScript?("window.__homecastNativeHeader && window.__homecastNativeHeader.navigate && window.__homecastNativeHeader.navigate(\(array)[0]);")
     }
 
     func menuAction(_ id: String) {
@@ -554,9 +591,19 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.isHidden = menu == nil
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
-        navigationItem.leftBarButtonItem = model.showMenu
-            ? item("line.3.horizontal", label: "Menu") { model.tap(.menu) }
-            : nil
+        if model.showMenu {
+            if let menu = Self.buildNavigationMenu(model) {
+                // Rooms, room groups and collections, drawn by UIKit. The web
+                // drawer is still one item away for everything a menu cannot do.
+                let leading = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal"), menu: menu)
+                leading.accessibilityLabel = "Menu"
+                navigationItem.leftBarButtonItem = leading
+            } else {
+                navigationItem.leftBarButtonItem = item("line.3.horizontal", label: "Menu") { model.tap(.menu) }
+            }
+        } else {
+            navigationItem.leftBarButtonItem = nil
+        }
 
         var trailing: [UIBarButtonItem] = []
         if model.showOverflow {
@@ -593,6 +640,23 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             children.append(UIMenu(options: .displayInline, children: [status]))
         }
         return UIMenu(children: children)
+    }
+
+    private static func buildNavigationMenu(_ model: NativeHeaderModel) -> UIMenu? {
+        guard !model.navigation.isEmpty else { return nil }
+        func element(_ item: NativeHeaderModel.NavItem) -> UIMenuElement {
+            let image = item.symbol.flatMap { UIImage(systemName: $0) }
+            if !item.children.isEmpty {
+                return UIMenu(title: item.label, image: image, children: item.children.map(element))
+            }
+            return UIAction(title: item.label, image: image, state: item.selected ? .on : .off) { [weak model] _ in
+                model?.navigate(item.id)
+            }
+        }
+        let sections: [UIMenu] = model.navigation.map { section in
+            UIMenu(title: section.title ?? "", options: .displayInline, children: section.items.map(element))
+        }
+        return UIMenu(children: sections)
     }
 
     private static func buildMenu(_ model: NativeHeaderModel) -> UIMenu? {
