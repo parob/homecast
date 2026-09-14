@@ -421,7 +421,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// The whole large title is one button, so the name is the tap target.
     private let largeTitleButton = UIButton(type: .custom)
     private let largeTitleLabel = UILabel()
-    private let largeSubtitleLabel = UILabel()
+    /// The status line under the name. A button: tapping it opens the page's
+    /// connection popover, which is where that detail lives.
+    private let largeSubtitleButton = UIButton(type: .custom)
     private let largeChevron = UIImageView()
 
     private func buildLargeTitle() {
@@ -439,10 +441,16 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleLabel.isUserInteractionEnabled = false
         largeTitleButton.addSubview(largeTitleLabel)
 
-        largeSubtitleLabel.font = .preferredFont(forTextStyle: .footnote)
-        largeSubtitleLabel.textColor = .secondaryLabel
-        largeSubtitleLabel.isUserInteractionEnabled = false
-        largeTitleButton.addSubview(largeSubtitleLabel)
+        largeSubtitleButton.titleLabel?.font = .preferredFont(forTextStyle: .footnote)
+        largeSubtitleButton.setTitleColor(.secondaryLabel, for: .normal)
+        largeSubtitleButton.contentHorizontalAlignment = .leading
+        largeSubtitleButton.accessibilityLabel = "Connection status"
+        largeSubtitleButton.addAction(UIAction { [weak self] _ in
+            _ = self
+            NativeHeaderModel.shared.tap(.status)
+        }, for: .touchUpInside)
+        // A sibling of the title button, above it, so its tap is its own.
+        largeTitleArea.addSubview(largeSubtitleButton)
 
         largeChevron.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
         largeChevron.tintColor = .secondaryLabel
@@ -466,15 +474,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let textWidth = ceil((largeTitleLabel.text ?? "").size(withAttributes: [.font: largeTitleLabel.font as Any]).width)
         let maxTextWidth = max(0, view.bounds.width - leading - trailingRoom)
         let width = min(textWidth, maxTextWidth)
-        let hasSubtitle = !(largeSubtitleLabel.text ?? "").isEmpty
+        let hasSubtitle = !(largeSubtitleButton.title(for: .normal) ?? "").isEmpty
 
         // 34pt bold sits on a 41pt line; with a status line under it the pair
         // is packed a little tighter so it still fits the band.
         let titleHeight: CGFloat = 41
         let titleY: CGFloat = hasSubtitle ? -2 : (height - titleHeight) / 2
         largeTitleLabel.frame = CGRect(x: leading, y: titleY, width: width, height: titleHeight)
-        largeSubtitleLabel.frame = CGRect(x: leading, y: titleY + titleHeight - 6, width: maxTextWidth, height: 16)
-        largeSubtitleLabel.isHidden = !hasSubtitle
+        largeSubtitleButton.frame = CGRect(x: leading, y: titleY + titleHeight - 6, width: maxTextWidth, height: 18)
+        largeSubtitleButton.isHidden = !hasSubtitle
 
         let chevronSize: CGFloat = 22
         largeChevron.frame = CGRect(x: leading + width + 8, y: titleY + (titleHeight - chevronSize) / 2 + 2, width: chevronSize, height: chevronSize)
@@ -500,6 +508,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private func updateTitleTransition() {
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
         largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
+        largeSubtitleButton.transform = largeTitleButton.transform
         if !largeTitleEnabled {
             // Compact row only: the inline title is the title.
             inlineTitle.alpha = 1
@@ -641,7 +650,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         headingIsPage = !heading.isEmpty && heading != title
         inlineTitle.configuration?.title = title
         largeTitleLabel.text = headingIsPage ? heading : title
-        largeSubtitleLabel.text = model.subtitle
+        largeSubtitleButton.setTitle(model.subtitle, for: .normal)
 
         // The title menu is the one selector: this home's rooms and groups,
         // the collections, then the other homes, then the connection.
@@ -676,28 +685,26 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     }
 
     private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
-        guard !model.homes.isEmpty || model.hasStatus || !model.navigation.isEmpty else { return nil }
+        guard !model.homes.isEmpty || !model.navigation.isEmpty else { return nil }
         var children: [UIMenuElement] = []
-        // Where to go in this home: rooms, groups, collections.
-        if let navigation = buildNavigationMenu(model) {
-            children.append(contentsOf: navigation.children)
-        }
-        // Which home.
+        // Which home, first and as a row of buttons — one tap, nothing to
+        // scroll past. Only when there is more than one to choose from.
         let current = model.currentHomeId
-        if !model.homes.isEmpty {
+        if model.homes.count > 1 {
             let homes: [UIMenuElement] = model.homes.map { home in
-                UIAction(title: home.name, image: UIImage(systemName: "house"), state: home.id == current ? .on : .off) { [weak model] _ in
+                UIAction(title: home.name, image: UIImage(systemName: home.id == current ? "house.fill" : "house"), state: home.id == current ? .on : .off) { [weak model] _ in
                     model?.selectHome(home.id)
                 }
             }
-            children.append(UIMenu(title: model.homes.count > 1 ? "Homes" : "", options: .displayInline, children: homes))
+            let row = UIMenu(title: "", options: .displayInline, children: homes)
+            if #available(iOS 16.0, *) {
+                row.preferredElementSize = .medium
+            }
+            children.append(row)
         }
-        if model.hasStatus {
-            let status = UIAction(
-                title: model.subtitle.isEmpty ? "Connection" : model.subtitle,
-                image: UIImage(systemName: "antenna.radiowaves.left.and.right")
-            ) { [weak model] _ in model?.tap(.status) }
-            children.append(UIMenu(options: .displayInline, children: [status]))
+        // Where to go in this home: rooms, groups, collections.
+        if let navigation = buildNavigationMenu(model) {
+            children.append(contentsOf: navigation.children)
         }
         return UIMenu(children: children)
     }
