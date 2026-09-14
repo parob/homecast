@@ -354,6 +354,25 @@ struct ContentView: View {
     ///
     /// Community mode keeps /login — that page doubles as the first-run relay
     /// setup flow, which has nothing to do with holding a token.
+    /// The web view, inside the native header's navigation controller on iOS
+    /// (parob/homecast-cloud#120). The bar is hidden unless the preview flag is
+    /// on, and then the layout is exactly what it was before this existed.
+    @ViewBuilder
+    private var webViewHost: some View {
+        #if targetEnvironment(macCatalyst)
+        WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
+            .ignoresSafeArea()
+            .id(webViewId)
+        #else
+        NativeHeaderHost {
+            WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
+                .ignoresSafeArea()
+                .id(webViewId)
+        }
+        .ignoresSafeArea()
+        #endif
+    }
+
     private var webViewURL: URL {
         let path = (!AppConfig.isCommunity && connectionManager.authToken != nil) ? "/portal" : "/login"
         return URL(string: "\(AppConfig.webBaseURL)\(path)")!
@@ -533,9 +552,7 @@ struct ContentView: View {
                 showModeSelector = true
             })
         } else {
-            WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
-                .ignoresSafeArea()
-                .id(webViewId)
+            webViewHost
                 .task { await refreshRelayAddressIfMoved() }
                 #if !targetEnvironment(macCatalyst)
                 .onAppear { pathWatcher.start() }
@@ -1219,6 +1236,7 @@ class FocusableWebView: WKWebView {
     // On iOS, keep real safe area insets so CSS env(safe-area-inset-*) works
 
     override func didMoveToWindow() {
+
         super.didMoveToWindow()
         if window != nil && !isFirstResponder {
             DispatchQueue.main.async { [weak self] in
@@ -1922,9 +1940,11 @@ struct WebViewContainer: UIViewRepresentable {
         // On iOS, set mobile user agent so website renders mobile layout
         let iOSVersion = UIDevice.current.systemVersion
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS \(iOSVersion.replacingOccurrences(of: ".", with: "_")) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(iOSVersion) Mobile/15E148 Safari/604.1"
-        // Disable automatic content inset adjustment — CSS env(safe-area-inset-*) handles safe areas
+        // Disable automatic content inset adjustment — CSS env(safe-area-inset-*) handles safe areas.
+        // With the native header preview on, the opposite: the navigation bar
+        // insets the content and the page scrolls under it (see syncNativeHeader).
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.scrollView.bounces = false
+        webView.scrollView.bounces = AppConfig.nativeHeaderPreview
         // Disable pinch-to-zoom
         webView.scrollView.minimumZoomScale = 1.0
         webView.scrollView.maximumZoomScale = 1.0
@@ -2029,19 +2049,6 @@ struct WebViewContainer: UIViewRepresentable {
         #if os(iOS)
         // Shake-to-report capture (screenshot + ReplayKit).
         let reportBridge = ReportBridge()
-        #endif
-
-        #if os(iOS) && !targetEnvironment(macCatalyst)
-        /// The native top chrome, present only while the preview flag is on.
-        ///
-        /// A subview of the `WKWebView` rather than a sibling, deliberately.
-        /// `WebViewContainer.makeUIView` is declared to return a `WKWebView`,
-        /// and wrapping it in a container to hold both would change that
-        /// signature on **both** platforms — for a preview that runs on one.
-        /// A `WKWebView` is an ordinary `UIView`, so a bar added on top of it
-        /// needs no change to the representable at all, and removing it leaves
-        /// no trace.
-        private var nativeHeader: NativeHeaderBar?
         #endif
 
         // Track whether auth changes were initiated by WebView (vs Mac app)
@@ -2581,53 +2588,49 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         #if os(iOS) && !targetEnvironment(macCatalyst)
-        /// Put the native chrome on screen, or take it off, to match the flag —
-        /// and tell the page either way.
+        /// Bring the navigation chrome, the scroll view and the page into step
+        /// with the flag.
         ///
-        /// Both halves matter. The bar and the web header draw the same four
-        /// controls, so exactly one of them has to be on screen: showing the bar
-        /// without telling the page gives you two burgers and two ⋮, which is a
-        /// worse look than either option on its own.
+        /// Three things move together, and all three have to:
+        ///
+        /// - the bar (`NativeHeaderModel.enabled`, read by the SwiftUI chrome);
+        /// - the scroll view — `.automatic` insets so the page starts below the
+        ///   bar and scrolls under it, and rubber-banding, which is what makes
+        ///   a large title collapse feel like one. Off, both go back to the
+        ///   values the app has always used;
+        /// - the page, which hides its own header row and switches to document
+        ///   scrolling, because UIKit can only watch the web view's scroll view
+        ///   and the dashboard normally scrolls an inner container.
         ///
         /// Idempotent, because it is called both when the flag is toggled and
         /// on every navigation — a page load discards the JS side of the
         /// handshake, so the page has to be told again once it is back.
         func syncNativeHeader(on webView: WKWebView) {
             let enabled = AppConfig.nativeHeaderPreview
-
-            if enabled {
-                if nativeHeader == nil {
-                    let bar = NativeHeaderBar(frame: .zero)
-                    bar.onTap = { [weak self] control in
-                        // The bar knows which control was pressed and nothing
-                        // about what it opens. The page owns that, and still
-                        // does — this is the same handler its own button runs.
-                        self?.webView?.evaluateJavaScript(
-                            "window.__homecastNativeHeader && window.__homecastNativeHeader.tap('\(control.rawValue)');",
-                            completionHandler: nil
-                        )
-                    }
-                    webView.addSubview(bar)
-                    NSLayoutConstraint.activate([
-                        bar.topAnchor.constraint(equalTo: webView.topAnchor),
-                        bar.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
-                        bar.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
-                    ])
-                    nativeHeader = bar
-                }
-                // Keep it above anything WebKit adds to its own view later.
-                if let bar = nativeHeader {
-                    webView.bringSubviewToFront(bar)
-                }
-            } else {
-                nativeHeader?.removeFromSuperview()
-                nativeHeader = nil
+            let model = NativeHeaderModel.shared
+            model.enabled = enabled
+            model.runScript = { [weak webView] js in
+                webView?.evaluateJavaScript(js, completionHandler: nil)
             }
-
-            webView.evaluateJavaScript(
-                "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled));",
-                completionHandler: nil
-            )
+            // Insets stay `.never` in both states: the page draws under the bar
+            // (the Home app's content runs under its transparent bar) and pads
+            // itself by the height the shell reports below. Automatic insets
+            // were tried and left the scroll view's black backdrop showing
+            // through the bar, because the page's layout viewport then began
+            // beneath it.
+            webView.scrollView.contentInsetAdjustmentBehavior = .never
+            webView.scrollView.bounces = enabled
+            let tell: (CGFloat, CGFloat) -> Void = { [weak webView] bar, status in
+                webView?.evaluateJavaScript(
+                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())));",
+                    completionHandler: nil
+                )
+            }
+            if enabled, let report = model.reportInsets {
+                report(tell)
+            } else {
+                tell(0, 0)
+            }
         }
         #endif
 
@@ -2677,7 +2680,17 @@ struct WebViewContainer: UIViewRepresentable {
                 // no reload, and a message with no bar to draw into is normal,
                 // not an error.
                 #if os(iOS) && !targetEnvironment(macCatalyst)
-                nativeHeader?.merge(body)
+                NativeHeaderModel.shared.merge(body)
+                #endif
+
+            case "header.ready":
+                // The page's bridge has just mounted and wants the current
+                // state again — `didFinish` ran before React did, so the
+                // insets it was told then went nowhere.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                if let webView = self.webView {
+                    syncNativeHeader(on: webView)
+                }
                 #endif
 
             case "settings.setNativeHeaderPreview":
