@@ -72,6 +72,8 @@ final class NativeHeaderModel: ObservableObject {
     @Published var largeTitle = true
     /// Whether the page has a status control to open at all.
     @Published var hasStatus = false
+    /// The connection dot's colour, from the page's hex. nil hides the dot.
+    @Published var statusColor: UIColor?
     /// The ⋯ menu, as the page published it. Empty means fall back to tapping
     /// the page's own ⋯ (an older page that publishes no menu).
     @Published var menu: [MenuSection] = []
@@ -153,6 +155,7 @@ final class NativeHeaderModel: ObservableObject {
             // Present: a hex string means there is a status to show, JSON null
             // (NSNull here) means the page hid its badge.
             hasStatus = payload["statusColor"] is String
+            statusColor = (payload["statusColor"] as? String).flatMap(Self.color(hex:))
         }
         if let raw = payload["homes"] as? [[String: Any]] {
             homes = raw.compactMap { entry in
@@ -197,6 +200,22 @@ final class NativeHeaderModel: ObservableObject {
         guard let id = raw["id"] as? String, let label = raw["label"] as? String else { return nil }
         let children = (raw["children"] as? [[String: Any]])?.compactMap(navItem) ?? []
         return NavItem(id: id, label: label, symbol: raw["symbol"] as? String, selected: raw["selected"] as? Bool ?? false, children: children)
+    }
+
+    /// `#rgb`, `#rrggbb` or `#rrggbbaa`. The page owns the palette and sends
+    /// the colour rather than a name, so a new state needs no new build.
+    static func color(hex: String) -> UIColor? {
+        var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("#") { text.removeFirst() }
+        if text.count == 3 { text = text.map { "\($0)\($0)" }.joined() }
+        guard text.count == 6 || text.count == 8, let value = UInt64(text, radix: 16) else { return nil }
+        let r, g, b, a: CGFloat
+        if text.count == 6 {
+            r = CGFloat((value & 0xFF0000) >> 16) / 255; g = CGFloat((value & 0x00FF00) >> 8) / 255; b = CGFloat(value & 0x0000FF) / 255; a = 1
+        } else {
+            r = CGFloat((value & 0xFF000000) >> 24) / 255; g = CGFloat((value & 0x00FF0000) >> 16) / 255; b = CGFloat((value & 0x0000FF00) >> 8) / 255; a = CGFloat(value & 0x000000FF) / 255
+        }
+        return UIColor(red: r, green: g, blue: b, alpha: a)
     }
 
     // MARK: - Back into the page
@@ -389,6 +408,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
+        // SwiftUI may re-add its content above us on a root-view update;
+        // the title must stay on top of the web view.
+        if largeTitleArea.superview === view, view.subviews.last !== largeTitleArea {
+            view.bringSubviewToFront(largeTitleArea)
+        }
         layoutLargeTitle()
         reportInsetsIfChanged()
     }
@@ -436,11 +460,20 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         boundsObservation = scroll.observe(\.bounds, options: [.new]) { [weak self] _, _ in onScroll(); self?.wake() }
         let link = CADisplayLink(target: self, selector: #selector(sample))
         link.add(to: .main, forMode: .common)
-        link.isPaused = true
+        // Never paused while on screen. WebKit scrolls asynchronously: after
+        // a fast fling the content keeps moving with the scroll view
+        // reporting neither a drag nor a deceleration, so a sampler that
+        // stopped on "still" stopped early and the title froze mid-fade
+        // (measured: offset 0, alpha 0.6). Idle costs one property read per
+        // frame at a low rate; moving, it runs at full rate.
+        setSamplingRate(idle: true)
         displayLink = link
         // Above the web view, which SwiftUI has just added on top of us.
         view.bringSubviewToFront(largeTitleArea)
         mirrorOffset()
+        #if DEBUG
+        runProbeIfRequested()
+        #endif
     }
 
     // MARK: - The two titles
@@ -610,18 +643,49 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         return max(0, drawn)
     }
 
-    /// Start sampling; `sample` pauses again once the page has been still.
+    #if DEBUG
+    /// Temporary probe: everything that could make the title invisible.
+    ///   launch with -com.homecast.devProbe YES; read com.homecast.devProbeLog
+    func runProbeIfRequested() {
+        guard UserDefaults.standard.bool(forKey: "com.homecast.devProbe"), let scroll = webScrollView else { return }
+        var log: [String] = []
+        let start = Date()
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let t = String(format: "%.1f", Date().timeIntervalSince(start))
+            let area = self.largeTitleArea
+            let idx = self.view.subviews.firstIndex(of: area) ?? -1
+            let pres = area.layer.presentation()
+            let bpres = self.largeTitleButton.layer.presentation()
+            log.append("\(t) off=\(scroll.contentOffset.y) pageY=\(self.pageOffsetY) alpha=\(area.alpha) presOp=\(pres?.opacity ?? -1) hidden=\(area.isHidden) presHidden=\(pres?.isHidden ?? false) frame=\(area.frame) presPos=\(pres?.position ?? .zero) btnTy=\(self.largeTitleButton.transform.ty) btnPres=\(bpres?.affineTransform().ty ?? -999) btnHidden=\(self.largeTitleButton.isHidden) lblHidden=\(self.largeTitleLabel.isHidden) lblAlpha=\(self.largeTitleLabel.alpha) text=\(self.largeTitleLabel.text ?? "") z=\(idx)/\(self.view.subviews.count) enabled=\(self.largeTitleEnabled) barHidden=\(self.barHidden) heading=\(self.headingIsPage) covered=\(NativeHeaderModel.shared.covered) win=\(area.window != nil)")
+            if log.count > 400 { log.removeFirst(log.count - 400) }
+            UserDefaults.standard.set(log.joined(separator: "\n"), forKey: "com.homecast.devProbeLog")
+        }
+    }
+    #endif
+
+    private var samplingIdle = true
+
+    private func setSamplingRate(idle: Bool) {
+        samplingIdle = idle
+        displayLink?.preferredFrameRateRange = idle
+            ? CAFrameRateRange(minimum: 8, maximum: 15, preferred: 10)
+            : CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+    }
+
+    /// Something is moving: sample at full rate.
     private func wake() {
         stillFrames = 0
-        displayLink?.isPaused = false
+        if samplingIdle { setSamplingRate(idle: false) }
     }
 
     @objc private func sample() {
-        guard let scroll = webScrollView else { displayLink?.isPaused = true; return }
+        guard let scroll = webScrollView else { return }
         let y = pageOffsetY
         if y != lastSampledOffset {
             lastSampledOffset = y
             stillFrames = 0
+            if samplingIdle { setSamplingRate(idle: false) }
             mirrorOffset()
             if awaitingDecelerationEnd, !scroll.isDragging, !scroll.isDecelerating {
                 awaitingDecelerationEnd = false
@@ -629,7 +693,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
         } else if !scroll.isDragging, !scroll.isDecelerating {
             stillFrames += 1
-            if stillFrames > 30 { displayLink?.isPaused = true }
+            // A couple of seconds still: drop to the idle rate, keep looking.
+            if stillFrames > 240, !samplingIdle { setSamplingRate(idle: true) }
         }
     }
 
@@ -809,6 +874,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
         }
         if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
+        if let color = model.statusColor {
+            // The connection dot: bare, no platter, left of the capsule — the
+            // same spot and size as the web header's. Tapping opens the
+            // page's connection popover.
+            trailing.append(.fixedSpace(4))
+            trailing.append(statusDotItem(color: color, handler: { model.tap(.status) }))
+        }
         navigationItem.rightBarButtonItems = trailing
 
         inlineTitle.sizeToFit()
@@ -876,6 +948,33 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             return UIMenu(title: section.title ?? "", options: .displayInline, children: actions)
         }
         return UIMenu(children: sections)
+    }
+
+    private lazy var statusDotButton: UIButton = {
+        let button = UIButton(type: .custom)
+        button.frame = CGRect(x: 0, y: 0, width: 32, height: 44)
+        let dot = UIView(frame: CGRect(x: 10, y: 16, width: 12, height: 12))
+        dot.layer.cornerRadius = 6
+        dot.layer.shadowColor = UIColor.black.cgColor
+        dot.layer.shadowOpacity = 0.35
+        dot.layer.shadowOffset = CGSize(width: 0, height: 1)
+        dot.layer.shadowRadius = 1
+        dot.isUserInteractionEnabled = false
+        dot.tag = 1
+        button.addSubview(dot)
+        button.accessibilityLabel = "Connection status"
+        return button
+    }()
+
+    private func statusDotItem(color: UIColor, handler: @escaping () -> Void) -> UIBarButtonItem {
+        statusDotButton.viewWithTag(1)?.backgroundColor = color
+        statusDotButton.removeTarget(nil, action: nil, for: .allEvents)
+        statusDotButton.addAction(UIAction { _ in handler() }, for: .touchUpInside)
+        let item = UIBarButtonItem(customView: statusDotButton)
+        if #available(iOS 26.0, *) {
+            item.hidesSharedBackground = true
+        }
+        return item
     }
 
     private func item(_ symbol: String, label: String, handler: @escaping () -> Void) -> UIBarButtonItem {
