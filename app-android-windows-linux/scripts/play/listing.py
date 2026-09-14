@@ -30,6 +30,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--json-key', required=True)
     ap.add_argument('--package', required=True)
+    ap.add_argument('--screenshots-dir', default=None,
+                    help='Folder of phone screenshots to upload (default: the framed Android set under app-ios-macos/screenshots/store/android, else the raw Mac set)')
     args = ap.parse_args()
 
     creds = service_account.Credentials.from_service_account_file(args.json_key, scopes=SCOPES)
@@ -104,7 +106,11 @@ def main():
         # from the brand master by `cd brand && npm run build`.
         repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
-        screenshots_dir = os.path.join(os.path.dirname(repo), 'app-ios-macos', 'screenshots')
+        # The framed Android set (device frame + headline, 1440×2560) when it
+        # exists; the raw Mac 16:10 captures otherwise, which Play also accepts.
+        framed = os.path.join(os.path.dirname(repo), 'app-ios-macos', 'screenshots', 'store', 'android')
+        screenshots_dir = args.screenshots_dir or (framed if os.path.isdir(framed) else os.path.join(os.path.dirname(repo), 'app-ios-macos', 'screenshots'))
+        print(f"  phone screenshots from {screenshots_dir}", flush=True)
 
         if os.path.exists(f'{assets}/icon-512.png'):
             # Delete existing icons first to overwrite cleanly
