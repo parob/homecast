@@ -106,6 +106,40 @@ enum AppConfig {
         set { UserDefaults.standard.set(newValue, forKey: "com.homecast.nativeHeaderPreview") }
     }
 
+    /// A local web origin to load the cloud UI from, instead of homecast.cloud.
+    ///
+    /// **Debug builds only, cloud mode only.** In cloud mode the UI comes from
+    /// `homecast.cloud`, which means a web change cannot be seen inside the
+    /// native shell until it has been merged and deployed — and anything that
+    /// crosses the native bridge (the native header preview, for one) cannot be
+    /// tried at all without shipping half of it first. Pointing the WebView at
+    /// a Vite dev server closes that loop: the page comes from the laptop, the
+    /// API stays on the cloud.
+    ///
+    /// Set from outside the app, never from the UI:
+    ///
+    ///     xcrun simctl spawn booted defaults write cloud.homecast.app \
+    ///         com.homecast.devWebOrigin http://localhost:8080
+    ///
+    /// `localhost` is the only useful value: it is the one non-cloud host in
+    /// `WKAppBoundDomains`, and the simulator shares the Mac's loopback. The
+    /// web app sees a localhost origin and would call itself Community, so the
+    /// shell also injects `__HOMECAST_FORCE_CLOUD__` whenever this is set.
+    /// Compiled out of Release, so no App Store build can be redirected.
+    static var devWebOrigin: String? {
+        #if DEBUG
+        guard !isCommunity,
+              let raw = UserDefaults.standard.string(forKey: "com.homecast.devWebOrigin")?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let url = URL(string: raw), url.scheme != nil, url.host != nil
+        else { return nil }
+        return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        #else
+        return nil
+        #endif
+    }
+
     /// Whether the app is in Community mode (fully local, no cloud).
     static var isCommunity: Bool {
         UserDefaults.standard.bool(forKey: "com.homecast.communityMode")
@@ -193,6 +227,7 @@ enum AppConfig {
             let live = LocalHTTPServer.shared?.port ?? 0
             return "http://localhost:\(live != 0 ? live : localServerPort)"
         }
+        if let dev = devWebOrigin { return dev }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
 
@@ -1567,6 +1602,20 @@ struct WebViewContainer: UIViewRepresentable {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
+
+        // Loading the cloud UI from a local dev server (see
+        // `AppConfig.devWebOrigin`). The web app decides Community-vs-Cloud from
+        // its hostname, and localhost reads as Community — so tell it otherwise
+        // before any of its modules run. Debug builds only; `devWebOrigin` is
+        // nil everywhere else and this adds nothing.
+        if let dev = AppConfig.devWebOrigin {
+            NSLog("[Homecast] DEV: loading web app from %@ in cloud mode", dev)
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.__HOMECAST_FORCE_CLOUD__ = true; console.log('[Homecast] DEV web origin: \(dev)');",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+        }
 
         // Native purchase bridge — App Store builds only. Signals the React app
         // to route Plan/Cloud upgrade flows through StoreKit instead of Stripe.
