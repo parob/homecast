@@ -819,7 +819,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             if !largeTitleEnabled {
                 // Compact row only: the inline title is the title.
                 inlineTitle.alpha = 1
-                inlinePlainLabel.alpha = 0
                 return
             }
             // The large title dissolves as it goes under the bar and the
@@ -830,7 +829,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             let progress = collapseProgress
             largeTitleArea.alpha = max(0, 1 - progress / 0.55)
             inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
-            inlinePlainLabel.alpha = headingIsPage ? 1 - inlineTitle.alpha : 0
         }
     }
 
