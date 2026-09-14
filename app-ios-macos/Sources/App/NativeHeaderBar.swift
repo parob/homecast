@@ -509,6 +509,22 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// connection popover, which is where that detail lives.
     private let largeSubtitleButton = UIButton(type: .custom)
     private let largeChevron = UIImageView()
+    /// The connection dot beside the large title.
+    private let largeStatusButton: UIButton = {
+        let button = UIButton(type: .custom)
+        let dot = UIView(frame: CGRect(x: 9, y: 9, width: 12, height: 12))
+        dot.layer.cornerRadius = 6
+        dot.layer.shadowColor = UIColor.black.cgColor
+        dot.layer.shadowOpacity = 0.35
+        dot.layer.shadowOffset = CGSize(width: 0, height: 1)
+        dot.layer.shadowRadius = 1
+        dot.isUserInteractionEnabled = false
+        dot.tag = 1
+        button.addSubview(dot)
+        button.accessibilityLabel = "Connection status"
+        button.isHidden = true
+        return button
+    }()
 
     private func buildLargeTitle() {
         largeTitleArea.clipsToBounds = false
@@ -543,6 +559,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.layer.cornerRadius = 11
         largeChevron.isUserInteractionEnabled = false
         largeTitleButton.addSubview(largeChevron)
+        // A sibling of the title button so its tap is its own.
+        largeTitleArea.addSubview(largeStatusButton)
     }
 
     /// Lay the large title out for the current text; `updateTitleTransition`
@@ -576,6 +594,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.frame = CGRect(x: leading + width + 8, y: titleY + (titleHeight - chevronSize) / 2 + 2, width: chevronSize, height: chevronSize)
         largeChevron.layer.cornerRadius = chevronSize / 2
         largeTitleButton.frame = CGRect(x: 0, y: 0, width: leading + width + 8 + chevronSize + 8, height: height)
+        let chevronVisible = !largeChevron.isHidden
+        let dotX = leading + width + (chevronVisible ? 8 + chevronSize + 6 : 8)
+        largeStatusButton.frame = CGRect(x: dotX, y: largeChevron.frame.midY - 15, width: 30, height: 30)
 
         updateTitleTransition()
     }
@@ -606,6 +627,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             let pageY = pageOffsetY
             largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
             largeSubtitleButton.transform = largeTitleButton.transform
+            largeStatusButton.transform = largeTitleButton.transform
             if !largeTitleEnabled {
                 // Compact row only: the inline title is the title.
                 inlineTitle.alpha = 1
@@ -877,13 +899,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
         }
         if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
-        if let color = model.statusColor {
-            // The connection dot leads the capsule, sharing its glass with
-            // search and ⋯ — the same place the web header puts it. Tapping
-            // opens the page's connection popover.
-            trailing.append(statusDotItem(color: color) { model.tap(.status) })
-        }
         navigationItem.rightBarButtonItems = trailing
+
+        // The connection dot sits beside the large title, after the chevron
+        // — the same spot the web heading puts its own. Tapping opens the
+        // page's connection popover.
+        largeStatusButton.isHidden = model.statusColor == nil
+        largeStatusButton.viewWithTag(1)?.backgroundColor = model.statusColor
+        largeStatusButton.removeTarget(nil, action: nil, for: .allEvents)
+        largeStatusButton.addAction(UIAction { _ in model.tap(.status) }, for: .touchUpInside)
 
         inlineTitle.sizeToFit()
         layoutLargeTitle()
@@ -950,29 +974,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             return UIMenu(title: section.title ?? "", options: .displayInline, children: actions)
         }
         return UIMenu(children: sections)
-    }
-
-    private lazy var statusDotButton: UIButton = {
-        let button = UIButton(type: .custom)
-        button.frame = CGRect(x: 0, y: 0, width: 30, height: 44)
-        let dot = UIView(frame: CGRect(x: 9, y: 16, width: 12, height: 12))
-        dot.layer.cornerRadius = 6
-        dot.layer.shadowColor = UIColor.black.cgColor
-        dot.layer.shadowOpacity = 0.35
-        dot.layer.shadowOffset = CGSize(width: 0, height: 1)
-        dot.layer.shadowRadius = 1
-        dot.isUserInteractionEnabled = false
-        dot.tag = 1
-        button.addSubview(dot)
-        button.accessibilityLabel = "Connection status"
-        return button
-    }()
-
-    private func statusDotItem(color: UIColor, handler: @escaping () -> Void) -> UIBarButtonItem {
-        statusDotButton.viewWithTag(1)?.backgroundColor = color
-        statusDotButton.removeTarget(nil, action: nil, for: .allEvents)
-        statusDotButton.addAction(UIAction { _ in handler() }, for: .touchUpInside)
-        return UIBarButtonItem(customView: statusDotButton)
     }
 
     private func item(_ symbol: String, label: String, handler: @escaping () -> Void) -> UIBarButtonItem {
