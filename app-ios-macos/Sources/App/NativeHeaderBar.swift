@@ -643,6 +643,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         if largeTitleEnabled != model.largeTitle {
             largeTitleEnabled = model.largeTitle
             largeTitleArea.isHidden = !largeTitleEnabled || barHidden
+            // In the sidebar layout the sidebar already names and switches
+            // homes, so the bar carries no title at all — just its buttons.
+            navigationItem.titleView = largeTitleEnabled ? inlineTitle : UIView()
             lastReportedInsets = nil
         }
         let title = model.title.isEmpty ? "Homecast" : model.title
