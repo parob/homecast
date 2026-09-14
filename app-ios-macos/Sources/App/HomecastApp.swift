@@ -89,6 +89,57 @@ enum AppConfig {
         UserDefaults.standard.bool(forKey: "com.homecast.stagingMode")
     }
 
+    /// Whether the native top-chrome preview is on. iOS only; see
+    /// `NativeHeaderBar`.
+    ///
+    /// **Defaults to `false`, and that is the point.** Native chrome reaches a
+    /// device through App Review rather than a deploy, so a preview that shipped
+    /// on by default could not be taken back by pushing again — it would be
+    /// weeks before an installed build stopped showing it. Off by default means
+    /// this can land while the decision is still open, and be judged by whoever
+    /// flips it rather than by everyone.
+    ///
+    /// Written by the web app through the `settings.setNativeHeaderPreview`
+    /// bridge action, from Settings → Account → Developer Mode.
+    static var nativeHeaderPreview: Bool {
+        get { UserDefaults.standard.bool(forKey: "com.homecast.nativeHeaderPreview") }
+        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.nativeHeaderPreview") }
+    }
+
+    /// A local web origin to load the cloud UI from, instead of homecast.cloud.
+    ///
+    /// **Debug builds only, cloud mode only.** In cloud mode the UI comes from
+    /// `homecast.cloud`, which means a web change cannot be seen inside the
+    /// native shell until it has been merged and deployed — and anything that
+    /// crosses the native bridge (the native header preview, for one) cannot be
+    /// tried at all without shipping half of it first. Pointing the WebView at
+    /// a Vite dev server closes that loop: the page comes from the laptop, the
+    /// API stays on the cloud.
+    ///
+    /// Set from outside the app, never from the UI:
+    ///
+    ///     xcrun simctl spawn booted defaults write cloud.homecast.app \
+    ///         com.homecast.devWebOrigin http://localhost:8080
+    ///
+    /// `localhost` is the only useful value: it is the one non-cloud host in
+    /// `WKAppBoundDomains`, and the simulator shares the Mac's loopback. The
+    /// web app sees a localhost origin and would call itself Community, so the
+    /// shell also injects `__HOMECAST_FORCE_CLOUD__` whenever this is set.
+    /// Compiled out of Release, so no App Store build can be redirected.
+    static var devWebOrigin: String? {
+        #if DEBUG
+        guard !isCommunity,
+              let raw = UserDefaults.standard.string(forKey: "com.homecast.devWebOrigin")?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let url = URL(string: raw), url.scheme != nil, url.host != nil
+        else { return nil }
+        return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        #else
+        return nil
+        #endif
+    }
+
     /// Whether the app is in Community mode (fully local, no cloud).
     static var isCommunity: Bool {
         UserDefaults.standard.bool(forKey: "com.homecast.communityMode")
@@ -176,6 +227,7 @@ enum AppConfig {
             let live = LocalHTTPServer.shared?.port ?? 0
             return "http://localhost:\(live != 0 ? live : localServerPort)"
         }
+        if let dev = devWebOrigin { return dev }
         return isStaging ? "https://staging.homecast.cloud" : "https://homecast.cloud"
     }
 
@@ -302,6 +354,25 @@ struct ContentView: View {
     ///
     /// Community mode keeps /login — that page doubles as the first-run relay
     /// setup flow, which has nothing to do with holding a token.
+    /// The web view, inside the native header's navigation controller on iOS
+    /// (parob/homecast-cloud#120). The bar is hidden unless the preview flag is
+    /// on, and then the layout is exactly what it was before this existed.
+    @ViewBuilder
+    private var webViewHost: some View {
+        #if targetEnvironment(macCatalyst)
+        WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
+            .ignoresSafeArea()
+            .id(webViewId)
+        #else
+        NativeHeaderHost {
+            WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
+                .ignoresSafeArea()
+                .id(webViewId)
+        }
+        .ignoresSafeArea()
+        #endif
+    }
+
     private var webViewURL: URL {
         let path = (!AppConfig.isCommunity && connectionManager.authToken != nil) ? "/portal" : "/login"
         return URL(string: "\(AppConfig.webBaseURL)\(path)")!
@@ -481,9 +552,7 @@ struct ContentView: View {
                 showModeSelector = true
             })
         } else {
-            WebViewContainer(url: webViewURL, authToken: AppConfig.isCommunity ? nil : connectionManager.authToken, connectionManager: connectionManager, homeKitBridge: homeKitBridge)
-                .ignoresSafeArea()
-                .id(webViewId)
+            webViewHost
                 .task { await refreshRelayAddressIfMoved() }
                 #if !targetEnvironment(macCatalyst)
                 .onAppear { pathWatcher.start() }
@@ -1167,6 +1236,7 @@ class FocusableWebView: WKWebView {
     // On iOS, keep real safe area insets so CSS env(safe-area-inset-*) works
 
     override func didMoveToWindow() {
+
         super.didMoveToWindow()
         if window != nil && !isFirstResponder {
             DispatchQueue.main.async { [weak self] in
@@ -1531,6 +1601,13 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastDeviceModel = "\(deviceModel)";
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "ios";
+        // Native top chrome (preview). `Available` says this build can draw it
+        // at all — the web app needs that to decide whether to offer the switch
+        // — and `Enabled` says whether it is drawing it right now. An older
+        // build sets neither, so the web app reads both as absent and behaves
+        // exactly as it does today.
+        window.homecastNativeHeaderAvailable = true;
+        window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
         console.log('[Homecast] iOS app detected - HomeKit local capable');
 
@@ -1543,6 +1620,20 @@ struct WebViewContainer: UIViewRepresentable {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
+
+        // Loading the cloud UI from a local dev server (see
+        // `AppConfig.devWebOrigin`). The web app decides Community-vs-Cloud from
+        // its hostname, and localhost reads as Community — so tell it otherwise
+        // before any of its modules run. Debug builds only; `devWebOrigin` is
+        // nil everywhere else and this adds nothing.
+        if let dev = AppConfig.devWebOrigin {
+            NSLog("[Homecast] DEV: loading web app from %@ in cloud mode", dev)
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.__HOMECAST_FORCE_CLOUD__ = true; console.log('[Homecast] DEV web origin: \(dev)');",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+        }
 
         // Native purchase bridge — App Store builds only. Signals the React app
         // to route Plan/Cloud upgrade flows through StoreKit instead of Stripe.
@@ -1849,9 +1940,11 @@ struct WebViewContainer: UIViewRepresentable {
         // On iOS, set mobile user agent so website renders mobile layout
         let iOSVersion = UIDevice.current.systemVersion
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS \(iOSVersion.replacingOccurrences(of: ".", with: "_")) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(iOSVersion) Mobile/15E148 Safari/604.1"
-        // Disable automatic content inset adjustment — CSS env(safe-area-inset-*) handles safe areas
+        // Disable automatic content inset adjustment — CSS env(safe-area-inset-*) handles safe areas.
+        // With the native header preview on, the opposite: the navigation bar
+        // insets the content and the page scrolls under it (see syncNativeHeader).
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.scrollView.bounces = false
+        webView.scrollView.bounces = AppConfig.nativeHeaderPreview
         // Disable pinch-to-zoom
         webView.scrollView.minimumZoomScale = 1.0
         webView.scrollView.maximumZoomScale = 1.0
@@ -2494,6 +2587,54 @@ struct WebViewContainer: UIViewRepresentable {
             }
         }
 
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        /// Bring the navigation chrome, the scroll view and the page into step
+        /// with the flag.
+        ///
+        /// Three things move together, and all three have to:
+        ///
+        /// - the bar (`NativeHeaderModel.enabled`, read by the SwiftUI chrome);
+        /// - the scroll view — `.automatic` insets so the page starts below the
+        ///   bar and scrolls under it, and rubber-banding, which is what makes
+        ///   a large title collapse feel like one. Off, both go back to the
+        ///   values the app has always used;
+        /// - the page, which hides its own header row and switches to document
+        ///   scrolling, because UIKit can only watch the web view's scroll view
+        ///   and the dashboard normally scrolls an inner container.
+        ///
+        /// Idempotent, because it is called both when the flag is toggled and
+        /// on every navigation — a page load discards the JS side of the
+        /// handshake, so the page has to be told again once it is back.
+        func syncNativeHeader(on webView: WKWebView) {
+            let enabled = AppConfig.nativeHeaderPreview
+            let model = NativeHeaderModel.shared
+            model.enabled = enabled
+            model.runScript = { [weak webView] js in
+                webView?.evaluateJavaScript(js, completionHandler: nil)
+            }
+            // Insets stay `.never` in both states: the page draws under the bar
+            // (the Home app's content runs under its transparent bar) and pads
+            // itself by the height the shell reports below. Automatic insets
+            // were tried and left the scroll view's black backdrop showing
+            // through the bar, because the page's layout viewport then began
+            // beneath it.
+            webView.scrollView.contentInsetAdjustmentBehavior = .never
+            webView.scrollView.bounces = enabled
+            let tell: (CGFloat, CGFloat) -> Void = { [weak webView] bar, status in
+                webView?.evaluateJavaScript(
+                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())));",
+                    completionHandler: nil
+                )
+            }
+            model.insetsChanged = enabled ? tell : nil
+            if enabled, let report = model.reportInsets {
+                report(tell)
+            } else {
+                tell(0, 0)
+            }
+        }
+        #endif
+
         // Handle messages from JavaScript
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "homecast",
@@ -2532,6 +2673,37 @@ struct WebViewContainer: UIViewRepresentable {
                 }
             case "authSuccess":
                 print("[WebView] User authenticated")
+
+            case "header.setState":
+                // The page publishing what the native bar should draw. Silently
+                // ignored on Mac and on a build with the preview off — the web
+                // app sends this unconditionally so that flipping the flag needs
+                // no reload, and a message with no bar to draw into is normal,
+                // not an error.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                NativeHeaderModel.shared.merge(body)
+                #endif
+
+            case "header.ready":
+                // The page's bridge has just mounted and wants the current
+                // state again — `didFinish` ran before React did, so the
+                // insets it was told then went nowhere.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                if let webView = self.webView {
+                    syncNativeHeader(on: webView)
+                }
+                #endif
+
+            case "settings.setNativeHeaderPreview":
+                // Settings → Account → Developer Mode → Native header (preview).
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                let enabled = body["enabled"] as? Bool ?? false
+                print("[WebView] Native header preview: \(enabled)")
+                AppConfig.nativeHeaderPreview = enabled
+                if let webView = self.webView {
+                    syncNativeHeader(on: webView)
+                }
+                #endif
             case "forgetRelay":
                 // "Change host". The web app cannot do this by clearing
                 // localStorage: on iOS the address is injected from
@@ -2807,6 +2979,14 @@ struct WebViewContainer: UIViewRepresentable {
             // Don't stop the network monitor — we need it to detect restoration.
             if isShowingErrorPage { return }
             stopNetworkMonitor()
+
+            // Re-establish the native header handshake. The bar is a UIKit view
+            // and survives a navigation; the page's half of the handshake does
+            // not, so a reload would otherwise leave the bar drawn over a web
+            // header that has just un-hidden itself.
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            syncNativeHeader(on: webView)
+            #endif
 
             // Attach local network bridge for Community mode (once, on first load)
             #if targetEnvironment(macCatalyst)
