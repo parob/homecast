@@ -2626,6 +2626,7 @@ struct WebViewContainer: UIViewRepresentable {
                     completionHandler: nil
                 )
             }
+            model.insetsChanged = enabled ? tell : nil
             if enabled, let report = model.reportInsets {
                 report(tell)
             } else {

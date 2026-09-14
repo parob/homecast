@@ -66,6 +66,10 @@ final class NativeHeaderModel: ObservableObject {
     @Published var showMenu = true
     @Published var showSearch = true
     @Published var showOverflow = true
+    /// Whether to draw the large title band. Off in the layout with a
+    /// permanent sidebar (landscape phone, iPad), where the page draws its
+    /// own heading beside the sidebar and the bar is the compact row alone.
+    @Published var largeTitle = true
     /// Whether the page has a status control to open at all.
     @Published var hasStatus = false
     /// The ⋯ menu, as the page published it. Empty means fall back to tapping
@@ -118,6 +122,10 @@ final class NativeHeaderModel: ObservableObject {
 
     /// Measures the bar for the page. Installed by the hosting controller.
     var reportInsets: ((@escaping (_ barInset: CGFloat, _ statusInset: CGFloat) -> Void) -> Void)?
+    /// Tells the page the bar's heights again. Installed by the web view's
+    /// coordinator; the hosting controller calls it when a rotation or a
+    /// layout change moves them.
+    var insetsChanged: ((_ barInset: CGFloat, _ statusInset: CGFloat) -> Void)?
 
 
     /// Merge a partial state from the page and redraw.
@@ -140,6 +148,7 @@ final class NativeHeaderModel: ObservableObject {
         if let value = payload["showMenu"] as? Bool { showMenu = value }
         if let value = payload["showSearch"] as? Bool { showSearch = value }
         if let value = payload["showOverflow"] as? Bool { showOverflow = value }
+        if let value = payload["largeTitle"] as? Bool { largeTitle = value }
         if payload.index(forKey: "statusColor") != nil {
             // Present: a hex string means there is a status to show, JSON null
             // (NSNull here) means the page hid its badge.
@@ -307,6 +316,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// The large text is a page heading (a room, group or collection), not
     /// the home name: the bar's title stays put and nothing crossfades.
     private var headingIsPage = false
+    /// Mirrors `NativeHeaderModel.largeTitle`.
+    private var largeTitleEnabled = true
+    /// The bar is hidden (preview off, or a web overlay is up).
+    private var barHidden = false
+    /// What the page was last told, so a rotation that changes the bar's
+    /// heights tells it again and nothing else does.
+    private var lastReportedInsets: (bar: CGFloat, status: CGFloat)?
 
     /// The band under the compact bar that the large title occupies, and the
     /// distance over which it collapses. The page pads its content by the
@@ -340,6 +356,17 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
         layoutLargeTitle()
+        reportInsetsIfChanged()
+    }
+
+    /// A rotation changes the status bar and the bar's own height; the page
+    /// pads by what it was last told, so tell it again.
+    private func reportInsetsIfChanged() {
+        guard let insetsChanged = NativeHeaderModel.shared.insetsChanged else { return }
+        let now = barInsets
+        if let last = lastReportedInsets, last.bar == now.bar, last.status == now.status { return }
+        lastReportedInsets = now
+        insetsChanged(now.bar, now.status)
     }
 
     /// The web view is created by SwiftUI some time after this controller's
@@ -432,6 +459,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let inset = compactInset > 0 ? compactInset : view.safeAreaInsets.top
         let height = largeTitleHeight
         largeTitleArea.frame = CGRect(x: 0, y: inset, width: view.bounds.width, height: height)
+        largeTitleArea.isHidden = !largeTitleEnabled || barHidden
 
         let leading = max(view.layoutMargins.left, 16)
         let trailingRoom: CGFloat = 60
@@ -472,6 +500,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private func updateTitleTransition() {
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
         largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
+        if !largeTitleEnabled {
+            // Compact row only: the inline title is the title.
+            inlineTitle.alpha = 1
+            return
+        }
         if headingIsPage {
             // A room, group or collection: the bar already says which home,
             // and the heading is part of the page — it scrolls under the bar
@@ -506,6 +539,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         if inset > 0, navigationController?.isNavigationBarHidden == false, compactInset != inset {
             compactInset = inset
             layoutLargeTitle()
+            reportInsetsIfChanged()
         }
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
         let target = CGPoint(x: 0, y: -inset + pageY)
@@ -530,7 +564,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     var barInsets: (bar: CGFloat, status: CGFloat) {
         let status = view.window?.safeAreaInsets.top ?? 0
         let compact = compactInset > 0 ? compactInset : view.safeAreaInsets.top
-        return (compact + largeTitleHeight, status)
+        return (compact + (largeTitleEnabled ? largeTitleHeight : 0), status)
     }
 
     private static func findWebScrollView(in view: UIView) -> UIScrollView? {
@@ -569,13 +603,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     private func apply(_ model: NativeHeaderModel) {
         let hidden = !model.enabled || model.covered
+        barHidden = hidden
         if navigationController?.isNavigationBarHidden != hidden {
             // Animated when an overlay comes and goes, instant for the flag.
             navigationController?.setNavigationBarHidden(hidden, animated: model.enabled)
         }
         // The large title goes with the bar.
         UIView.animate(withDuration: model.enabled ? 0.25 : 0) {
-            self.largeTitleArea.isHidden = hidden
+            self.largeTitleArea.isHidden = hidden || !self.largeTitleEnabled
         }
 
         // Follow the page, not the system. The page draws light-on-dark over a
@@ -596,6 +631,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeTitleLabel.textColor = ink ?? .label
 
+        if largeTitleEnabled != model.largeTitle {
+            largeTitleEnabled = model.largeTitle
+            largeTitleArea.isHidden = !largeTitleEnabled || barHidden
+            lastReportedInsets = nil
+        }
         let title = model.title.isEmpty ? "Homecast" : model.title
         let heading = model.heading.trimmingCharacters(in: .whitespaces)
         headingIsPage = !heading.isEmpty && heading != title
@@ -603,7 +643,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleLabel.text = model.subtitle
 
-        // The Home app's title chevron: every home, the current one ticked.
+        // The title menu is the one selector: this home's rooms and groups,
+        // the collections, then the other homes, then the connection.
         // On a page heading the chevron stays with the home name in the bar.
         let menu = Self.buildTitleMenu(model)
         inlineTitle.menu = menu
@@ -611,19 +652,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.isHidden = menu == nil || headingIsPage
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
-        if model.showMenu {
-            if let menu = Self.buildNavigationMenu(model) {
-                // Rooms, room groups and collections, drawn by UIKit. The web
-                // drawer is still one item away for everything a menu cannot do.
-                let leading = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal"), menu: menu)
-                leading.accessibilityLabel = "Menu"
-                navigationItem.leftBarButtonItem = leading
-            } else {
-                navigationItem.leftBarButtonItem = item("line.3.horizontal", label: "Menu") { model.tap(.menu) }
-            }
-        } else {
-            navigationItem.leftBarButtonItem = nil
-        }
+        // No leading button, like the Home app: navigation is the title menu,
+        // and the web drawer is reachable from ⋯ for what a menu cannot do.
+        navigationItem.leftBarButtonItem = nil
 
         var trailing: [UIBarButtonItem] = []
         if model.showOverflow {
@@ -645,12 +676,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     }
 
     private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
-        guard !model.homes.isEmpty || model.hasStatus else { return nil }
+        guard !model.homes.isEmpty || model.hasStatus || !model.navigation.isEmpty else { return nil }
+        var children: [UIMenuElement] = []
+        // Where to go in this home: rooms, groups, collections.
+        if let navigation = buildNavigationMenu(model) {
+            children.append(contentsOf: navigation.children)
+        }
+        // Which home.
         let current = model.currentHomeId
-        var children: [UIMenuElement] = model.homes.map { home in
-            UIAction(title: home.name, state: home.id == current ? .on : .off) { [weak model] _ in
-                model?.selectHome(home.id)
+        if !model.homes.isEmpty {
+            let homes: [UIMenuElement] = model.homes.map { home in
+                UIAction(title: home.name, image: UIImage(systemName: "house"), state: home.id == current ? .on : .off) { [weak model] _ in
+                    model?.selectHome(home.id)
+                }
             }
+            children.append(UIMenu(title: model.homes.count > 1 ? "Homes" : "", options: .displayInline, children: homes))
         }
         if model.hasStatus {
             let status = UIAction(
