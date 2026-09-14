@@ -436,7 +436,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         proxy.onAdjustedInsetChange = { [weak self] in self?.mirrorOffset() }
         view.insertSubview(proxy, at: 0)
 
-        navigationItem.titleView = inlineTitle
+        navigationItem.titleView = inlineTitleHost
         buildLargeTitle()
     }
 
@@ -536,8 +536,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     // MARK: - The two titles
 
-    /// The inline title: the name and a small chevron, opening the home menu.
-    /// Faded in as the large one fades out.
+    /// The inline title: the name and a small chevron, opening the title
+    /// menu. Faded in as the large one fades out. On a room page it is the
+    /// room's name with the home's beneath it as a subtitle, so both stay in
+    /// view however far the page has scrolled.
     private lazy var inlineTitle: UIButton = {
         var config = UIButton.Configuration.plain()
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
@@ -545,6 +547,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             attributes.font = UIFont.preferredFont(forTextStyle: .headline)
             return attributes
         }
+        config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = UIFont.preferredFont(forTextStyle: .caption1)
+            return attributes
+        }
+        config.titleAlignment = .center
+        config.titlePadding = 0
         config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
         config.imagePlacement = .trailing
         config.imagePadding = 6
@@ -555,6 +564,40 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         button.alpha = 0
         return button
     }()
+
+    /// The bar's title on a room page while the big room name is still in
+    /// view: the home's name, as a plain label. One selector at a time — the
+    /// big room name has the menu up there, and this only says where you
+    /// are, the way the Home app's bar does over a room. It hands over to
+    /// `inlineTitle` as the heading scrolls under the bar.
+    private let inlinePlainLabel: UILabel = {
+        let label = UILabel()
+        label.font = .preferredFont(forTextStyle: .headline)
+        label.textColor = .label
+        label.textAlignment = .center
+        label.alpha = 0
+        return label
+    }()
+
+    /// Holds both inline titles, centred on each other, as the bar's title
+    /// view; which one shows is the transition's business.
+    private lazy var inlineTitleHost: UIView = {
+        let host = UIView()
+        host.addSubview(inlinePlainLabel)
+        host.addSubview(inlineTitle)
+        return host
+    }()
+
+    /// Size the host to the larger of its two titles and centre both in it.
+    private func layoutInlineTitles() {
+        inlineTitle.sizeToFit()
+        inlinePlainLabel.sizeToFit()
+        let width = max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width)
+        let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
+        inlineTitleHost.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        inlineTitle.center = CGPoint(x: width / 2, y: height / 2)
+        inlinePlainLabel.center = inlineTitle.center
+    }
 
     /// The band under the compact bar holding the large title. Not clipped:
     /// the name fades out well before it would reach the bar's edge, so it
@@ -723,19 +766,17 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             if !largeTitleEnabled {
                 // Compact row only: the inline title is the title.
                 inlineTitle.alpha = 1
+                inlinePlainLabel.alpha = 0
                 return
             }
-            if headingIsPage {
-                // A room, group or collection: the bar already says which home,
-                // and the heading is part of the page — it scrolls under the bar
-                // like everything else, with no handover to fade.
-                largeTitleArea.alpha = 1
-                inlineTitle.alpha = 1
-                return
-            }
+            // The large title dissolves as it goes under the bar and the
+            // inline one takes over from the halfway point. On a room page
+            // the bar starts as a plain home name (the big room name has the
+            // menu) and hands over to the room name with the home beneath it.
             let progress = collapseProgress
             largeTitleArea.alpha = max(0, 1 - progress / 0.55)
             inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
+            inlinePlainLabel.alpha = headingIsPage ? 1 - inlineTitle.alpha : 0
         }
     }
 
@@ -989,6 +1030,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         navigationController?.navigationBar.tintColor = ink
         refreshControl.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
+        inlinePlainLabel.textColor = ink ?? .label
         largeTitleLabel.textColor = ink ?? .label
         // The chevron takes the title's ink, on a faint disc of the same —
         // white over a dark page, not the system's grey.
@@ -1001,7 +1043,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             // In the sidebar layout the sidebar already names and switches
             // homes, so the bar carries no title at all — just its buttons,
             // floating: no scroll-edge band, and taps beside them fall through.
-            navigationItem.titleView = largeTitleEnabled ? inlineTitle : UIView()
+            navigationItem.titleView = largeTitleEnabled ? inlineTitleHost : UIView()
             setContentScrollView(largeTitleEnabled ? proxy : nil, for: .top)
             applyEdgeEffects()
             if let bar = navigationController?.navigationBar as? PassthroughNavigationBar {
@@ -1027,15 +1069,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let title = model.title.isEmpty ? "Homecast" : model.title
         let heading = model.heading.trimmingCharacters(in: .whitespaces)
         headingIsPage = !heading.isEmpty && heading != title
-        inlineTitle.configuration?.title = title
+        // The compact bar: home name; or on a room page the room with the
+        // home beneath it once the heading has scrolled away, and the home
+        // alone (plain, no menu) while the big room name is still up.
+        inlineTitle.configuration?.title = headingIsPage ? heading : title
+        inlineTitle.configuration?.subtitle = headingIsPage ? title : nil
+        inlinePlainLabel.text = title
+        inlinePlainLabel.isHidden = !headingIsPage
         largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleButton.setTitle(model.subtitle, for: .normal)
 
         // The title menu is the one selector: the homes as a row, then this
         // home's rooms and groups and the collections, with the current one
-        // ticked. Both titles carry it — the bar's home name and, on a room
-        // page, the big room name too — so home or room can be changed from
-        // whichever is under the thumb.
+        // ticked. Only one of it is ever on screen: the big title while it is
+        // up, the bar's once that has scrolled away (on a room page the bar
+        // shows a plain home name until then — see `inlinePlainLabel`).
         let menu = Self.buildTitleMenu(model)
         inlineTitle.menu = menu
         largeTitleButton.menu = menu
@@ -1068,7 +1116,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeStatusButton.removeTarget(nil, action: nil, for: .allEvents)
         largeStatusButton.addAction(UIAction { _ in model.tap(.status) }, for: .touchUpInside)
 
-        inlineTitle.sizeToFit()
+        layoutInlineTitles()
         layoutLargeTitle()
         // Now, not on the next layout pass: after a rotation back to
         // portrait there may not be one, and the page kept the landscape
