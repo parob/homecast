@@ -2686,6 +2686,13 @@ struct WebViewContainer: UIViewRepresentable {
                 NativeHeaderModel.shared.merge(body)
                 #endif
 
+            case "header.refreshDone":
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                Task { @MainActor in NativeHeaderModel.shared.refreshDone?() }
+                #endif
+                // The Mac has no native bar, so the `#if` above compiles to
+                // nothing there — and a case needs a statement.
+                break
             case "header.ready":
                 // The page's bridge has just mounted and wants the current
                 // state again — `didFinish` ran before React did, so the

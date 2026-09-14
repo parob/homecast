@@ -128,6 +128,8 @@ final class NativeHeaderModel: ObservableObject {
     /// coordinator; the hosting controller calls it when a rotation or a
     /// layout change moves them.
     var insetsChanged: ((_ barInset: CGFloat, _ statusInset: CGFloat) -> Void)?
+    /// The page has finished what a pull-to-refresh asked; set by the bar.
+    var refreshDone: (() -> Void)?
 
 
     /// Merge a partial state from the page and redraw.
@@ -228,6 +230,12 @@ final class NativeHeaderModel: ObservableObject {
 
     func tap(_ control: Control) {
         runScript?("window.__homecastNativeHeader && window.__homecastNativeHeader.tap('\(control.rawValue)');")
+    }
+
+    /// The native pull-to-refresh fired: `soft` for an ordinary refresh, `hard`
+    /// for the deep pull that means the page's hard-reload countdown.
+    func refresh(_ kind: String) {
+        runScript?("window.__homecastNativeHeader && window.__homecastNativeHeader.refresh && window.__homecastNativeHeader.refresh('\(kind)');")
     }
 
     func navigate(_ id: String) {
@@ -348,6 +356,10 @@ enum WebHostingLayout {
     /// distance over which it collapses. The page pads its content by the
     /// compact inset plus this.
     static let largeTitleHeight: CGFloat = 52
+    /// How far past the top a pull has to go to mean the hard reload rather
+    /// than a refresh — roughly what a 500px finger travel came to on the
+    /// web control once the scroll view's rubber band is accounted for.
+    static let hardPull: CGFloat = 200
 }
 
 /// The controller in the navigation stack. Renders `NativeHeaderModel` onto
@@ -482,6 +494,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // alpha is invisible.
         scroll.addSubview(largeTitleArea)
         layoutLargeTitle()
+        // Pull to refresh, UIKit's. Its spinner is nudged down to sit just
+        // above the large title (see `layoutLargeTitleNow`): the control's
+        // own home is the overscroll gap at the very top of the content, and
+        // with no content inset that is under the compact bar.
+        refreshControl.addTarget(self, action: #selector(refreshCrossedThreshold), for: .valueChanged)
+        scroll.refreshControl = refreshControl
+        NativeHeaderModel.shared.refreshDone = { [weak self] in self?.endRefreshing() }
         // Not the scroll view's delegate: that is WebKit's, and taking it is
         // the kind of thing that breaks a pan without saying so. A target on
         // the pan recogniser and KVO on the offset are enough to know when a
@@ -641,6 +660,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleArea.frame = CGRect(x: 0, y: inset, width: view.bounds.width, height: height)
         largeTitleArea.isHidden = !largeTitleEnabled || barHidden
         largeTitleArea.superview?.bringSubviewToFront(largeTitleArea)
+        // Shifting the control's bounds up draws its spinner that much lower:
+        // in the gap that opens between the compact bar and the large title
+        // as the page is pulled, which is where UIKit's own large-title bars
+        // put it.
+        refreshControl.bounds.origin.y = -inset
+        refreshControl.isEnabled = largeTitleEnabled && !barHidden
 
         let leading = max(view.layoutMargins.left, 16)
         let trailingRoom: CGFloat = 60
@@ -718,6 +743,19 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     /// Set when a drag ended with momentum; the snap waits for it to stop.
     private var awaitingDecelerationEnd = false
+
+    // MARK: Pull to refresh
+    //
+    // The page's own pull is off under the bar — the document scrolls, not
+    // its inner container — so UIKit's control on the web view's scroll view
+    // takes over. It arms when the pull crosses UIKit's threshold and acts
+    // when the finger lifts, because the depth of the pull decides what it
+    // means: an ordinary refresh, or past `hardPull` the page's hard-reload
+    // countdown, which is what a very long pull meant on the web control.
+    private let refreshControl = UIRefreshControl()
+    private var refreshArmed = false
+    private var deepestPull: CGFloat = 0
+    private var refreshStarted: Date?
 
 
     /// The page's offset as drawn this frame. During WebKit's own momentum
@@ -808,8 +846,38 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         }
     }
 
+    @objc private func refreshCrossedThreshold() {
+        // Fires as the pull crosses the threshold, finger still down. Decide
+        // on release, when the depth is known — unless it arrived after.
+        if webScrollView?.isDragging == true {
+            refreshArmed = true
+        } else {
+            fireRefresh()
+        }
+    }
+
+    private func fireRefresh() {
+        refreshArmed = false
+        refreshStarted = Date()
+        NativeHeaderModel.shared.refresh(deepestPull < -WebHostingLayout.hardPull ? "hard" : "soft")
+        deepestPull = 0
+    }
+
+    /// Stop the spinner, but not before it has been seen: a refresh the page
+    /// answers instantly would otherwise flick.
+    private func endRefreshing() {
+        let shown = refreshStarted.map { Date().timeIntervalSince($0) } ?? 1
+        refreshStarted = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, 0.6 - shown)) { [weak self] in
+            self?.refreshControl.endRefreshing()
+        }
+    }
+
     @objc private func webPanChanged(_ pan: UIPanGestureRecognizer) {
         wake()
+        if pan.state == .began { deepestPull = 0 }
+        if pan.state == .changed, let scroll = webScrollView { deepestPull = min(deepestPull, scroll.contentOffset.y) }
+        if (pan.state == .ended || pan.state == .cancelled), refreshArmed { fireRefresh() }
         guard pan.state == .ended || pan.state == .cancelled, let scroll = webScrollView else { return }
         if scroll.isDecelerating {
             awaitingDecelerationEnd = true
@@ -919,6 +987,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         navigationController?.overrideUserInterfaceStyle = style
         let ink: UIColor? = style == .dark ? .white : style == .light ? .black : nil
         navigationController?.navigationBar.tintColor = ink
+        refreshControl.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeTitleLabel.textColor = ink ?? .label
         // The chevron takes the title's ink, on a faint disc of the same —
