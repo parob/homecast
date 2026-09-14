@@ -331,6 +331,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var cancellable: AnyCancellable?
     private var offsetObservation: NSKeyValueObservation?
     private var boundsObservation: NSKeyValueObservation?
+    /// Samples the page's offset every frame while it is moving. WebKit's
+    /// scroll view does not post an offset change for every frame of a drag
+    /// or a fling, so a title driven by notifications alone lagged behind by
+    /// up to a second (reported). A display link is what a scroll-linked
+    /// effect needs; it is paused whenever the page is still.
+    private var displayLink: CADisplayLink?
+    private var lastSampledOffset: CGFloat = .nan
+    private var stillFrames = 0
     private weak var webScrollView: UIScrollView?
     private let proxy = ProxyScrollView()
     /// The compact bar's inset (status bar + bar), as observed while shown.
@@ -352,6 +360,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var largeTitleHeight: CGFloat { WebHostingLayout.largeTitleHeight }
 
     // MARK: - Lifecycle
+
+    deinit {
+        displayLink?.invalidate()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -420,11 +432,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 self.snapIfNeeded(scroll)
             }
         }
-        offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in onScroll() }
-        // Bounds too: a fast deceleration can land without a final
-        // contentOffset notification, and the title then stayed faded at
-        // the top (reported).
-        boundsObservation = scroll.observe(\.bounds, options: [.new]) { _, _ in onScroll() }
+        offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in onScroll(); self?.wake() }
+        boundsObservation = scroll.observe(\.bounds, options: [.new]) { [weak self] _, _ in onScroll(); self?.wake() }
+        let link = CADisplayLink(target: self, selector: #selector(sample))
+        link.add(to: .main, forMode: .common)
+        link.isPaused = true
+        displayLink = link
         // Above the web view, which SwiftUI has just added on top of us.
         view.bringSubviewToFront(largeTitleArea)
         mirrorOffset()
@@ -570,24 +583,36 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// Set when a drag ended with momentum; the snap waits for it to stop.
     private var awaitingDecelerationEnd = false
 
+    /// Start sampling; `sample` pauses again once the page has been still.
+    private func wake() {
+        stillFrames = 0
+        displayLink?.isPaused = false
+    }
+
+    @objc private func sample() {
+        guard let scroll = webScrollView else { displayLink?.isPaused = true; return }
+        let y = scroll.contentOffset.y
+        if y != lastSampledOffset {
+            lastSampledOffset = y
+            stillFrames = 0
+            mirrorOffset()
+            if awaitingDecelerationEnd, !scroll.isDragging, !scroll.isDecelerating {
+                awaitingDecelerationEnd = false
+                snapIfNeeded(scroll)
+            }
+        } else if !scroll.isDragging, !scroll.isDecelerating {
+            stillFrames += 1
+            if stillFrames > 30 { displayLink?.isPaused = true }
+        }
+    }
+
     @objc private func webPanChanged(_ pan: UIPanGestureRecognizer) {
+        wake()
         guard pan.state == .ended || pan.state == .cancelled, let scroll = webScrollView else { return }
         if scroll.isDecelerating {
             awaitingDecelerationEnd = true
         } else {
             snapIfNeeded(scroll)
-        }
-        // Belt and braces for the same missed-notification case: settle the
-        // titles from wherever the page actually stopped.
-        for delay in [0.4, 1.2, 2.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, let scroll = self.webScrollView, !scroll.isDragging, !scroll.isDecelerating else { return }
-                self.mirrorOffset()
-                if self.awaitingDecelerationEnd {
-                    self.awaitingDecelerationEnd = false
-                    self.snapIfNeeded(scroll)
-                }
-            }
         }
     }
 
