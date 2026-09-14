@@ -602,6 +602,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     private lazy var inlineTitleHost: InlineTitleHost = {
         let host = InlineTitleHost()
+        host.clipsToBounds = false
         host.addSubview(inlinePlainLabel)
         host.addSubview(inlineTitle)
         host.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -621,10 +622,16 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         inlineTitle.setNeedsUpdateConfiguration()
         inlineTitle.setNeedsLayout()
         inlineTitle.layoutIfNeeded()
-        inlineTitle.bounds = CGRect(origin: .zero, size: inlineTitle.intrinsicContentSize)
+        // Whole points with a little slack: the measured sizes are thirds of
+        // a point and the bar's container rounds them down, which shaved the
+        // last glyph and the chevron's edge (reported as a slight clip).
+        let slack: CGFloat = 8
+        let buttonSize = inlineTitle.intrinsicContentSize
+        inlineTitle.bounds = CGRect(x: 0, y: 0, width: ceil(buttonSize.width) + 2, height: ceil(buttonSize.height))
         inlinePlainLabel.sizeToFit()
-        let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width))
-        let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
+        inlinePlainLabel.bounds.size = CGSize(width: ceil(inlinePlainLabel.bounds.width) + 2, height: ceil(inlinePlainLabel.bounds.height))
+        let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width) + slack)
+        let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height) + 2
         let size = CGSize(width: width, height: height)
         let grew = size != inlineTitleHost.preferredSize
         inlineTitleHost.preferredSize = size
