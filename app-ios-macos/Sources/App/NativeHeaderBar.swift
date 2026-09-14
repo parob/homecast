@@ -200,8 +200,9 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UINavigationController {
         let root = WebHostingController(rootView: content)
         let nav = UINavigationController(rootViewController: root)
-        nav.navigationBar.prefersLargeTitles = true
-        root.navigationItem.largeTitleDisplayMode = .always
+        // Compact bar only; the large title is the controller's own view.
+        nav.navigationBar.prefersLargeTitles = false
+        root.navigationItem.largeTitleDisplayMode = .never
         root.bind(NativeHeaderModel.shared)
         return nav
     }
@@ -222,37 +223,51 @@ final class ProxyScrollView: UIScrollView {
     }
 }
 
-/// The controller in the navigation stack. Renders `NativeHeaderModel` onto its
-/// `navigationItem` and drives the large title from the web view's scrolling.
+/// Layout constants shared with the page's padding contract.
+enum WebHostingLayout {
+    /// The band under the compact bar that the large title occupies, and the
+    /// distance over which it collapses. The page pads its content by the
+    /// compact inset plus this.
+    static let largeTitleHeight: CGFloat = 52
+}
+
+/// The controller in the navigation stack. Renders `NativeHeaderModel` onto
+/// its `navigationItem`, draws the large title itself, and drives both from
+/// the web view's scrolling.
 ///
-/// ## Why UIKit is handed a proxy and not the web view's own scroll view
+/// ## Why the large title is drawn here and not by UIKit
 ///
-/// The large-title machinery assumes the content scroll view is inset by the
-/// bar: "at the top" means `contentOffset.y == -adjustedContentInset.top`,
-/// where that inset is the *large* bar's height. The web view cannot be run
-/// that way. Inset automatically, the page's layout viewport starts below the
-/// bar and the band under the status bar shows the scroll view's black
-/// backdrop rather than the page's wallpaper (measured, and it looked exactly
-/// as bad as it sounds). Not inset, the page draws under the bar the way the
-/// Home app's content does — but then its offset at rest is 0, UIKit reads
-/// that as "scrolled 168pt under the bar" and the title never expands.
+/// UIKit's large title is a morph between two positions of one title control,
+/// driven by an interactive drag on the bar's content scroll view. The web
+/// view cannot be that scroll view (inset the way UIKit expects, the page's
+/// layout viewport starts below the bar and the band under the status bar
+/// shows the scroll view's black backdrop instead of the wallpaper), and when
+/// UIKit is fed the page's offset through a proxy it has never dragged, the
+/// morph degrades: the large title slides up unfaded and unclipped into the
+/// menu button, then snaps to the inline title at the threshold (measured,
+/// frame by frame). So the bar is kept compact, and the large title is an
+/// ordinary view of ours under it: it rides up with the content 1:1, is
+/// clipped at the bar's edge and fades, while a custom inline title fades in
+/// over the same distance. That is what a finger sees in the Home app, and it
+/// is deterministic.
 ///
-/// So UIKit gets a scroll view that *is* inset the way it expects — this
-/// invisible proxy — and the proxy's offset is kept equal to the page's, one
-/// KVO notification behind, on the same run loop turn. UIKit resizes the bar
-/// from the proxy; the page never learns any of this happened. The one thing
-/// UIKit would normally do to the content scroll view — snap it past the
-/// half-collapsed title on release — it cannot do to a view nobody drags, so
-/// `scrollViewDidEndDragging` below does that to the web view instead.
+/// The proxy scroll view remains — UIKit still needs a content scroll view it
+/// believes in to draw the scroll-edge effect under the compact bar once
+/// content has moved beneath it.
 final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var cancellable: AnyCancellable?
     private var offsetObservation: NSKeyValueObservation?
     private weak var webScrollView: UIScrollView?
     private let proxy = ProxyScrollView()
-    /// The bar's inset with the large title shown / collapsed, as observed on
-    /// the proxy. The difference is the band a release snaps across.
-    private var largestInset: CGFloat = 0
-    private var smallestInset: CGFloat = .greatestFiniteMagnitude
+    /// The compact bar's inset (status bar + bar), as observed while shown.
+    private var compactInset: CGFloat = 0
+
+    /// The band under the compact bar that the large title occupies, and the
+    /// distance over which it collapses. The page pads its content by the
+    /// compact inset plus this.
+    private var largeTitleHeight: CGFloat { WebHostingLayout.largeTitleHeight }
+
+    // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -260,117 +275,25 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         proxy.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         proxy.contentSize = CGSize(width: 1, height: 1_000_000)
         proxy.contentInsetAdjustmentBehavior = .always
-        // Fully behind the web view, so it never sees a touch — and left
-        // visible and interactive on purpose: UIKit ignores a content scroll
-        // view it considers inert, and an alpha-0 proxy got a bar sized for a
-        // large title with an empty large-title view (measured).
         proxy.backgroundColor = .clear
         proxy.isUserInteractionEnabled = false
         proxy.showsVerticalScrollIndicator = false
         proxy.showsHorizontalScrollIndicator = false
         proxy.onAdjustedInsetChange = { [weak self] in self?.mirrorOffset() }
         view.insertSubview(proxy, at: 0)
-    }
 
-    /// The proxy is handed to UIKit only once the bar has been laid out large
-    /// with no scroll view at all. Attached from the start, UIKit sized the
-    /// bar for a large title but never moved the title control into the
-    /// large-title view — it does that from scroll notifications, and a
-    /// freshly attached scroll view at rest sends none (measured: an empty
-    /// large-title view, the title parked inline at alpha 0).
-    private var proxyAttached = false
+        navigationItem.titleView = inlineTitle
+        buildLargeTitle()
+    }
 
     override func contentScrollView(for edge: NSDirectionalRectEdge) -> UIScrollView? {
-        edge == .top && proxyAttached ? proxy : super.contentScrollView(for: edge)
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        attachProxyIfNeeded()
-    }
-
-    private func attachProxyIfNeeded() {
-        guard !proxyAttached else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.proxyAttached else { return }
-            self.proxyAttached = true
-            self.setContentScrollView(self.proxy, for: .top)
-            self.mirrorOffset()
-            self.nudgeProxy()
-        }
+        edge == .top ? proxy : super.contentScrollView(for: edge)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
-        layoutLargeTitleMenu()
-    }
-
-    // MARK: - The chevron on the large title
-
-    /// UIKit draws the title-menu chevron on the inline title only; the Home
-    /// app has one on the large title too, and that is where you are when you
-    /// have not scrolled. So the large title gets its own: a small chevron
-    /// button after the name, and an invisible button over the name itself,
-    /// both presenting the same menu. They live inside UIKit's large-title
-    /// view so they fade and collapse with it.
-    private lazy var largeTitleChevron: UIButton = {
-        var config = UIButton.Configuration.plain()
-        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
-        config.baseForegroundColor = .secondaryLabel
-        config.background.backgroundColor = .tertiarySystemFill
-        config.cornerStyle = .capsule
-        config.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)
-        let button = UIButton(configuration: config)
-        button.showsMenuAsPrimaryAction = true
-        button.accessibilityLabel = "Switch home"
-        return button
-    }()
-
-    private lazy var largeTitleTap: UIButton = {
-        let button = UIButton(type: .custom)
-        button.showsMenuAsPrimaryAction = true
-        button.accessibilityLabel = "Switch home"
-        return button
-    }()
-
-    /// The menu both buttons present. Rebuilt on every apply.
-    private var titleMenu: UIMenu? {
-        didSet {
-            largeTitleChevron.menu = titleMenu
-            largeTitleTap.menu = titleMenu
-            largeTitleChevron.isHidden = titleMenu == nil
-            largeTitleTap.isHidden = titleMenu == nil
-            layoutLargeTitleMenu()
-        }
-    }
-
-    private func layoutLargeTitleMenu() {
-        guard let bar = navigationController?.navigationBar,
-              let largeTitleView = bar.subviews.first(where: { String(describing: type(of: $0)).contains("LargeTitleView") })
-        else { return }
-        if largeTitleChevron.superview !== largeTitleView {
-            largeTitleView.addSubview(largeTitleTap)
-            largeTitleView.addSubview(largeTitleChevron)
-        }
-        // UIKit's large title: 34pt bold at the bar's leading margin.
-        let font = UIFont.systemFont(ofSize: 34, weight: .bold)
-        let title = navigationItem.title ?? ""
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
-        let leading = max(bar.layoutMargins.left, 16)
-        let bounds = largeTitleView.bounds
-        let maxTextWidth = max(0, bounds.width - leading - 60)
-        let width = min(textWidth, maxTextWidth)
-        let chevronSize: CGFloat = 22
-        largeTitleTap.frame = CGRect(x: 0, y: 0, width: leading + width + 6, height: bounds.height)
-        largeTitleChevron.frame = CGRect(
-            x: leading + width + 8,
-            y: (bounds.height - chevronSize) / 2 + 2,
-            width: chevronSize,
-            height: chevronSize
-        )
-        largeTitleView.bringSubviewToFront(largeTitleTap)
-        largeTitleView.bringSubviewToFront(largeTitleChevron)
+        layoutLargeTitle()
     }
 
     /// The web view is created by SwiftUI some time after this controller's
@@ -391,8 +314,119 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 self.snapIfNeeded(scroll)
             }
         }
+        // Above the web view, which SwiftUI has just added on top of us.
+        view.bringSubviewToFront(largeTitleArea)
         mirrorOffset()
     }
+
+    // MARK: - The two titles
+
+    /// The inline title: the name and a small chevron, opening the home menu.
+    /// Faded in as the large one fades out.
+    private lazy var inlineTitle: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = UIFont.preferredFont(forTextStyle: .headline)
+            return attributes
+        }
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+        config.imagePlacement = .trailing
+        config.imagePadding = 6
+        config.contentInsets = .zero
+        config.baseForegroundColor = .label
+        let button = UIButton(configuration: config)
+        button.showsMenuAsPrimaryAction = true
+        button.alpha = 0
+        return button
+    }()
+
+    /// The band under the compact bar holding the large title. Clips, so the
+    /// title disappears under the bar's edge as it rides up.
+    private let largeTitleArea = UIView()
+    /// The whole large title is one button, so the name is the tap target.
+    private let largeTitleButton = UIButton(type: .custom)
+    private let largeTitleLabel = UILabel()
+    private let largeSubtitleLabel = UILabel()
+    private let largeChevron = UIImageView()
+
+    private func buildLargeTitle() {
+        largeTitleArea.clipsToBounds = true
+        largeTitleArea.backgroundColor = .clear
+        view.addSubview(largeTitleArea)
+
+        largeTitleButton.showsMenuAsPrimaryAction = true
+        largeTitleButton.accessibilityLabel = "Switch home"
+        largeTitleArea.addSubview(largeTitleButton)
+
+        largeTitleLabel.font = .systemFont(ofSize: 34, weight: .bold)
+        largeTitleLabel.textColor = .label
+        largeTitleLabel.lineBreakMode = .byTruncatingTail
+        largeTitleLabel.isUserInteractionEnabled = false
+        largeTitleButton.addSubview(largeTitleLabel)
+
+        largeSubtitleLabel.font = .preferredFont(forTextStyle: .footnote)
+        largeSubtitleLabel.textColor = .secondaryLabel
+        largeSubtitleLabel.isUserInteractionEnabled = false
+        largeTitleButton.addSubview(largeSubtitleLabel)
+
+        largeChevron.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
+        largeChevron.tintColor = .secondaryLabel
+        largeChevron.contentMode = .center
+        largeChevron.backgroundColor = .tertiarySystemFill
+        largeChevron.layer.cornerRadius = 11
+        largeChevron.isUserInteractionEnabled = false
+        largeTitleButton.addSubview(largeChevron)
+    }
+
+    /// Lay the large title out for the current text; `updateTitleTransition`
+    /// then moves it with the scroll.
+    private func layoutLargeTitle() {
+        let inset = compactInset > 0 ? compactInset : view.safeAreaInsets.top
+        let height = largeTitleHeight
+        largeTitleArea.frame = CGRect(x: 0, y: inset, width: view.bounds.width, height: height)
+
+        let leading = max(view.layoutMargins.left, 16)
+        let trailingRoom: CGFloat = 60
+        let textWidth = ceil((largeTitleLabel.text ?? "").size(withAttributes: [.font: largeTitleLabel.font as Any]).width)
+        let maxTextWidth = max(0, view.bounds.width - leading - trailingRoom)
+        let width = min(textWidth, maxTextWidth)
+        let hasSubtitle = !(largeSubtitleLabel.text ?? "").isEmpty
+
+        // 34pt bold sits on a 41pt line; with a status line under it the pair
+        // is packed a little tighter so it still fits the band.
+        let titleHeight: CGFloat = 41
+        let titleY: CGFloat = hasSubtitle ? -2 : (height - titleHeight) / 2
+        largeTitleLabel.frame = CGRect(x: leading, y: titleY, width: width, height: titleHeight)
+        largeSubtitleLabel.frame = CGRect(x: leading, y: titleY + titleHeight - 6, width: maxTextWidth, height: 16)
+        largeSubtitleLabel.isHidden = !hasSubtitle
+
+        let chevronSize: CGFloat = 22
+        largeChevron.frame = CGRect(x: leading + width + 8, y: titleY + (titleHeight - chevronSize) / 2 + 2, width: chevronSize, height: chevronSize)
+        largeChevron.layer.cornerRadius = chevronSize / 2
+        largeTitleButton.frame = CGRect(x: 0, y: 0, width: leading + width + 8 + chevronSize + 8, height: height)
+
+        updateTitleTransition()
+    }
+
+    /// Where we are between "large title showing" (0) and "inline title
+    /// showing" (1), from the page's offset.
+    private var collapseProgress: CGFloat {
+        let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
+        return min(1, pageY / largeTitleHeight)
+    }
+
+    /// Move the large title up with the content and fade it; fade the inline
+    /// title in over the last part of that travel.
+    private func updateTitleTransition() {
+        let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
+        let progress = collapseProgress
+        largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
+        largeTitleArea.alpha = 1 - progress
+        inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
+    }
+
+    // MARK: - Scrolling
 
     /// Set when a drag ended with momentum; the snap waits for it to stop.
     private var awaitingDecelerationEnd = false
@@ -406,52 +440,38 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         }
     }
 
-
-    /// Keep the proxy where the page is, in the proxy's own coordinate space.
+    /// Keep the proxy where the page is, in the proxy's own coordinate space,
+    /// and the titles where the page's offset says.
     private func mirrorOffset() {
         let inset = proxy.adjustedContentInset.top
-        if inset > 0, navigationController?.isNavigationBarHidden == false {
-            largestInset = max(largestInset, inset)
-            smallestInset = min(smallestInset, inset)
+        if inset > 0, navigationController?.isNavigationBarHidden == false, compactInset != inset {
+            compactInset = inset
+            layoutLargeTitle()
         }
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
-        var target = CGPoint(x: 0, y: -inset + pageY)
-        // The page is at its top but UIKit has the title collapsed: only an
-        // offset above the compact top reopens it, which is what a finger
-        // pulling down would produce. Ask for the large-state top; UIKit
-        // grows the inset to match and the next call lands exactly on it.
-        if pageY == 0, inset < largestInset {
-            target.y = -largestInset
-        }
+        let target = CGPoint(x: 0, y: -inset + pageY)
         if proxy.contentOffset != target {
             proxy.contentOffset = target
         }
+        updateTitleTransition()
     }
 
-    /// The band across which the large title collapses: the difference between
-    /// the two bar heights the proxy has been laid out at.
-    private var collapseBand: CGFloat {
-        guard largestInset > 0, smallestInset < largestInset else { return 52 }
-        return largestInset - smallestInset
-    }
-
-    /// What UIKit does for its own scroll views: never leave the title half
+    /// What UIKit does for its own large titles: never leave one half
     /// collapsed. Below halfway it reopens, above it finishes closing.
     private func snapIfNeeded(_ scroll: UIScrollView) {
         let y = scroll.contentOffset.y
-        let band = collapseBand
+        let band = largeTitleHeight
         guard y > 0, y < band else { return }
         scroll.setContentOffset(CGPoint(x: 0, y: y < band / 2 ? 0 : band), animated: true)
     }
 
-    /// The bar's height with the large title shown, and the status bar alone.
-    /// The page pads its content by the first and pins its safe-area variable
-    /// to the second.
-
+    /// The height the page must keep clear at the top — the compact bar plus
+    /// the large title band — and the status bar alone. The page pads its
+    /// content by the first and pins its safe-area variable to the second.
     var barInsets: (bar: CGFloat, status: CGFloat) {
         let status = view.window?.safeAreaInsets.top ?? 0
-        let bar = largestInset > 0 ? largestInset : view.safeAreaInsets.top
-        return (bar, status)
+        let compact = compactInset > 0 ? compactInset : view.safeAreaInsets.top
+        return (compact + largeTitleHeight, status)
     }
 
     private static func findWebScrollView(in view: UIView) -> UIScrollView? {
@@ -462,11 +482,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         return nil
     }
 
+    // MARK: - Model → bar
+
     func bind(_ model: NativeHeaderModel) {
         model.reportInsets = { [weak self] completion in
             guard let self else { return }
             // After a layout pass, so a bar that has only just been shown has
-            // its large-title height.
+            // its height.
             DispatchQueue.main.async {
                 self.view.layoutIfNeeded()
                 let insets = self.barInsets
@@ -492,17 +514,17 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             // Animated when an overlay comes and goes, instant for the flag.
             navigationController?.setNavigationBarHidden(hidden, animated: model.enabled)
         }
+        // The large title goes with the bar.
+        UIView.animate(withDuration: model.enabled ? 0.25 : 0) {
+            self.largeTitleArea.isHidden = hidden
+        }
 
         // Follow the page, not the system. The page draws light-on-dark over a
         // dark wallpaper or in its dark theme whatever the device is set to,
-        // and a system-light bar over that is a black title on black. Scoped
-        // to the bar (its menus inherit it) so the web view's own
-        // `prefers-color-scheme` is left alone.
-        // On the controller, not just the bar: the large title resolves its
-        // colour against the controller's traits and stayed black over a dark
-        // page with the override on the bar alone. The page does not read
-        // `prefers-color-scheme` (its dark look is a class), so nothing in the
-        // web view changes.
+        // and a system-light bar over that is a black title on black. On the
+        // controller so our own labels resolve the same way; the page does not
+        // read `prefers-color-scheme` (its dark look is a class), so nothing
+        // in the web view changes.
         let style: UIUserInterfaceStyle
         switch model.appearance {
         case "dark": style = .dark
@@ -511,31 +533,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         }
         navigationController?.overrideUserInterfaceStyle = style
         let ink: UIColor? = style == .dark ? .white : style == .light ? .black : nil
-        let attributes: [NSAttributedString.Key: Any]? = ink.map { [.foregroundColor: $0] }
-        navigationController?.navigationBar.titleTextAttributes = attributes
-        navigationController?.navigationBar.largeTitleTextAttributes = attributes
         navigationController?.navigationBar.tintColor = ink
+        inlineTitle.configuration?.baseForegroundColor = ink ?? .label
+        largeTitleLabel.textColor = ink ?? .label
 
-        // Never empty: the bar builds its large-title content from the title
-        // it has when it lays out, and an empty one at launch left the
-        // large-title view with nothing in it even after the name arrived.
         let title = model.title.isEmpty ? "Homecast" : model.title
-        if navigationItem.title != title {
-            navigationItem.title = title
-        }
-        if #available(iOS 26.0, *) {
-            navigationItem.subtitle = model.subtitle.isEmpty ? nil : model.subtitle
-            navigationItem.largeSubtitle = model.subtitle.isEmpty ? nil : model.subtitle
-        }
+        inlineTitle.configuration?.title = title
+        largeTitleLabel.text = title
+        largeSubtitleLabel.text = model.subtitle
 
         // The Home app's title chevron: every home, the current one ticked.
-        // One menu for the inline title (UIKit's provider) and the large one
-        // (our buttons, see layoutLargeTitleMenu).
         let menu = Self.buildTitleMenu(model)
-        titleMenu = menu
-        if #available(iOS 16.0, *) {
-            navigationItem.titleMenuProvider = menu.map { menu in { _ in menu } }
-        }
+        inlineTitle.menu = menu
+        largeTitleButton.menu = menu
+        largeChevron.isHidden = menu == nil
+        inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
         navigationItem.leftBarButtonItem = model.showMenu
             ? item("line.3.horizontal", label: "Menu") { model.tap(.menu) }
@@ -556,35 +568,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
         navigationItem.rightBarButtonItems = trailing
 
-        // Make the bar lay its title out now. Inside a representable the bar
-        // is not on the layout path a title change would normally dirty: the
-        // large-title view was created at the right size, alpha 1, with its
-        // labels still at their zero frames — measured — so the title was
-        // simply never painted.
-        if let bar = navigationController?.navigationBar {
-            Self.forceLayout(bar)
-        }
-        nudgeProxy()
-    }
-
-    /// UIKit places the title control (inline slot or large-title view) from
-    /// its content scroll view's scroll notifications and from nothing else —
-    /// a title that changes while the page rests at the top stays parked in
-    /// the inline slot at alpha 0 until the user scrolls (measured). Two real
-    /// offset changes, back to where it was, run that observer now.
-    private func nudgeProxy() {
-        guard proxyAttached else { return }
-        // Past the top, never below it: a nudge downwards reads as the start
-        // of a collapse and left the bar compact at rest (measured).
-        let rest = proxy.contentOffset
-        proxy.contentOffset = CGPoint(x: 0, y: rest.y - 1)
-        proxy.contentOffset = rest
-    }
-
-    private static func forceLayout(_ view: UIView) {
-        view.setNeedsLayout()
-        view.layoutIfNeeded()
-        view.subviews.forEach { forceLayout($0) }
+        inlineTitle.sizeToFit()
+        layoutLargeTitle()
     }
 
     private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
