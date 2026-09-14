@@ -549,8 +549,32 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private let largeSubtitleButton = UIButton(type: .custom)
     private let largeChevron = UIImageView()
     /// The connection dot beside the large title.
+    /// The connection dot's button, with a pressed state: a dot that gives
+    /// nothing back when touched reads as decoration. While the finger is
+    /// down a soft halo fills behind it and the dot shrinks a little; both
+    /// spring back on release, whether or not the tap lands.
+    private final class StatusDotButton: UIButton {
+        override var isHighlighted: Bool {
+            didSet {
+                guard oldValue != isHighlighted else { return }
+                let pressed = isHighlighted
+                UIView.animate(withDuration: pressed ? 0.08 : 0.3, delay: 0, usingSpringWithDamping: pressed ? 1 : 0.55, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                    self.viewWithTag(1)?.transform = pressed ? CGAffineTransform(scaleX: 0.78, y: 0.78) : .identity
+                    self.viewWithTag(2)?.alpha = pressed ? 1 : 0
+                }
+            }
+        }
+    }
+
     private let largeStatusButton: UIButton = {
-        let button = UIButton(type: .custom)
+        let button = StatusDotButton(type: .custom)
+        let halo = UIView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        halo.layer.cornerRadius = 15
+        halo.backgroundColor = .tertiarySystemFill
+        halo.alpha = 0
+        halo.isUserInteractionEnabled = false
+        halo.tag = 2
+        button.addSubview(halo)
         let dot = UIView(frame: CGRect(x: 9, y: 9, width: 12, height: 12))
         dot.layer.cornerRadius = 6
         dot.layer.shadowColor = UIColor.black.cgColor
