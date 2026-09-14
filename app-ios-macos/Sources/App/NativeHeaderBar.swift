@@ -356,6 +356,10 @@ enum WebHostingLayout {
     /// distance over which it collapses. The page pads its content by the
     /// compact inset plus this.
     static let largeTitleHeight: CGFloat = 52
+    /// How far past the top a pull has to go to mean the hard reload rather
+    /// than a refresh — roughly what a 500px finger travel came to on the
+    /// web control once the scroll view's rubber band is accounted for.
+    static let hardPull: CGFloat = 200
 }
 
 /// The controller in the navigation stack. Renders `NativeHeaderModel` onto
@@ -752,7 +756,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var refreshArmed = false
     private var deepestPull: CGFloat = 0
     private var refreshStarted: Date?
-    private static let hardPull: CGFloat = 200
 
 
     /// The page's offset as drawn this frame. During WebKit's own momentum
@@ -856,7 +859,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private func fireRefresh() {
         refreshArmed = false
         refreshStarted = Date()
-        NativeHeaderModel.shared.refresh(deepestPull < -Self.hardPull ? "hard" : "soft")
+        NativeHeaderModel.shared.refresh(deepestPull < -WebHostingLayout.hardPull ? "hard" : "soft")
         deepestPull = 0
     }
 
