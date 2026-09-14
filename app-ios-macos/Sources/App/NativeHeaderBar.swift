@@ -962,17 +962,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleButton.setTitle(model.subtitle, for: .normal)
 
-        // The title menu is the one selector: this home's rooms and groups,
-        // the collections, then the other homes, then the connection.
-        // On a page heading the bar's home name keeps that menu, and the big
-        // room name gets its own — where else in this home to go, with the
-        // current room ticked — so a room can be changed from either.
+        // The title menu is the one selector: the homes as a row, then this
+        // home's rooms and groups and the collections, with the current one
+        // ticked. Both titles carry it — the bar's home name and, on a room
+        // page, the big room name too — so home or room can be changed from
+        // whichever is under the thumb.
         let menu = Self.buildTitleMenu(model)
-        let pageMenu = Self.buildNavigationMenu(model)
-        let largeMenu = headingIsPage ? pageMenu : menu
         inlineTitle.menu = menu
-        largeTitleButton.menu = largeMenu
-        largeChevron.isHidden = largeMenu == nil
+        largeTitleButton.menu = menu
+        largeChevron.isHidden = menu == nil
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
         // No leading button, like the Home app: navigation is the title menu.
@@ -1009,6 +1007,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         reportInsetsIfChanged()
     }
 
+    /// A menu row's symbol, drawn light. UIKit's default for a menu image is
+    /// the regular weight, which next to 17pt text reads heavy — the house
+    /// in particular. The current home keeps its filled house.
+    private static func menuImage(_ symbol: String?) -> UIImage? {
+        guard let symbol else { return nil }
+        return UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(weight: .light))
+    }
+
     private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
         guard !model.homes.isEmpty || !model.navigation.isEmpty else { return nil }
         var children: [UIMenuElement] = []
@@ -1017,7 +1023,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let current = model.currentHomeId
         if model.homes.count > 1 {
             let homes: [UIMenuElement] = model.homes.map { home in
-                UIAction(title: home.name, image: UIImage(systemName: home.id == current ? "house.fill" : "house"), state: home.id == current ? .on : .off) { [weak model] _ in
+                UIAction(title: home.name, image: Self.menuImage(home.id == current ? "house.fill" : "house"), state: home.id == current ? .on : .off) { [weak model] _ in
                     model?.selectHome(home.id)
                 }
             }
@@ -1037,7 +1043,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private static func buildNavigationMenu(_ model: NativeHeaderModel) -> UIMenu? {
         guard !model.navigation.isEmpty else { return nil }
         func element(_ item: NativeHeaderModel.NavItem) -> UIMenuElement {
-            let image = item.symbol.flatMap { UIImage(systemName: $0) }
+            let image = Self.menuImage(item.symbol)
             if !item.children.isEmpty {
                 return UIMenu(title: item.label, image: image, children: item.children.map(element))
             }
@@ -1058,7 +1064,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 var attributes: UIMenuElement.Attributes = []
                 if item.destructive { attributes.insert(.destructive) }
                 if item.disabled { attributes.insert(.disabled) }
-                let image = item.symbol.flatMap { UIImage(systemName: $0) }
+                let image = Self.menuImage(item.symbol)
                 return UIAction(title: item.label, image: image, attributes: attributes) { [weak model] _ in
                     model?.menuAction(item.id)
                 }
