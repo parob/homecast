@@ -356,6 +356,9 @@ enum WebHostingLayout {
     /// distance over which it collapses. The page pads its content by the
     /// compact inset plus this.
     static let largeTitleHeight: CGFloat = 52
+    /// On a room, group or collection page the home's name sits as a small
+    /// line above the big name; the band grows by this much to hold it.
+    static let eyebrowHeight: CGFloat = 18
     /// How far past the top a pull has to go to mean the hard reload rather
     /// than a refresh — roughly what a 500px finger travel came to on the
     /// web control once the scroll view's rubber band is accounted for.
@@ -415,7 +418,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// The band under the compact bar that the large title occupies, and the
     /// distance over which it collapses. The page pads its content by the
     /// compact inset plus this.
-    private var largeTitleHeight: CGFloat { WebHostingLayout.largeTitleHeight }
+    private var largeTitleHeight: CGFloat {
+        WebHostingLayout.largeTitleHeight + (headingIsPage ? WebHostingLayout.eyebrowHeight : 0)
+    }
 
     // MARK: - Lifecycle
 
@@ -571,23 +576,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         return button
     }()
 
-    /// The bar's title on a room page while the big room name is still in
-    /// view: the home's name, as a plain label. One selector at a time — the
-    /// big room name has the menu up there, and this only says where you
-    /// are, the way the Home app's bar does over a room. It hands over to
-    /// `inlineTitle` as the heading scrolls under the bar.
-    private let inlinePlainLabel: UILabel = {
+    /// On a room, group or collection page: the home's name, small, on the
+    /// line above the big room name — so the bar itself can stay empty while
+    /// the heading is up (one selector at a time) and both names are still
+    /// in view. As the heading scrolls under the bar it hands over to
+    /// `inlineTitle`, which carries the same pair the other way up.
+    private let largeEyebrowLabel: UILabel = {
         let label = UILabel()
-        label.font = .preferredFont(forTextStyle: .headline)
-        label.textColor = .label
-        label.textAlignment = .center
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.textColor = .secondaryLabel
         label.lineBreakMode = .byTruncatingTail
-        label.alpha = 0
+        label.isUserInteractionEnabled = false
         return label
     }()
 
-    /// Holds both inline titles, centred on each other, as the bar's title
-    /// view; which one shows is the transition's business.
+    /// Holds the inline title as the bar's title view.
     ///
     /// It has to say how big it is: the bar sizes a title view from its
     /// intrinsic size, and a plain view has none, so the bar squeezed it to
@@ -602,28 +605,45 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     private lazy var inlineTitleHost: InlineTitleHost = {
         let host = InlineTitleHost()
-        host.addSubview(inlinePlainLabel)
+        host.clipsToBounds = false
         host.addSubview(inlineTitle)
         host.setContentCompressionResistancePriority(.required, for: .horizontal)
         host.setContentCompressionResistancePriority(.required, for: .vertical)
         return host
     }()
 
-    /// Size the host to the larger of its two titles and centre both in it,
-    /// never wider than the room the bar leaves between its trailing buttons
-    /// and their mirror on the left — beyond that the texts truncate.
+    /// Size the host to its title, never wider than the room the bar leaves
+    /// between its trailing buttons and their mirror on the left — beyond
+    /// that the texts truncate.
     private func layoutInlineTitles() {
         let available = max(80, view.bounds.width - 2 * 120)
-        inlineTitle.sizeToFit()
-        inlinePlainLabel.sizeToFit()
-        let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width))
-        let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
-        inlineTitleHost.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        inlineTitleHost.preferredSize = CGSize(width: width, height: height)
-        inlineTitle.bounds = CGRect(x: 0, y: 0, width: min(width, inlineTitle.bounds.width), height: inlineTitle.bounds.height)
-        inlinePlainLabel.bounds = CGRect(x: 0, y: 0, width: min(width, inlinePlainLabel.bounds.width), height: inlinePlainLabel.bounds.height)
+        // A configuration-based button applies a new title on its next
+        // layout pass, so measuring straight after setting one measures the
+        // old configuration: "Clitheroe Road" came out 68pt wide and the bar
+        // drew a sliver (measured with the probe). Lay it out first.
+        inlineTitle.setNeedsUpdateConfiguration()
+        inlineTitle.setNeedsLayout()
+        inlineTitle.layoutIfNeeded()
+        // Whole points with a little slack: the measured sizes are thirds of
+        // a point and the bar's container rounds them down, which shaved the
+        // last glyph and the chevron's edge (reported as a slight clip).
+        let slack: CGFloat = 12
+        let buttonSize = inlineTitle.intrinsicContentSize
+        inlineTitle.bounds = CGRect(x: 0, y: 0, width: min(available, ceil(buttonSize.width) + 4), height: ceil(buttonSize.height) + 2)
+        let width = min(available + slack, inlineTitle.bounds.width + slack)
+        let height = inlineTitle.bounds.height + 2
+        let size = CGSize(width: width, height: height)
+        let grew = size != inlineTitleHost.preferredSize
+        inlineTitleHost.preferredSize = size
+        inlineTitleHost.frame = CGRect(origin: .zero, size: size)
         inlineTitle.center = CGPoint(x: width / 2, y: height / 2)
-        inlinePlainLabel.center = inlineTitle.center
+        // The bar measures a title view when it is attached and not again:
+        // a host attached empty and filled later stayed a sliver ("Bedr…",
+        // "Clither…"). Re-attaching it is what makes the bar look again.
+        if grew, navigationItem.titleView === inlineTitleHost {
+            navigationItem.titleView = nil
+            navigationItem.titleView = inlineTitleHost
+        }
     }
 
     /// The band under the compact bar holding the large title. Not clipped:
@@ -686,6 +706,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleButton.showsMenuAsPrimaryAction = true
         largeTitleButton.accessibilityLabel = "Switch home"
         largeTitleArea.addSubview(largeTitleButton)
+        largeTitleArea.addSubview(largeEyebrowLabel)
 
         largeTitleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         largeTitleLabel.textColor = .label
@@ -744,10 +765,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let width = min(textWidth, maxTextWidth)
         let hasSubtitle = !(largeSubtitleButton.title(for: .normal) ?? "").isEmpty
 
+        // On a page heading the home's name goes first, small, and the big
+        // name moves down under it by the band's extra height.
+        let eyebrow: CGFloat = headingIsPage ? WebHostingLayout.eyebrowHeight : 0
+        largeEyebrowLabel.isHidden = !headingIsPage
+        largeEyebrowLabel.frame = CGRect(x: leading, y: 2, width: maxTextWidth, height: eyebrow)
         // 34pt bold sits on a 41pt line; with a status line under it the pair
         // is packed a little tighter so it still fits the band.
         let titleHeight: CGFloat = 41
-        let titleY: CGFloat = hasSubtitle ? -2 : (height - titleHeight) / 2
+        let titleY: CGFloat = eyebrow + (hasSubtitle ? -2 : (WebHostingLayout.largeTitleHeight - titleHeight) / 2)
         largeTitleLabel.frame = CGRect(x: leading, y: titleY, width: width, height: titleHeight)
         largeSubtitleButton.frame = CGRect(x: leading, y: titleY + titleHeight - 6, width: maxTextWidth, height: 18)
         largeSubtitleButton.isHidden = !hasSubtitle
@@ -798,8 +824,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
             // The large title dissolves as it goes under the bar and the
             // inline one takes over from the halfway point. On a room page
-            // the bar starts as a plain home name (the big room name has the
-            // menu) and hands over to the room name with the home beneath it.
+            // the bar is empty until then — the heading carries both names,
+            // home small above room — and the inline title then carries the
+            // same pair the other way up.
             let progress = collapseProgress
             largeTitleArea.alpha = max(0, 1 - progress / 0.55)
             inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
@@ -866,6 +893,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 return "\(type(of: v)) frame=\(v.frame) alpha=\(v.alpha) bg=\(v.backgroundColor.map { String(describing: $0) } ?? "nil") ui=\(v.isUserInteractionEnabled) subs=\(v.subviews.count) grs=\(v.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? []) chain=\(chain.joined(separator: " < "))"
             }
             log.append("   HIT mid: \(describe(hitWin))")
+            let tv = self.navigationItem.titleView
+            log.append("   TITLE host=\(self.inlineTitleHost.frame) bounds=\(self.inlineTitleHost.bounds) pref=\(self.inlineTitleHost.preferredSize) win=\(self.inlineTitleHost.superview.map { $0.convert(self.inlineTitleHost.frame, to: nil) } ?? .zero) super=\(tv?.superview.map { String(describing: type(of: $0)) } ?? "nil") superFrame=\(tv?.superview?.frame ?? .zero) isHost=\(tv === self.inlineTitleHost) btn=\(self.inlineTitle.frame) btnAlpha=\(self.inlineTitle.alpha) lbl=\(self.inlineTitle.titleLabel?.frame ?? .zero) lblText=\(self.inlineTitle.titleLabel?.text ?? "") sub=\(self.inlineTitle.subtitleLabel?.frame ?? .zero) eyebrow=\(self.largeEyebrowLabel.frame) eyebrowHidden=\(self.largeEyebrowLabel.isHidden) viewW=\(self.view.bounds.width) constraints=\(self.inlineTitleHost.constraints.count) tam=\(self.inlineTitleHost.translatesAutoresizingMaskIntoConstraints)")
             log.append("   TREE self.view: \(self.view.subviews.map { "\(type(of: $0))\($0.frame)" }) nav: \(self.navigationController?.view.subviews.map { "\(type(of: $0))\($0.frame)" } ?? [])")
             if let w = webView { log.append("   WEB subs: \(w.subviews.map { "\(type(of: $0))\($0.frame) ui=\($0.isUserInteractionEnabled)" }) scrollSubs: \(scroll.subviews.map { "\(type(of: $0))\($0.frame)" })") }
             log.append("   UIKIT view=\(self.view.bounds) web=\(webView?.frame ?? .zero) webHidden=\(webView?.isHidden ?? true) webUI=\(webView?.isUserInteractionEnabled ?? false) scrollBounds=\(scroll.bounds) content=\(scroll.contentSize) inset=\(scroll.adjustedContentInset) scrollEnabled=\(scroll.isScrollEnabled) scrollUI=\(scroll.isUserInteractionEnabled) panEnabled=\(pan.isEnabled) panState=\(pan.state.rawValue) dragging=\(scroll.isDragging) proxy=\(self.proxy.frame) proxyUI=\(self.proxy.isUserInteractionEnabled) hitMid=\(type(of: hitMid as AnyObject)) hitWin=\(type(of: hitWin as AnyObject)) grs=\(self.view.gestureRecognizers?.count ?? 0) navGrs=\(self.navigationController?.view.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? [])")
@@ -1057,7 +1086,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         navigationController?.navigationBar.tintColor = ink
         refreshControl.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
-        inlinePlainLabel.textColor = ink ?? .label
+        largeEyebrowLabel.textColor = ink?.withAlphaComponent(0.75) ?? .secondaryLabel
         largeTitleLabel.textColor = ink ?? .label
         // The chevron takes the title's ink, on a faint disc of the same —
         // white over a dark page, not the system's grey.
@@ -1097,12 +1126,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         let heading = model.heading.trimmingCharacters(in: .whitespaces)
         headingIsPage = !heading.isEmpty && heading != title
         // The compact bar: home name; or on a room page the room with the
-        // home beneath it once the heading has scrolled away, and the home
-        // alone (plain, no menu) while the big room name is still up.
+        // home beneath it, once the heading has scrolled away. The heading
+        // shows the home small above the big room name until then.
         inlineTitle.configuration?.title = headingIsPage ? heading : title
         inlineTitle.configuration?.subtitle = headingIsPage ? title : nil
-        inlinePlainLabel.text = title
-        inlinePlainLabel.isHidden = !headingIsPage
+        largeEyebrowLabel.text = title
         largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleButton.setTitle(model.subtitle, for: .normal)
 
@@ -1110,7 +1138,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // home's rooms and groups and the collections, with the current one
         // ticked. Only one of it is ever on screen: the big title while it is
         // up, the bar's once that has scrolled away (on a room page the bar
-        // shows a plain home name until then — see `inlinePlainLabel`).
+        // is empty until then; the heading carries both names).
         let menu = Self.buildTitleMenu(model)
         inlineTitle.menu = menu
         largeTitleButton.menu = menu
