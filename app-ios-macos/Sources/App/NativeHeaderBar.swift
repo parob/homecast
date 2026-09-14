@@ -695,7 +695,24 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             if #available(iOS 26.0, *) {
                 proxy.topEdgeEffect.isHidden = !largeTitleEnabled
             }
-            (navigationController?.navigationBar as? PassthroughNavigationBar)?.passesThrough = !largeTitleEnabled
+            if let bar = navigationController?.navigationBar as? PassthroughNavigationBar {
+                bar.passesThrough = !largeTitleEnabled
+                // With no scroll view to track, UIKit falls back to the bar's
+                // standard, blurred background — a band across the top of a
+                // layout that wants none. Transparent in the sidebar layout;
+                // the system defaults, and the scroll-edge effect, in portrait.
+                if largeTitleEnabled {
+                    bar.standardAppearance = UINavigationBarAppearance()
+                    bar.scrollEdgeAppearance = nil
+                    bar.compactAppearance = nil
+                } else {
+                    let clear = UINavigationBarAppearance()
+                    clear.configureWithTransparentBackground()
+                    bar.standardAppearance = clear
+                    bar.scrollEdgeAppearance = clear
+                    bar.compactAppearance = clear
+                }
+            }
             lastReportedInsets = nil
         }
         let title = model.title.isEmpty ? "Homecast" : model.title
