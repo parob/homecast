@@ -680,6 +680,27 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             let pres = area.layer.presentation()
             let bpres = self.largeTitleButton.layer.presentation()
             log.append("\(t) off=\(scroll.contentOffset.y) pageY=\(self.pageOffsetY) alpha=\(area.alpha) presOp=\(pres?.opacity ?? -1) hidden=\(area.isHidden) presHidden=\(pres?.isHidden ?? false) frame=\(area.frame) presPos=\(pres?.position ?? .zero) btnTy=\(self.largeTitleButton.transform.ty) btnPres=\(bpres?.affineTransform().ty ?? -999) btnHidden=\(self.largeTitleButton.isHidden) lblHidden=\(self.largeTitleLabel.isHidden) lblAlpha=\(self.largeTitleLabel.alpha) text=\(self.largeTitleLabel.text ?? "") z=\(idx)/\(self.view.subviews.count) enabled=\(self.largeTitleEnabled) barHidden=\(self.barHidden) heading=\(self.headingIsPage) covered=\(NativeHeaderModel.shared.covered) win=\(area.window != nil)")
+            let pan = scroll.panGestureRecognizer
+            let probeMid = CGPoint(x: self.view.bounds.midX, y: self.view.bounds.height * 0.7)
+            let hitMid = self.view.hitTest(probeMid, with: nil)
+            let hitWin = self.view.window?.hitTest(self.view.convert(probeMid, to: nil), with: nil)
+            let webView = scroll.superview
+            func describe(_ v: UIView?) -> String {
+                guard let v else { return "nil" }
+                var chain: [String] = []
+                var cur: UIView? = v
+                while let c = cur, chain.count < 12 { chain.append("\(type(of: c))\(c.frame.integral.size == v.window?.bounds.size ? "*" : "")"); cur = c.superview }
+                return "\(type(of: v)) frame=\(v.frame) alpha=\(v.alpha) bg=\(v.backgroundColor.map { String(describing: $0) } ?? "nil") ui=\(v.isUserInteractionEnabled) subs=\(v.subviews.count) grs=\(v.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? []) chain=\(chain.joined(separator: " < "))"
+            }
+            log.append("   HIT mid: \(describe(hitWin))")
+            log.append("   TREE self.view: \(self.view.subviews.map { "\(type(of: $0))\($0.frame)" }) nav: \(self.navigationController?.view.subviews.map { "\(type(of: $0))\($0.frame)" } ?? [])")
+            if let w = webView { log.append("   WEB subs: \(w.subviews.map { "\(type(of: $0))\($0.frame) ui=\($0.isUserInteractionEnabled)" }) scrollSubs: \(scroll.subviews.map { "\(type(of: $0))\($0.frame)" })") }
+            log.append("   UIKIT view=\(self.view.bounds) web=\(webView?.frame ?? .zero) webHidden=\(webView?.isHidden ?? true) webUI=\(webView?.isUserInteractionEnabled ?? false) scrollBounds=\(scroll.bounds) content=\(scroll.contentSize) inset=\(scroll.adjustedContentInset) scrollEnabled=\(scroll.isScrollEnabled) scrollUI=\(scroll.isUserInteractionEnabled) panEnabled=\(pan.isEnabled) panState=\(pan.state.rawValue) dragging=\(scroll.isDragging) proxy=\(self.proxy.frame) proxyUI=\(self.proxy.isUserInteractionEnabled) hitMid=\(type(of: hitMid as AnyObject)) hitWin=\(type(of: hitWin as AnyObject)) grs=\(self.view.gestureRecognizers?.count ?? 0) navGrs=\(self.navigationController?.view.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? [])")
+            if (Int(t.replacingOccurrences(of: ".", with: "")) ?? 0) % 10 == 0, let web = webView as? WKWebView {
+                web.evaluateJavaScript("JSON.stringify({sh: document.scrollingElement.scrollHeight, st: document.scrollingElement.scrollTop, ih: innerHeight, iw: innerWidth, inset: getComputedStyle(document.documentElement).getPropertyValue('--native-header-inset'), sat: getComputedStyle(document.documentElement).getPropertyValue('--safe-area-top'), bodyH: document.body.scrollHeight, bodyOv: getComputedStyle(document.body).overflowY, htmlOv: getComputedStyle(document.documentElement).overflowY, enabled: window.homecastNativeHeaderEnabled, avail: window.homecastNativeHeaderAvailable, bridge: !!window.__homecastNativeHeader, entry: [...document.scripts].map(s => s.src).filter(s => /index-/.test(s)).join(','), fixedShell: !!document.querySelector('main')?.closest('.fixed.inset-0'), chain: (() => { const out=[]; for (let n=document.querySelector('main'); n && n!==document.documentElement; n=n.parentElement) out.push(n.tagName+'.'+(n.className||'').toString().slice(0,50)); return out; })(), mobileApp: window.isHomecastMobileApp ?? window.isHomecastIOSApp ?? null, ua: navigator.userAgent.slice(-60), ta: getComputedStyle(document.body).touchAction, sw: !!navigator.serviceWorker?.controller})") { result, error in
+                    log.append("   JS \(t) \(result.map { String(describing: $0) } ?? "nil") err=\(error.map { String(describing: $0) } ?? "-")")
+                }
+            }
             if log.count > 400 { log.removeFirst(log.count - 400) }
             UserDefaults.standard.set(log.joined(separator: "\n"), forKey: "com.homecast.devProbeLog")
         }
@@ -876,11 +897,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
         // The title menu is the one selector: this home's rooms and groups,
         // the collections, then the other homes, then the connection.
-        // On a page heading the chevron stays with the home name in the bar.
+        // On a page heading the bar's home name keeps that menu, and the big
+        // room name gets its own — where else in this home to go, with the
+        // current room ticked — so a room can be changed from either.
         let menu = Self.buildTitleMenu(model)
+        let pageMenu = Self.buildNavigationMenu(model)
+        let largeMenu = headingIsPage ? pageMenu : menu
         inlineTitle.menu = menu
-        largeTitleButton.menu = headingIsPage ? nil : menu
-        largeChevron.isHidden = menu == nil || headingIsPage
+        largeTitleButton.menu = largeMenu
+        largeChevron.isHidden = largeMenu == nil
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
         // No leading button, like the Home app: navigation is the title menu.
