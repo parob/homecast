@@ -554,12 +554,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         }
         config.titleAlignment = .center
         config.titlePadding = 0
+        // One line each, cut with an ellipsis: a long room name must not
+        // wrap and turn the two-line title into three.
+        config.titleLineBreakMode = .byTruncatingTail
+        config.subtitleLineBreakMode = .byTruncatingTail
         config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
         config.imagePlacement = .trailing
         config.imagePadding = 6
         config.contentInsets = .zero
         config.baseForegroundColor = .label
         let button = UIButton(configuration: config)
+        button.titleLabel?.numberOfLines = 1
+        button.subtitleLabel?.numberOfLines = 1
         button.showsMenuAsPrimaryAction = true
         button.alpha = 0
         return button
@@ -575,26 +581,47 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         label.font = .preferredFont(forTextStyle: .headline)
         label.textColor = .label
         label.textAlignment = .center
+        label.lineBreakMode = .byTruncatingTail
         label.alpha = 0
         return label
     }()
 
     /// Holds both inline titles, centred on each other, as the bar's title
     /// view; which one shows is the transition's business.
-    private lazy var inlineTitleHost: UIView = {
-        let host = UIView()
+    ///
+    /// It has to say how big it is: the bar sizes a title view from its
+    /// intrinsic size, and a plain view has none, so the bar squeezed it to
+    /// a sliver and the texts inside hyphenated over three lines ("Bed-
+    /// rooms"). Measured on an iPhone 16 Pro Max.
+    private final class InlineTitleHost: UIView {
+        var preferredSize = CGSize.zero {
+            didSet { if preferredSize != oldValue { invalidateIntrinsicContentSize() } }
+        }
+        override var intrinsicContentSize: CGSize { preferredSize }
+    }
+
+    private lazy var inlineTitleHost: InlineTitleHost = {
+        let host = InlineTitleHost()
         host.addSubview(inlinePlainLabel)
         host.addSubview(inlineTitle)
+        host.setContentCompressionResistancePriority(.required, for: .horizontal)
+        host.setContentCompressionResistancePriority(.required, for: .vertical)
         return host
     }()
 
-    /// Size the host to the larger of its two titles and centre both in it.
+    /// Size the host to the larger of its two titles and centre both in it,
+    /// never wider than the room the bar leaves between its trailing buttons
+    /// and their mirror on the left — beyond that the texts truncate.
     private func layoutInlineTitles() {
+        let available = max(80, view.bounds.width - 2 * 120)
         inlineTitle.sizeToFit()
         inlinePlainLabel.sizeToFit()
-        let width = max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width)
+        let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width))
         let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
         inlineTitleHost.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        inlineTitleHost.preferredSize = CGSize(width: width, height: height)
+        inlineTitle.bounds = CGRect(x: 0, y: 0, width: min(width, inlineTitle.bounds.width), height: inlineTitle.bounds.height)
+        inlinePlainLabel.bounds = CGRect(x: 0, y: 0, width: min(width, inlinePlainLabel.bounds.width), height: inlinePlainLabel.bounds.height)
         inlineTitle.center = CGPoint(x: width / 2, y: height / 2)
         inlinePlainLabel.center = inlineTitle.center
     }
