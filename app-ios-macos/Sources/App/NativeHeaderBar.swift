@@ -54,6 +54,11 @@ final class NativeHeaderModel: ObservableObject {
     @Published var enabled: Bool = AppConfig.nativeHeaderPreview
 
     @Published var title: String = ""
+    /// The room, room group or collection being viewed; empty on the home
+    /// view. When set and different from `title`, the bar keeps the home name
+    /// and the large text is a page heading that scrolls away with the
+    /// content instead of handing over.
+    @Published var heading: String = ""
     /// The connection state in words — what the Home app puts under its title.
     @Published var subtitle: String = ""
     @Published var homes: [Home] = []
@@ -128,6 +133,7 @@ final class NativeHeaderModel: ObservableObject {
     /// messages while off and came up blank — that was the second thing wrong.
     func merge(_ payload: [String: Any]) {
         if let value = payload["title"] as? String { title = value }
+        if let value = payload["heading"] as? String { heading = value }
         if payload.index(forKey: "subtitle") != nil {
             subtitle = payload["subtitle"] as? String ?? ""
         }
@@ -298,6 +304,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private let proxy = ProxyScrollView()
     /// The compact bar's inset (status bar + bar), as observed while shown.
     private var compactInset: CGFloat = 0
+    /// The large text is a page heading (a room, group or collection), not
+    /// the home name: the bar's title stays put and nothing crossfades.
+    private var headingIsPage = false
 
     /// The band under the compact bar that the large title occupies, and the
     /// distance over which it collapses. The page pads its content by the
@@ -462,8 +471,16 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// being clipped, and the inline name takes over from the halfway point.
     private func updateTitleTransition() {
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
-        let progress = collapseProgress
         largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
+        if headingIsPage {
+            // A room, group or collection: the bar already says which home,
+            // and the heading is part of the page — it scrolls under the bar
+            // like everything else, with no handover to fade.
+            largeTitleArea.alpha = 1
+            inlineTitle.alpha = 1
+            return
+        }
+        let progress = collapseProgress
         largeTitleArea.alpha = max(0, 1 - progress / 0.55)
         inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
     }
@@ -580,15 +597,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeTitleLabel.textColor = ink ?? .label
 
         let title = model.title.isEmpty ? "Homecast" : model.title
+        let heading = model.heading.trimmingCharacters(in: .whitespaces)
+        headingIsPage = !heading.isEmpty && heading != title
         inlineTitle.configuration?.title = title
-        largeTitleLabel.text = title
+        largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleLabel.text = model.subtitle
 
         // The Home app's title chevron: every home, the current one ticked.
+        // On a page heading the chevron stays with the home name in the bar.
         let menu = Self.buildTitleMenu(model)
         inlineTitle.menu = menu
-        largeTitleButton.menu = menu
-        largeChevron.isHidden = menu == nil
+        largeTitleButton.menu = headingIsPage ? nil : menu
+        largeChevron.isHidden = menu == nil || headingIsPage
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
         if model.showMenu {
