@@ -515,6 +515,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// Lay the large title out for the current text; `updateTitleTransition`
     /// then moves it with the scroll.
     private func layoutLargeTitle() {
+        UIView.performWithoutAnimation { layoutLargeTitleNow() }
+    }
+
+    private func layoutLargeTitleNow() {
         let inset = compactInset > 0 ? compactInset : view.safeAreaInsets.top
         let height = largeTitleHeight
         largeTitleArea.frame = CGRect(x: 0, y: inset, width: view.bounds.width, height: height)
@@ -546,8 +550,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// Where we are between "large title showing" (0) and "inline title
     /// showing" (1), from the page's offset.
     private var collapseProgress: CGFloat {
-        let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
-        return min(1, pageY / largeTitleHeight)
+        min(1, pageOffsetY / largeTitleHeight)
     }
 
     /// Move the large title up with the content and fade it; fade the inline
@@ -557,31 +560,55 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// top would pass under the bar's controls — so it fades rather than
     /// being clipped, and the inline name takes over from the halfway point.
     private func updateTitleTransition() {
-        let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
-        largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
-        largeSubtitleButton.transform = largeTitleButton.transform
-        if !largeTitleEnabled {
-            // Compact row only: the inline title is the title.
-            inlineTitle.alpha = 1
-            return
+        // Never animated. These run from the scroll view's own callbacks, and
+        // when UIKit makes those inside one of its animation blocks the
+        // writes inherit it: the title then eased towards a stale target for
+        // as long as UIKit's curve lasted — faded late at the top, or drawn
+        // hundreds of points down the page while every value here read
+        // correctly (measured with the probe).
+        UIView.performWithoutAnimation {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            defer { CATransaction.commit() }
+            let pageY = pageOffsetY
+            largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
+            largeSubtitleButton.transform = largeTitleButton.transform
+            if !largeTitleEnabled {
+                // Compact row only: the inline title is the title.
+                inlineTitle.alpha = 1
+                return
+            }
+            if headingIsPage {
+                // A room, group or collection: the bar already says which home,
+                // and the heading is part of the page — it scrolls under the bar
+                // like everything else, with no handover to fade.
+                largeTitleArea.alpha = 1
+                inlineTitle.alpha = 1
+                return
+            }
+            let progress = collapseProgress
+            largeTitleArea.alpha = max(0, 1 - progress / 0.55)
+            inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
         }
-        if headingIsPage {
-            // A room, group or collection: the bar already says which home,
-            // and the heading is part of the page — it scrolls under the bar
-            // like everything else, with no handover to fade.
-            largeTitleArea.alpha = 1
-            inlineTitle.alpha = 1
-            return
-        }
-        let progress = collapseProgress
-        largeTitleArea.alpha = max(0, 1 - progress / 0.55)
-        inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
     }
 
     // MARK: - Scrolling
 
     /// Set when a drag ended with momentum; the snap waits for it to stop.
     private var awaitingDecelerationEnd = false
+
+
+    /// The page's offset as drawn this frame. During WebKit's own momentum
+    /// scrolling the on-screen position runs ahead of `contentOffset`, which
+    /// only catches up as the fling settles — so a title driven from the
+    /// model lagged the content by up to a second (reported, and a
+    /// programmatic scroll never showed it). The presentation layer has the
+    /// value the user is looking at.
+    private var pageOffsetY: CGFloat {
+        guard let scroll = webScrollView else { return 0 }
+        let drawn = scroll.layer.presentation()?.bounds.origin.y ?? scroll.contentOffset.y
+        return max(0, drawn)
+    }
 
     /// Start sampling; `sample` pauses again once the page has been still.
     private func wake() {
@@ -591,7 +618,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     @objc private func sample() {
         guard let scroll = webScrollView else { displayLink?.isPaused = true; return }
-        let y = scroll.contentOffset.y
+        let y = pageOffsetY
         if y != lastSampledOffset {
             lastSampledOffset = y
             stillFrames = 0
@@ -625,7 +652,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             layoutLargeTitle()
             reportInsetsIfChanged()
         }
-        let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
+        let pageY = pageOffsetY
         let target = CGPoint(x: 0, y: -inset + pageY)
         if proxy.contentOffset != target {
             proxy.contentOffset = target
