@@ -341,8 +341,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         return button
     }()
 
-    /// The band under the compact bar holding the large title. Clips, so the
-    /// title disappears under the bar's edge as it rides up.
+    /// The band under the compact bar holding the large title. Not clipped:
+    /// the name fades out well before it would reach the bar's edge, so it
+    /// dissolves rather than being cut off.
     private let largeTitleArea = UIView()
     /// The whole large title is one button, so the name is the tap target.
     private let largeTitleButton = UIButton(type: .custom)
@@ -351,7 +352,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private let largeChevron = UIImageView()
 
     private func buildLargeTitle() {
-        largeTitleArea.clipsToBounds = true
+        largeTitleArea.clipsToBounds = false
         largeTitleArea.backgroundColor = .clear
         view.addSubview(largeTitleArea)
 
@@ -418,11 +419,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     /// Move the large title up with the content and fade it; fade the inline
     /// title in over the last part of that travel.
+    ///
+    /// The large name is gone by a little over half the travel — before its
+    /// top would pass under the bar's controls — so it fades rather than
+    /// being clipped, and the inline name takes over from the halfway point.
     private func updateTitleTransition() {
         let pageY = max(0, webScrollView?.contentOffset.y ?? 0)
         let progress = collapseProgress
         largeTitleButton.transform = CGAffineTransform(translationX: 0, y: -pageY)
-        largeTitleArea.alpha = 1 - progress
+        largeTitleArea.alpha = max(0, 1 - progress / 0.55)
         inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
     }
 
