@@ -811,6 +811,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         navigationController?.navigationBar.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeTitleLabel.textColor = ink ?? .label
+        // The chevron takes the title's ink, on a faint disc of the same —
+        // white over a dark page, not the system's grey.
+        largeChevron.tintColor = ink ?? .label
+        largeChevron.backgroundColor = (ink ?? .label).withAlphaComponent(0.18)
 
         if largeTitleEnabled != model.largeTitle {
             largeTitleEnabled = model.largeTitle
@@ -857,9 +861,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.isHidden = menu == nil || headingIsPage
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
-        // No leading button, like the Home app: navigation is the title menu,
-        // and the web drawer is reachable from ⋯ for what a menu cannot do.
-        navigationItem.leftBarButtonItem = nil
+        // The connection dot leads the bar: bare, no platter, the same spot
+        // the web header draws its own. Tapping opens the page's connection
+        // popover. Navigation itself is the title menu.
+        navigationItem.leftBarButtonItem = model.statusColor.map { color in
+            statusDotItem(color: color) { model.tap(.status) }
+        }
 
         var trailing: [UIBarButtonItem] = []
         if model.showOverflow {
@@ -874,13 +881,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
         }
         if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
-        if let color = model.statusColor {
-            // The connection dot: bare, no platter, left of the capsule — the
-            // same spot and size as the web header's. Tapping opens the
-            // page's connection popover.
-            trailing.append(.fixedSpace(4))
-            trailing.append(statusDotItem(color: color, handler: { model.tap(.status) }))
-        }
         navigationItem.rightBarButtonItems = trailing
 
         inlineTitle.sizeToFit()
@@ -952,8 +952,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     private lazy var statusDotButton: UIButton = {
         let button = UIButton(type: .custom)
-        button.frame = CGRect(x: 0, y: 0, width: 32, height: 44)
-        let dot = UIView(frame: CGRect(x: 10, y: 16, width: 12, height: 12))
+        button.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        let dot = UIView(frame: CGRect(x: 8, y: 16, width: 12, height: 12))
         dot.layer.cornerRadius = 6
         dot.layer.shadowColor = UIColor.black.cgColor
         dot.layer.shadowOpacity = 0.35
