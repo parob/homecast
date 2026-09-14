@@ -861,12 +861,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeChevron.isHidden = menu == nil || headingIsPage
         inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
 
-        // The connection dot leads the bar: bare, no platter, the same spot
-        // the web header draws its own. Tapping opens the page's connection
-        // popover. Navigation itself is the title menu.
-        navigationItem.leftBarButtonItem = model.statusColor.map { color in
-            statusDotItem(color: color) { model.tap(.status) }
-        }
+        // No leading button, like the Home app: navigation is the title menu.
+        navigationItem.leftBarButtonItem = nil
 
         var trailing: [UIBarButtonItem] = []
         if model.showOverflow {
@@ -881,6 +877,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             }
         }
         if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
+        if let color = model.statusColor {
+            // The connection dot leads the capsule, sharing its glass with
+            // search and ⋯ — the same place the web header puts it. Tapping
+            // opens the page's connection popover.
+            trailing.append(statusDotItem(color: color) { model.tap(.status) })
+        }
         navigationItem.rightBarButtonItems = trailing
 
         inlineTitle.sizeToFit()
@@ -952,8 +954,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
     private lazy var statusDotButton: UIButton = {
         let button = UIButton(type: .custom)
-        button.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-        let dot = UIView(frame: CGRect(x: 8, y: 16, width: 12, height: 12))
+        button.frame = CGRect(x: 0, y: 0, width: 30, height: 44)
+        let dot = UIView(frame: CGRect(x: 9, y: 16, width: 12, height: 12))
         dot.layer.cornerRadius = 6
         dot.layer.shadowColor = UIColor.black.cgColor
         dot.layer.shadowOpacity = 0.35
@@ -970,11 +972,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         statusDotButton.viewWithTag(1)?.backgroundColor = color
         statusDotButton.removeTarget(nil, action: nil, for: .allEvents)
         statusDotButton.addAction(UIAction { _ in handler() }, for: .touchUpInside)
-        let item = UIBarButtonItem(customView: statusDotButton)
-        if #available(iOS 26.0, *) {
-            item.hidesSharedBackground = true
-        }
-        return item
+        return UIBarButtonItem(customView: statusDotButton)
     }
 
     private func item(_ symbol: String, label: String, handler: @escaping () -> Void) -> UIBarButtonItem {
