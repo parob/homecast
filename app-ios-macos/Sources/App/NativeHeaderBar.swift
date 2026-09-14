@@ -614,7 +614,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// and their mirror on the left — beyond that the texts truncate.
     private func layoutInlineTitles() {
         let available = max(80, view.bounds.width - 2 * 120)
-        inlineTitle.sizeToFit()
+        // A configuration-based button applies a new title on its next
+        // layout pass, so measuring straight after setting one measures the
+        // old configuration: "Clitheroe Road" came out 68pt wide and the bar
+        // drew a sliver (measured with the probe). Lay it out first.
+        inlineTitle.setNeedsUpdateConfiguration()
+        inlineTitle.setNeedsLayout()
+        inlineTitle.layoutIfNeeded()
+        inlineTitle.bounds = CGRect(origin: .zero, size: inlineTitle.intrinsicContentSize)
         inlinePlainLabel.sizeToFit()
         let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width))
         let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
@@ -875,6 +882,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
                 return "\(type(of: v)) frame=\(v.frame) alpha=\(v.alpha) bg=\(v.backgroundColor.map { String(describing: $0) } ?? "nil") ui=\(v.isUserInteractionEnabled) subs=\(v.subviews.count) grs=\(v.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? []) chain=\(chain.joined(separator: " < "))"
             }
             log.append("   HIT mid: \(describe(hitWin))")
+            let tv = self.navigationItem.titleView
+            log.append("   TITLE host=\(self.inlineTitleHost.frame) bounds=\(self.inlineTitleHost.bounds) pref=\(self.inlineTitleHost.preferredSize) win=\(self.inlineTitleHost.superview.map { $0.convert(self.inlineTitleHost.frame, to: nil) } ?? .zero) super=\(tv?.superview.map { String(describing: type(of: $0)) } ?? "nil") superFrame=\(tv?.superview?.frame ?? .zero) isHost=\(tv === self.inlineTitleHost) btn=\(self.inlineTitle.frame) btnAlpha=\(self.inlineTitle.alpha) lbl=\(self.inlineTitle.titleLabel?.frame ?? .zero) lblText=\(self.inlineTitle.titleLabel?.text ?? "") sub=\(self.inlineTitle.subtitleLabel?.frame ?? .zero) plain=\(self.inlinePlainLabel.frame) plainAlpha=\(self.inlinePlainLabel.alpha) plainHidden=\(self.inlinePlainLabel.isHidden) viewW=\(self.view.bounds.width) constraints=\(self.inlineTitleHost.constraints.count) tam=\(self.inlineTitleHost.translatesAutoresizingMaskIntoConstraints)")
             log.append("   TREE self.view: \(self.view.subviews.map { "\(type(of: $0))\($0.frame)" }) nav: \(self.navigationController?.view.subviews.map { "\(type(of: $0))\($0.frame)" } ?? [])")
             if let w = webView { log.append("   WEB subs: \(w.subviews.map { "\(type(of: $0))\($0.frame) ui=\($0.isUserInteractionEnabled)" }) scrollSubs: \(scroll.subviews.map { "\(type(of: $0))\($0.frame)" })") }
             log.append("   UIKIT view=\(self.view.bounds) web=\(webView?.frame ?? .zero) webHidden=\(webView?.isHidden ?? true) webUI=\(webView?.isUserInteractionEnabled ?? false) scrollBounds=\(scroll.bounds) content=\(scroll.contentSize) inset=\(scroll.adjustedContentInset) scrollEnabled=\(scroll.isScrollEnabled) scrollUI=\(scroll.isUserInteractionEnabled) panEnabled=\(pan.isEnabled) panState=\(pan.state.rawValue) dragging=\(scroll.isDragging) proxy=\(self.proxy.frame) proxyUI=\(self.proxy.isUserInteractionEnabled) hitMid=\(type(of: hitMid as AnyObject)) hitWin=\(type(of: hitWin as AnyObject)) grs=\(self.view.gestureRecognizers?.count ?? 0) navGrs=\(self.navigationController?.view.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? [])")
