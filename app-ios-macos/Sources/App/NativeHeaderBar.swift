@@ -618,12 +618,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         inlinePlainLabel.sizeToFit()
         let width = min(available, max(inlineTitle.bounds.width, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.width))
         let height = max(inlineTitle.bounds.height, inlinePlainLabel.isHidden ? 0 : inlinePlainLabel.bounds.height)
-        inlineTitleHost.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        inlineTitleHost.preferredSize = CGSize(width: width, height: height)
+        let size = CGSize(width: width, height: height)
+        let grew = size != inlineTitleHost.preferredSize
+        inlineTitleHost.preferredSize = size
+        inlineTitleHost.frame = CGRect(origin: .zero, size: size)
         inlineTitle.bounds = CGRect(x: 0, y: 0, width: min(width, inlineTitle.bounds.width), height: inlineTitle.bounds.height)
         inlinePlainLabel.bounds = CGRect(x: 0, y: 0, width: min(width, inlinePlainLabel.bounds.width), height: inlinePlainLabel.bounds.height)
         inlineTitle.center = CGPoint(x: width / 2, y: height / 2)
         inlinePlainLabel.center = inlineTitle.center
+        // The bar measures a title view when it is attached and not again:
+        // a host attached empty and filled later stayed a sliver ("Bedr…",
+        // "Clither…"). Re-attaching it is what makes the bar look again.
+        if grew, navigationItem.titleView === inlineTitleHost {
+            navigationItem.titleView = nil
+            navigationItem.titleView = inlineTitleHost
+        }
     }
 
     /// The band under the compact bar holding the large title. Not clipped:
