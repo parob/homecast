@@ -251,7 +251,8 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UINavigationController {
         let root = WebHostingController(rootView: content)
-        let nav = UINavigationController(rootViewController: root)
+        let nav = UINavigationController(navigationBarClass: PassthroughNavigationBar.self, toolbarClass: nil)
+        nav.viewControllers = [root]
         // Compact bar only; the large title is the controller's own view.
         nav.navigationBar.prefersLargeTitles = false
         root.navigationItem.largeTitleDisplayMode = .never
@@ -261,6 +262,26 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
 
     func updateUIViewController(_ nav: UINavigationController, context: Context) {
         (nav.viewControllers.first as? WebHostingController<Content>)?.rootView = content
+    }
+}
+
+/// A navigation bar that, when asked, is nothing but its buttons: touches
+/// anywhere else fall through to the content beneath. Used in the sidebar
+/// layout, where the bar has no title and no background and the content it
+/// floats over must stay tappable.
+final class PassthroughNavigationBar: UINavigationBar {
+    var passesThrough = false
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard passesThrough, let hit else { return hit }
+        // Keep the hit only if it is a control or sits inside one.
+        var view: UIView? = hit
+        while let current = view, current !== self {
+            if current is UIControl { return hit }
+            view = current.superview
+        }
+        return nil
     }
 }
 
@@ -349,7 +370,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     }
 
     override func contentScrollView(for edge: NSDirectionalRectEdge) -> UIScrollView? {
-        edge == .top ? proxy : super.contentScrollView(for: edge)
+        edge == .top && largeTitleEnabled ? proxy : super.contentScrollView(for: edge)
     }
 
     override func viewDidLayoutSubviews() {
@@ -572,8 +593,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     /// content by the first and pins its safe-area variable to the second.
     var barInsets: (bar: CGFloat, status: CGFloat) {
         let status = view.window?.safeAreaInsets.top ?? 0
+        guard largeTitleEnabled else {
+            // Sidebar layout: the bar is two floating buttons over content
+            // that lays itself out as it always did. Nothing to clear.
+            return (status, status)
+        }
         let compact = compactInset > 0 ? compactInset : view.safeAreaInsets.top
-        return (compact + (largeTitleEnabled ? largeTitleHeight : 0), status)
+        return (compact + largeTitleHeight, status)
     }
 
     private static func findWebScrollView(in view: UIView) -> UIScrollView? {
@@ -644,8 +670,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             largeTitleEnabled = model.largeTitle
             largeTitleArea.isHidden = !largeTitleEnabled || barHidden
             // In the sidebar layout the sidebar already names and switches
-            // homes, so the bar carries no title at all — just its buttons.
+            // homes, so the bar carries no title at all — just its buttons,
+            // floating: no scroll-edge band, and taps beside them fall through.
             navigationItem.titleView = largeTitleEnabled ? inlineTitle : UIView()
+            setContentScrollView(largeTitleEnabled ? proxy : nil, for: .top)
+            if #available(iOS 26.0, *) {
+                proxy.topEdgeEffect.isHidden = !largeTitleEnabled
+            }
+            (navigationController?.navigationBar as? PassthroughNavigationBar)?.passesThrough = !largeTitleEnabled
             lastReportedInsets = nil
         }
         let title = model.title.isEmpty ? "Homecast" : model.title
