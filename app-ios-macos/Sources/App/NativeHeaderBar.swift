@@ -69,6 +69,10 @@ final class NativeHeaderModel: ObservableObject {
     /// "dark" when the page is drawing light-on-dark, "light" otherwise, nil
     /// until the page has said. The bar follows the page, not the system.
     @Published var appearance: String?
+    /// A web overlay (drawer, dialog, popover) is open. The bar hides for it:
+    /// it sits above every web layer, and a drawer sliding in under a bar
+    /// that stays put is not how a presented sheet behaves.
+    @Published var covered = false
 
     struct MenuItem: Identifiable, Equatable {
         let id: String
@@ -146,6 +150,7 @@ final class NativeHeaderModel: ObservableObject {
             }
         }
         if let value = payload["appearance"] as? String { appearance = value }
+        if let value = payload["covered"] as? Bool { covered = value }
     }
 
     // MARK: - Back into the page
@@ -239,7 +244,7 @@ final class ProxyScrollView: UIScrollView {
 /// UIKit would normally do to the content scroll view — snap it past the
 /// half-collapsed title on release — it cannot do to a view nobody drags, so
 /// `scrollViewDidEndDragging` below does that to the web view instead.
-final class WebHostingController<Content: View>: UIHostingController<Content>, UIScrollViewDelegate {
+final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var cancellable: AnyCancellable?
     private var offsetObservation: NSKeyValueObservation?
     private weak var webScrollView: UIScrollView?
@@ -260,6 +265,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
         // view it considers inert, and an alpha-0 proxy got a bar sized for a
         // large title with an empty large-title view (measured).
         proxy.backgroundColor = .clear
+        proxy.isUserInteractionEnabled = false
         proxy.showsVerticalScrollIndicator = false
         proxy.showsHorizontalScrollIndicator = false
         proxy.onAdjustedInsetChange = { [weak self] in self?.mirrorOffset() }
@@ -297,6 +303,74 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
+        layoutLargeTitleMenu()
+    }
+
+    // MARK: - The chevron on the large title
+
+    /// UIKit draws the title-menu chevron on the inline title only; the Home
+    /// app has one on the large title too, and that is where you are when you
+    /// have not scrolled. So the large title gets its own: a small chevron
+    /// button after the name, and an invisible button over the name itself,
+    /// both presenting the same menu. They live inside UIKit's large-title
+    /// view so they fade and collapse with it.
+    private lazy var largeTitleChevron: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
+        config.baseForegroundColor = .secondaryLabel
+        config.background.backgroundColor = .tertiarySystemFill
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)
+        let button = UIButton(configuration: config)
+        button.showsMenuAsPrimaryAction = true
+        button.accessibilityLabel = "Switch home"
+        return button
+    }()
+
+    private lazy var largeTitleTap: UIButton = {
+        let button = UIButton(type: .custom)
+        button.showsMenuAsPrimaryAction = true
+        button.accessibilityLabel = "Switch home"
+        return button
+    }()
+
+    /// The menu both buttons present. Rebuilt on every apply.
+    private var titleMenu: UIMenu? {
+        didSet {
+            largeTitleChevron.menu = titleMenu
+            largeTitleTap.menu = titleMenu
+            largeTitleChevron.isHidden = titleMenu == nil
+            largeTitleTap.isHidden = titleMenu == nil
+            layoutLargeTitleMenu()
+        }
+    }
+
+    private func layoutLargeTitleMenu() {
+        guard let bar = navigationController?.navigationBar,
+              let largeTitleView = bar.subviews.first(where: { String(describing: type(of: $0)).contains("LargeTitleView") })
+        else { return }
+        if largeTitleChevron.superview !== largeTitleView {
+            largeTitleView.addSubview(largeTitleTap)
+            largeTitleView.addSubview(largeTitleChevron)
+        }
+        // UIKit's large title: 34pt bold at the bar's leading margin.
+        let font = UIFont.systemFont(ofSize: 34, weight: .bold)
+        let title = navigationItem.title ?? ""
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        let leading = max(bar.layoutMargins.left, 16)
+        let bounds = largeTitleView.bounds
+        let maxTextWidth = max(0, bounds.width - leading - 60)
+        let width = min(textWidth, maxTextWidth)
+        let chevronSize: CGFloat = 22
+        largeTitleTap.frame = CGRect(x: 0, y: 0, width: leading + width + 6, height: bounds.height)
+        largeTitleChevron.frame = CGRect(
+            x: leading + width + 8,
+            y: (bounds.height - chevronSize) / 2 + 2,
+            width: chevronSize,
+            height: chevronSize
+        )
+        largeTitleView.bringSubviewToFront(largeTitleTap)
+        largeTitleView.bringSubviewToFront(largeTitleChevron)
     }
 
     /// The web view is created by SwiftUI some time after this controller's
@@ -304,17 +378,39 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
     private func attachWebScrollViewIfNeeded() {
         guard webScrollView == nil, let scroll = Self.findWebScrollView(in: view) else { return }
         webScrollView = scroll
-        scroll.delegate = self
+        // Not the scroll view's delegate: that is WebKit's, and taking it is
+        // the kind of thing that breaks a pan without saying so. A target on
+        // the pan recogniser and KVO on the offset are enough to know when a
+        // drag ends and when the deceleration after it stops.
+        scroll.panGestureRecognizer.addTarget(self, action: #selector(webPanChanged(_:)))
         offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
-            self?.mirrorOffset()
+            guard let self else { return }
+            self.mirrorOffset()
+            if self.awaitingDecelerationEnd, let scroll = self.webScrollView, !scroll.isDragging, !scroll.isDecelerating {
+                self.awaitingDecelerationEnd = false
+                self.snapIfNeeded(scroll)
+            }
         }
         mirrorOffset()
     }
 
+    /// Set when a drag ended with momentum; the snap waits for it to stop.
+    private var awaitingDecelerationEnd = false
+
+    @objc private func webPanChanged(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .ended || pan.state == .cancelled, let scroll = webScrollView else { return }
+        if scroll.isDecelerating {
+            awaitingDecelerationEnd = true
+        } else {
+            snapIfNeeded(scroll)
+        }
+    }
+
+
     /// Keep the proxy where the page is, in the proxy's own coordinate space.
     private func mirrorOffset() {
         let inset = proxy.adjustedContentInset.top
-        if inset > 0 {
+        if inset > 0, navigationController?.isNavigationBarHidden == false {
             largestInset = max(largestInset, inset)
             smallestInset = min(smallestInset, inset)
         }
@@ -346,16 +442,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
         let band = collapseBand
         guard y > 0, y < band else { return }
         scroll.setContentOffset(CGPoint(x: 0, y: y < band / 2 ? 0 : band), animated: true)
-    }
-
-    // MARK: UIScrollViewDelegate (the web view's scroll view)
-
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { snapIfNeeded(scrollView) }
-    }
-
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        snapIfNeeded(scrollView)
     }
 
     /// The bar's height with the large title shown, and the status bar alone.
@@ -401,7 +487,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
     }
 
     private func apply(_ model: NativeHeaderModel) {
-        navigationController?.setNavigationBarHidden(!model.enabled, animated: false)
+        let hidden = !model.enabled || model.covered
+        if navigationController?.isNavigationBarHidden != hidden {
+            // Animated when an overlay comes and goes, instant for the flag.
+            navigationController?.setNavigationBarHidden(hidden, animated: model.enabled)
+        }
 
         // Follow the page, not the system. The page draws light-on-dark over a
         // dark wallpaper or in its dark theme whatever the device is set to,
@@ -439,26 +529,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
         }
 
         // The Home app's title chevron: every home, the current one ticked.
+        // One menu for the inline title (UIKit's provider) and the large one
+        // (our buttons, see layoutLargeTitleMenu).
+        let menu = Self.buildTitleMenu(model)
+        titleMenu = menu
         if #available(iOS 16.0, *) {
-            let homes = model.homes
-            let current = model.currentHomeId
-            let hasStatus = model.hasStatus
-            let subtitle = model.subtitle
-            navigationItem.titleMenuProvider = homes.isEmpty && !hasStatus ? nil : { [weak model] _ in
-                var children: [UIMenuElement] = homes.map { home in
-                    UIAction(title: home.name, state: home.id == current ? .on : .off) { _ in
-                        model?.selectHome(home.id)
-                    }
-                }
-                if hasStatus {
-                    let status = UIAction(
-                        title: subtitle.isEmpty ? "Connection" : subtitle,
-                        image: UIImage(systemName: "antenna.radiowaves.left.and.right")
-                    ) { _ in model?.tap(.status) }
-                    children.append(UIMenu(options: .displayInline, children: [status]))
-                }
-                return UIMenu(children: children)
-            }
+            navigationItem.titleMenuProvider = menu.map { menu in { _ in menu } }
         }
 
         navigationItem.leftBarButtonItem = model.showMenu
@@ -509,6 +585,24 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, U
         view.setNeedsLayout()
         view.layoutIfNeeded()
         view.subviews.forEach { forceLayout($0) }
+    }
+
+    private static func buildTitleMenu(_ model: NativeHeaderModel) -> UIMenu? {
+        guard !model.homes.isEmpty || model.hasStatus else { return nil }
+        let current = model.currentHomeId
+        var children: [UIMenuElement] = model.homes.map { home in
+            UIAction(title: home.name, state: home.id == current ? .on : .off) { [weak model] _ in
+                model?.selectHome(home.id)
+            }
+        }
+        if model.hasStatus {
+            let status = UIAction(
+                title: model.subtitle.isEmpty ? "Connection" : model.subtitle,
+                image: UIImage(systemName: "antenna.radiowaves.left.and.right")
+            ) { [weak model] _ in model?.tap(.status) }
+            children.append(UIMenu(options: .displayInline, children: [status]))
+        }
+        return UIMenu(children: children)
     }
 
     private static func buildMenu(_ model: NativeHeaderModel) -> UIMenu? {
