@@ -41,8 +41,7 @@ final class CameraEngine {
     func owns(_ scene: UIScene) -> Bool { scene === self.scene }
 }
 
-/// The engine window's only view. Cameras and (sometimes) the web view are its
-/// subviews.
+/// The engine window's only view. Hosts the camera views.
 final class CameraEngineCanvas: UIView {
     static let size = CGSize(width: 1280, height: 720)
 

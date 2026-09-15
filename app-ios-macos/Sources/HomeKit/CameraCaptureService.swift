@@ -63,8 +63,8 @@ final class CameraCaptureService: NSObject {
     ///
     /// Not `CGPreflightScreenCaptureAccess()`: it answered false on a build
     /// whose captures were succeeding. A denied capture is not an error, it is
-    /// an image with nothing in it — so the canvas carries a small white
-    /// marker and the test is whether a capture can see it.
+    /// an image with nothing in it — so test whether the window capture has
+    /// any opaque pixels.
     static var screenRecordingGranted: Bool {
         guard let canvas = CameraEngine.shared.canvas, canvas.window != nil,
               let (cg, _) = captureWindowImage(of: canvas) else { return false }
@@ -159,6 +159,14 @@ final class CameraCaptureService: NSObject {
         guard let control = accessory.cameraProfiles?.first?.snapshotControl else {
             throw CameraError.notSupported
         }
+        // Pace physical requests even when the previous one failed or HomeKit
+        // returned an old captureDate. Cache age alone cannot enforce this.
+        if let last = lastPhysicalSnapshot[accessoryId] {
+            let remaining = Self.snapshotFloor - Date().timeIntervalSince(last)
+            if remaining > 0 {
+                try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+        }
         let canvas = try readyCanvas()
         lastPhysicalSnapshot[accessoryId] = Date()
 
@@ -200,9 +208,11 @@ final class CameraCaptureService: NSObject {
             control.takeSnapshot()
             // A plain timer arm: nothing can cancel the HomeKit call, so the
             // clock answers when the delegate never does.
-            Task { [weak self] in
+            Task {
                 try? await Task.sleep(nanoseconds: UInt64(Self.snapshotBound * 1_000_000_000))
-                guard let self = self, let cont = self.snapshotSettles[key]?.claim() else { return }
+                // A timer belongs to this request. Looking up by control here
+                // could claim a newer request after this one already finished.
+                guard let cont = settle.claim() else { return }
                 cont.resume(throwing: CameraError.snapshotTimeout)
             }
         }
@@ -245,6 +255,7 @@ final class CameraCaptureService: NSObject {
         guard let control = accessory.cameraProfiles?.first?.streamControl else {
             throw CameraError.notSupported
         }
+        guard streamSettles[ObjectIdentifier(control)] == nil else { throw CameraError.busy }
         let canvas = try readyCanvas()
         let homeId = homeKitManager.homes.first { $0.accessories.contains(accessory) }?.uniqueIdentifier.uuidString
 
@@ -354,9 +365,10 @@ final class CameraCaptureService: NSObject {
         return await withCheckedContinuation { (continuation: CheckedContinuation<StreamOutcome, Never>) in
             settle.continuation = continuation
             control.startStream()
-            Task { [weak self] in
+            Task {
                 try? await Task.sleep(nanoseconds: UInt64(Self.streamStartBound * 1_000_000_000))
-                guard let self = self, let cont = self.streamSettles[key]?.claim() else { return }
+                guard let cont = settle.claim() else { return }
+                control.stopStream()
                 cont.resume(returning: .timeout)
             }
         }
@@ -397,7 +409,7 @@ final class CameraCaptureService: NSObject {
     private func layoutSlots() {
         let canvas = CameraEngineCanvas.size
         let n = slots.count
-        let cols = n <= 1 ? 1 : (n <= 4 ? 2 : 3)
+        let cols = max(1, Int(ceil(Double(n).squareRoot())))
         let cell = CGSize(width: (canvas.width / CGFloat(cols)).rounded(.down), height: (canvas.height / CGFloat(cols)).rounded(.down))
         for (i, slot) in slots.enumerated() {
             let origin = CGPoint(x: CGFloat(i % cols) * cell.width, y: CGFloat(i / cols) * cell.height)
@@ -411,8 +423,8 @@ final class CameraCaptureService: NSObject {
     // MARK: - Capture
 
     /// One window-server capture of the window hosting `view`, plus its
-    /// pixels-per-point scale. The CG window is matched to the UIWindow by
-    /// bounds so the UI window is never captured by mistake.
+    /// pixels-per-point scale. Require the engine's title AND its below-desktop
+    /// level; dimensions alone also match a resized dashboard window.
     private static func captureWindowImage(of view: UIView) -> (CGImage, CGFloat)? {
         guard let window = view.window else { return nil }
         let pid = ProcessInfo.processInfo.processIdentifier
@@ -420,6 +432,8 @@ final class CameraCaptureService: NSObject {
         let wanted = window.bounds.size
         let mine = list.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
         let match = mine.first { w in
+            guard w[kCGWindowName as String] as? String == CameraEngine.windowTitle,
+                  w[kCGWindowLayer as String] as? Int == Int(CGWindowLevelForKey(.desktopWindow)) - 1 else { return false }
             let b = w[kCGWindowBounds as String] as? [String: Double] ?? [:]
             return abs((b["Width"] ?? 0) - Double(wanted.width)) < 2 && abs((b["Height"] ?? 0) - Double(wanted.height)) < 40
         }
