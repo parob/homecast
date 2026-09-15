@@ -293,12 +293,23 @@ struct HomecastApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
+        #if targetEnvironment(macCatalyst)
+        // The relay's engine window — see CameraEngine.swift. Opened once from
+        // RootView; never shown to the user as a place to go.
+        WindowGroup(id: CameraEngine.windowGroupID) {
+            CameraEngineView()
+        }
+        .commandsRemoved()
+        #endif
     }
 }
 
 // MARK: - Root View
 
 struct RootView: View {
+    #if targetEnvironment(macCatalyst)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     var body: some View {
         #if targetEnvironment(macCatalyst)
         // No minimum here: the window's own sizeRestrictions (AppDelegate,
@@ -307,11 +318,22 @@ struct RootView: View {
         // window height the top of the page — header, menus — was clipped off.
         ContentView()
             .ignoresSafeArea()
+            .onAppear {
+                // One engine window per process. Opened from here because the
+                // UI window is what launch shows; the engine outlives it.
+                if !AppConfig.isCommunity, !CameraEngine.shared.isAvailable, !RootView.engineRequested {
+                    RootView.engineRequested = true
+                    openWindow(id: CameraEngine.windowGroupID)
+                }
+            }
         #else
         ContentView()
             .ignoresSafeArea()
         #endif
     }
+    #if targetEnvironment(macCatalyst)
+    private static var engineRequested = false
+    #endif
 }
 
 // MARK: - Content View
@@ -1553,6 +1575,9 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastDeviceModel = "\(deviceModel)";
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "macos";
+        // This build has the camera engine window (cloud relay only). Whether
+        // it may capture is asked live via camera.capabilities.
+        window.homecastCameraEngine = \(AppConfig.isCommunity ? "false" : "true");
 
         console.log('[Homecast] Mac app detected - HomeKit relay capable');
 

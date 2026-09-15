@@ -2401,24 +2401,28 @@ class HomeKitManager: NSObject, ObservableObject {
         return nil
     }
 
-    private func findCharacteristic(accessoryId: String, type: String) throws -> (HMAccessory, HMCharacteristic) {
+    /// The live `HMAccessory` behind an id, across every home.
+    func hmAccessory(id accessoryId: String) throws -> HMAccessory {
         guard let uuid = UUID(uuidString: accessoryId) else {
             throw HomeKitError.invalidId(accessoryId)
         }
-
         for home in homes {
             if let accessory = home.accessories.first(where: { $0.uniqueIdentifier == uuid }) {
-                if let characteristic = firstCharacteristic(on: accessory, type: type) {
-                    return (accessory, characteristic)
-                }
-                // Log available characteristics for debugging
-                let availableTypes = accessory.services.flatMap { $0.characteristics }.map { CharacteristicMapper.fromHomeKitType($0.characteristicType) }
-                print("[HomeKit] Characteristic '\(type)' not found on \(accessory.name). Available: \(availableTypes.joined(separator: ", "))")
-                throw HomeKitError.characteristicNotFound(type)
+                return accessory
             }
         }
-
         throw HomeKitError.accessoryNotFound(accessoryId)
+    }
+
+    private func findCharacteristic(accessoryId: String, type: String) throws -> (HMAccessory, HMCharacteristic) {
+        let accessory = try hmAccessory(id: accessoryId)
+        if let characteristic = firstCharacteristic(on: accessory, type: type) {
+            return (accessory, characteristic)
+        }
+        // Log available characteristics for debugging
+        let availableTypes = accessory.services.flatMap { $0.characteristics }.map { CharacteristicMapper.fromHomeKitType($0.characteristicType) }
+        print("[HomeKit] Characteristic '\(type)' not found on \(accessory.name). Available: \(availableTypes.joined(separator: ", "))")
+        throw HomeKitError.characteristicNotFound(type)
     }
 }
 

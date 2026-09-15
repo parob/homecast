@@ -635,7 +635,7 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate, MenuBarController {
         ) { [weak self] _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 let visibleWindows = NSApp.windows.filter {
-                    $0.isVisible && $0.className != "NSStatusBarWindow"
+                    $0.isVisible && $0.className != "NSStatusBarWindow" && !(self?.isEngineWindow($0) ?? false)
                 }
                 if visibleWindows.isEmpty {
                     self?.hideFromDock()
@@ -2045,7 +2045,7 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate, MenuBarController {
 
         DispatchQueue.main.async {
             for window in NSApplication.shared.windows {
-                if window.canBecomeKey {
+                if window.canBecomeKey, !self.isEngineWindow(window) {
                     window.makeKeyAndOrderFront(nil)
                     window.orderFrontRegardless()
                 }
@@ -2065,6 +2065,35 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate, MenuBarController {
     }
 
     // MARK: - Dock Visibility
+
+    // MARK: - Camera engine window
+
+    /// The title the relay gives its engine window. Mirrors
+    /// `CameraEngine.windowTitle` in the app; the plugin cannot import it.
+    private static let engineWindowTitle = "Homecast Camera Engine"
+
+    private func isEngineWindow(_ window: NSWindow) -> Bool {
+        window.title == MenuBarPlugin.engineWindowTitle
+    }
+
+    /// Make the engine window invisible to the user and impossible to close,
+    /// while keeping it ordered in so the window server keeps compositing it.
+    /// Below the desktop is the one level that is both invisible and
+    /// capturable — `alphaValue = 0` captures black, and parking off-screen
+    /// leaves a 40px sliver macOS insists on.
+    @objc public func configureEngineWindow() {
+        guard let window = NSApp.windows.first(where: isEngineWindow) else {
+            print("[MenuBarPlugin] engine window not found yet")
+            return
+        }
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+        window.collectionBehavior = [.transient, .ignoresCycle, .stationary, .fullScreenNone]
+        window.styleMask.remove([.closable, .miniaturizable, .resizable])
+        window.isExcludedFromWindowsMenu = true
+        window.hidesOnDeactivate = false
+        window.orderBack(nil)
+        print("[MenuBarPlugin] engine window configured: level=\(window.level.rawValue) visible=\(window.isVisible)")
+    }
 
     @objc public func showInDock() {
         DispatchQueue.main.async {

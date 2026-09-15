@@ -117,6 +117,17 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
     /// Pending callbacks waiting for async responses
     private var pendingCallbacks: [String: String] = [:]
 
+    #if targetEnvironment(macCatalyst)
+    /// Camera snapshots and live frames, cloud relay only. Frames and session
+    /// state leave through the same event channel as characteristic changes.
+    private lazy var cameras: CameraCaptureService = {
+        let service = CameraCaptureService(homeKitManager: homeKitManager)
+        service.onFrame = { [weak self] payload in self?.pushEvent(type: "camera_frame", payload: payload) }
+        service.onLiveState = { [weak self] payload in self?.pushEvent(type: "camera_live_state", payload: payload) }
+        return service
+    }()
+    #endif
+
     /// In-memory relay log buffer (capped to prevent unbounded growth)
     private var relayLogBuffer: [[String: Any]] = []
     private static let maxRelayLogs = 500
@@ -452,6 +463,37 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         case "observe.reset":
             return resetObservationTimeout()
 
+        // MARK: Cameras (cloud relay only)
+        case "camera.capabilities", "camera.snapshot", "camera.live.start", "camera.live.keepalive",
+             "camera.live.stop", "camera.requestScreenRecording":
+            #if targetEnvironment(macCatalyst)
+            guard !AppConfig.isCommunity else { throw CameraError.engineUnavailable }
+            switch method {
+            case "camera.capabilities":
+                return cameras.capabilities()
+            case "camera.requestScreenRecording":
+                return cameras.requestScreenRecording()
+            case "camera.snapshot":
+                guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
+                return try await cameras.snapshot(accessoryId: accessoryId,
+                                                  maxWidth: payload["maxWidth"] as? Int,
+                                                  maxAgeSec: payload["maxAgeSec"] as? Double)
+            case "camera.live.start":
+                guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
+                return try await cameras.startLive(accessoryId: accessoryId,
+                                                   fps: payload["fps"] as? Double,
+                                                   maxWidth: payload["maxWidth"] as? Int,
+                                                   quality: payload["quality"] as? Double)
+            case "camera.live.keepalive":
+                guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
+                return cameras.keepalive(accessoryId: accessoryId)
+            default:
+                return cameras.stopLive(accessoryId: payload["accessoryId"] as? String)
+            }
+            #else
+            throw CameraError.engineUnavailable
+            #endif
+
         // Debug operations
         case "debug.getRelayLogs":
             return getRelayLogs()
@@ -672,6 +714,9 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             if let roomName = accessory.roomName {
                 dict["roomName"] = roomName
             }
+            if let camera = accessory.camera {
+                dict["camera"] = camera
+            }
             return dict
         }
     }
@@ -721,6 +766,9 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         }
         if let roomId = accessory.roomId {
             dict["roomId"] = roomId
+        }
+        if let camera = accessory.camera {
+            dict["camera"] = camera
         }
         if let roomName = accessory.roomName {
             dict["roomName"] = roomName
@@ -1187,6 +1235,8 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
             errorCode = bridgeError.code
         } else if let homeKitError = error as? HomeKitError {
             errorCode = homeKitError.code
+        } else if let cameraError = error as? CameraError {
+            errorCode = cameraError.code
         } else {
             errorCode = "INTERNAL_ERROR"
         }

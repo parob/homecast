@@ -13,12 +13,14 @@
 		42271B052F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42271B032F1EB6E3000D70CF /* HomeKitBridge.swift */; };
 		42792F432F3386C200FFF6F0 /* ModeButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */; };
 		A1000001A /* HomecastApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001F /* HomecastApp.swift */; };
+		C10000AC0 /* CameraEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC1 /* CameraEngine.swift */; };
 		A1000002A /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002F /* AppDelegate.swift */; };
 		A1000003A /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000003F /* ConnectionManager.swift */; };
 		B3000001A /* NativeHeaderBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3000001F /* NativeHeaderBar.swift */; };
 		A1000004A /* HomeKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004F /* HomeKitManager.swift */; };
 		A1000005A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000005F /* Models.swift */; };
 		A1000006A /* CharacteristicMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000006F /* CharacteristicMapper.swift */; };
+		C10000AC2 /* CameraCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC3 /* CameraCaptureService.swift */; };
 		A1000010A /* HomeKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000010F /* HomeKit.framework */; };
 		A1000011A /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000011F /* UIKit.framework */; };
 		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
@@ -111,12 +113,14 @@
 		42792F422F3386C200FFF6F0 /* ModeButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeButtonGroup.swift; sourceTree = "<group>"; };
 		42BCDD2C2FA7725000692926 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
 		A1000001F /* HomecastApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomecastApp.swift; sourceTree = "<group>"; };
+		C10000AC1 /* CameraEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraEngine.swift; sourceTree = "<group>"; };
 		A1000002F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000003F /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
 		B3000001F /* NativeHeaderBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHeaderBar.swift; sourceTree = "<group>"; };
 		A1000004F /* HomeKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitManager.swift; sourceTree = "<group>"; };
 		A1000005F /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A1000006F /* CharacteristicMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacteristicMapper.swift; sourceTree = "<group>"; };
+		C10000AC3 /* CameraCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCaptureService.swift; sourceTree = "<group>"; };
 		A1000008F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000009F /* Homecast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Homecast.entitlements; sourceTree = "<group>"; };
 		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
@@ -272,6 +276,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000001F /* HomecastApp.swift */,
+				C10000AC1 /* CameraEngine.swift */,
 				A1000002F /* AppDelegate.swift */,
 				A1000003F /* ConnectionManager.swift */,
 				B3000001F /* NativeHeaderBar.swift */,
@@ -287,6 +292,7 @@
 				A1000004F /* HomeKitManager.swift */,
 				A1000005F /* Models.swift */,
 				A1000006F /* CharacteristicMapper.swift */,
+				C10000AC3 /* CameraCaptureService.swift */,
 			);
 			path = HomeKit;
 			sourceTree = "<group>";
@@ -519,6 +525,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000001A /* HomecastApp.swift in Sources */,
+				C10000AC0 /* CameraEngine.swift in Sources */,
 				A1000002A /* AppDelegate.swift in Sources */,
 				A1000003A /* ConnectionManager.swift in Sources */,
 				B3000001A /* NativeHeaderBar.swift in Sources */,
@@ -526,6 +533,7 @@
 				42271B042F1EB6E3000D70CF /* HomeKitBridge.swift in Sources */,
 				A1000005A /* Models.swift in Sources */,
 				A1000006A /* CharacteristicMapper.swift in Sources */,
+				C10000AC2 /* CameraCaptureService.swift in Sources */,
 				B2000001A /* BuildInfo.swift in Sources */,
 				C1000001A /* LocalHTTPServer.swift in Sources */,
 				C1000002A /* LocalNetworkBridge.swift in Sources */,
@@ -618,7 +626,7 @@
 				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -641,7 +649,7 @@
 				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -793,7 +801,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -837,7 +845,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -862,7 +870,7 @@
 				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -888,7 +896,7 @@
 				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
 				PRODUCT_NAME = "$(TARGET_NAME)";
