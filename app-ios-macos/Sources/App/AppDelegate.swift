@@ -297,6 +297,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
         // Listen for HomeKit ready notification to preload menu bar data
         NotificationCenter.default.addObserver(
+            forName: .configureEngineWindow, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.configureEngineWindow()
+        }
+
+        NotificationCenter.default.addObserver(
             forName: .homeKitDidBecomeReady,
             object: nil,
             queue: .main
@@ -356,9 +362,30 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Hand the engine window to the AppKit plugin to hide and pin. Called by
+    /// the engine canvas once its window exists; harmless if called again.
+    func configureEngineWindow() {
+        #if targetEnvironment(macCatalyst)
+        guard let plugin = menuBarPlugin else { print("[Homecast] configureEngineWindow: no plugin"); return }
+        let selector = NSSelectorFromString("configureEngineWindow")
+        if plugin.responds(to: selector) { _ = plugin.perform(selector) } else { print("[Homecast] plugin lacks configureEngineWindow") }
+        #endif
+    }
+
     @objc func showWindow() {
         // Bring the app to front and show window
         NotificationCenter.default.post(name: .showMainWindow, object: nil)
+        #if targetEnvironment(macCatalyst)
+        // With multiple scenes, a closed UI window is gone, not hidden: ask
+        // for a new one if the only scene left is the engine window.
+        let uiScenes = UIApplication.shared.connectedScenes.filter { !CameraEngine.shared.owns($0) }
+        if uiScenes.isEmpty {
+            print("[Homecast] No UI scene — requesting one")
+            UIApplication.shared.requestSceneSessionActivation(nil, userActivity: nil, options: nil, errorHandler: { error in
+                print("[Homecast] Scene activation failed: \(error)")
+            })
+        }
+        #endif
     }
 
     @objc func quitApp() {

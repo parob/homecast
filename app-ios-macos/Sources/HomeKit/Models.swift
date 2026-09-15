@@ -181,6 +181,11 @@ struct AccessoryModel {
     let category: String
     let isReachable: Bool
     let services: [ServiceModel]
+    /// `{snapshot, stream}` when the accessory has a camera profile. Absent
+    /// otherwise — and absent on iOS, where the relay never captures. This,
+    /// not the category, is how a camera is recognised: some cameras report an
+    /// empty category.
+    let camera: [String: Bool]?
 
     init(from accessory: HMAccessory, homeId: String? = nil, includeValues: Bool = true, reachableOverride: Bool? = nil) {
         self.id = accessory.uniqueIdentifier.uuidString
@@ -191,6 +196,11 @@ struct AccessoryModel {
         self.category = accessory.category.localizedDescription
         self.isReachable = reachableOverride ?? accessory.isReachable
         self.services = accessory.services.map { ServiceModel(from: $0, includeValues: includeValues) }
+        if let profile = accessory.cameraProfiles?.first {
+            self.camera = ["snapshot": profile.snapshotControl != nil, "stream": profile.streamControl != nil]
+        } else {
+            self.camera = nil
+        }
     }
 
     /// Services that describe how an accessory is plumbed in rather than what
@@ -267,6 +277,9 @@ struct AccessoryModel {
         }
         if let roomId = roomId {
             obj["roomId"] = .string(roomId)
+        }
+        if let camera = camera {
+            obj["camera"] = .object(camera.mapValues { .bool($0) })
         }
         if let roomName = roomName {
             obj["roomName"] = .string(roomName)
@@ -374,6 +387,10 @@ struct CharacteristicModel {
             } else {
                 return .double(n.doubleValue)
             }
+        case let d as Data:
+            // Camera TLV characteristics are bytes; the description of a
+            // Data is "<abc123 ...>" garbage, so ship base64 like the bridge.
+            return .string(d.base64EncodedString())
         default:
             // Fallback to string representation
             return .string(String(describing: value))
