@@ -1576,7 +1576,7 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "macos";
         // This build has the camera engine window (cloud relay only). Whether
-        // it may capture is asked live via camera.capabilities.
+        // it can capture is asked live via camera.capabilities.
         window.homecastCameraEngine = \(AppConfig.isCommunity ? "false" : "true");
 
         console.log('[Homecast] Mac app detected - HomeKit relay capable');
