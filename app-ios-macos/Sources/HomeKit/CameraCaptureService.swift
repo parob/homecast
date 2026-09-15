@@ -11,8 +11,8 @@ import CoreGraphics
 /// The one public door is the window server: capture the window the view is
 /// in (`CGWindowListCreateImage`) and crop. So every camera view lives in the
 /// engine window (`CameraEngine`), which is always ordered in, sits below the
-/// desktop so nobody sees it, and needs the user to have granted Screen
-/// Recording once.
+/// desktop so nobody sees it. macOS allows an app to capture its own windows
+/// without granting access to the rest of the screen.
 ///
 /// One capture per frame serves every camera on the canvas; the cost that
 /// scales with cameras is HomeKit's decoding and our JPEG encoding, not the
@@ -61,15 +61,14 @@ final class CameraCaptureService: NSObject {
 
     /// Whether the window server will give us pixels.
     ///
-    /// Not `CGPreflightScreenCaptureAccess()`: it answered false on a build
-    /// whose captures were succeeding. A denied capture is not an error, it is
-    /// an image with nothing in it — so test whether the window capture has
-    /// any opaque pixels.
-    static var screenRecordingGranted: Bool {
+    /// This is NOT a Screen Recording permission check. Our own window can be
+    /// captured when CGPreflightScreenCaptureAccess() is false. Test whether
+    /// the engine window is capturable, without requesting broader access.
+    static var captureAvailable: Bool {
         guard let canvas = CameraEngine.shared.canvas, canvas.window != nil,
               let (cg, _) = captureWindowImage(of: canvas) else { return false }
-        // A denied capture is fully transparent; anything the window server
-        // actually composited — even the black canvas — is opaque.
+        // An opaque canvas proves the window is capturable, not that macOS
+        // granted Screen Recording. Snapshot capture also checks image content.
         return isOpaque(cg)
     }
 
@@ -85,10 +84,16 @@ final class CameraCaptureService: NSObject {
     }
 
     func capabilities() -> [String: Any] {
-        [
+        let available = Self.captureAvailable
+        return [
             "supported": true,
             "engineWindow": CameraEngine.shared.isAvailable,
-            "screenRecording": Self.screenRecordingGranted ? "granted" : "denied",
+            "captureAvailable": available,
+            "screenRecordingAuthorization": CGPreflightScreenCaptureAccess() ? "granted" : "denied",
+            // Legacy field: build 70 named capture readiness as permission.
+            // Preserve its meaning for older clients; new clients use the two
+            // explicit fields above and never infer permission from capture.
+            "screenRecording": available ? "granted" : "denied",
             "maxStreamsPerHome": Self.maxStreamsPerHome,
             "activeStreams": liveSessions.count,
             "fps": Self.defaultFps,
@@ -106,7 +111,7 @@ final class CameraCaptureService: NSObject {
         guard let canvas = CameraEngine.shared.canvas, canvas.window != nil else {
             throw CameraError.engineUnavailable
         }
-        guard Self.screenRecordingGranted else { throw CameraError.screenRecordingDenied }
+        guard Self.captureAvailable else { throw CameraError.captureUnavailable }
         return canvas
     }
 
@@ -531,7 +536,7 @@ extension CameraCaptureService: HMCameraStreamControlDelegate {
 enum CameraError: LocalizedError {
     case notSupported
     case engineUnavailable
-    case screenRecordingDenied
+    case captureUnavailable
     case busy
     case snapshotTimeout
     case snapshotFailed(String)
@@ -543,7 +548,7 @@ enum CameraError: LocalizedError {
         switch self {
         case .notSupported: return "CAMERA_NOT_SUPPORTED"
         case .engineUnavailable: return "CAMERA_UNAVAILABLE"
-        case .screenRecordingDenied: return "SCREEN_RECORDING_DENIED"
+        case .captureUnavailable: return "CAMERA_CAPTURE_UNAVAILABLE"
         case .busy: return "CAMERA_BUSY"
         case .snapshotTimeout: return "SNAPSHOT_TIMEOUT"
         case .snapshotFailed: return "SNAPSHOT_FAILED"
@@ -557,7 +562,7 @@ enum CameraError: LocalizedError {
         switch self {
         case .notSupported: return "This accessory has no camera"
         case .engineUnavailable: return "The camera engine window is not available on this relay"
-        case .screenRecordingDenied: return "Screen Recording permission is required on the relay Mac"
+        case .captureUnavailable: return "The camera engine window could not be captured; restart Homecast on the relay Mac"
         case .busy: return "The camera is busy — HomeKit allows two live streams per home"
         case .snapshotTimeout: return "The camera did not return a snapshot in time"
         case .snapshotFailed(let m): return "Snapshot failed: \(m)"
