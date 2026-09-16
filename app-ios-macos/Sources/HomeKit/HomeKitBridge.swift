@@ -1003,10 +1003,10 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         ]
 
         if let payload = payload {
-            entry["payload"] = formatPayloadForLog(payload)
+            entry["payload"] = formatPayloadForLog(CameraLogPolicy.metadata(method: method, value: payload) as? [String: Any])
         }
         if let result = result {
-            entry["result"] = formatResultForLog(result)
+            entry["result"] = formatResultForLog(CameraLogPolicy.metadata(method: method, value: result))
         }
         if let error = error {
             entry["error"] = error

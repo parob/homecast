@@ -27,3 +27,26 @@ enum CameraSnapshotPolicy {
         return min(minimumInterval, max(0, minimumInterval - now.timeIntervalSince(lastAttempt)))
     }
 }
+
+/// Logging is metadata-only even for images small enough to fit a log limit.
+enum CameraLogPolicy {
+    private static let metadataKeys = Set([
+        "homeId", "accessoryId", "capturedAt", "mimeType", "width", "height", "cached", "source",
+        "maxWidth", "maxAgeSec", "seq", "state", "reason", "started", "activeStreams", "fps", "quality",
+        "supported", "engineWindow", "captureAvailable", "screenRecordingAuthorization", "screenRecording",
+        "maxStreamsPerHome",
+    ])
+
+    static func metadata(method: String, value: Any) -> Any {
+        let object = value as? [String: Any]
+        guard method.hasPrefix("camera.") || object?["jpeg"] != nil else { return value }
+        guard let object else { return "[camera payload omitted]" }
+        var result: [String: Any] = [:]
+        for key in metadataKeys {
+            if let text = object[key] as? String { result[key] = String(text.prefix(200)) }
+            else if let number = object[key] as? NSNumber { result[key] = number }
+            else if object[key] is NSNull { result[key] = NSNull() }
+        }
+        return result
+    }
+}
