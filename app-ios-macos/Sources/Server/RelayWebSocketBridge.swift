@@ -225,6 +225,9 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         let stats = connectionStatsSuffix(socketId)
         guard let state = takeSocket(socketId) else { return }
         state.pingTimer?.cancel()
+        // A ping timeout or failed send can leave URLSession's task alive.
+        // Retire the transport as well as its tracking before JS reconnects.
+        state.task.cancel(with: .goingAway, reason: nil)
         Log.warning("task failed: \(error.localizedDescription)\(stats)",
                     category: "relay-ws",
                     metadata: ["socketId": socketId])
