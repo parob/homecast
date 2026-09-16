@@ -539,7 +539,13 @@ final class CameraCaptureService: NSObject {
     }
 
     private static func crop(_ cg: CGImage, to view: UIView, in canvas: UIView, scale: CGFloat) -> CGImage? {
-        guard let window = canvas.window else { return nil }
+        // A still can borrow a live slot while awaiting its rendered frame.
+        // The live lease may end during that await and release the view. Never
+        // convert a detached view's coordinates: another camera may now occupy
+        // its former position after layoutSlots() runs.
+        guard let window = canvas.window,
+              view.window === window,
+              view.isDescendant(of: canvas) else { return nil }
         let f = view.convert(view.bounds, to: window)
         let rect = CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale)
         return cg.cropping(to: rect.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height)))
