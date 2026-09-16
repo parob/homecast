@@ -41,6 +41,7 @@ final class CameraCaptureService: NSObject {
         snapshotInFlight.removeAll()
         snapshotCache.removeAll()
         lastPhysicalSnapshot.removeAll()
+        lastLivePersistence.removeAll()
         _ = stopLive(accessoryId: nil)
         let session = cacheSession
         Task { await snapshotStore.updateSession(session) }
@@ -49,9 +50,9 @@ final class CameraCaptureService: NSObject {
     // MARK: - Limits
 
     /// HomeKit refuses a third concurrent stream per home (HMError 14, busy),
-    /// measured on two homes. Reported so the UI can explain, not enforced
-    /// here — HomeKit enforces it and we surface the answer.
-    static let maxStreamsPerHome = 2
+    /// measured on two homes. Shared live sessions, pending starts and short
+    /// snapshot streams all count against the same relay-owned reservation.
+    static let maxStreamsPerHome = CameraLiveRegistry.streamsPerHome
     static let streamStartBound: TimeInterval = 20
     /// A live session with no keepalive for this long is stopped.
     static let liveIdle: TimeInterval = 30
@@ -110,6 +111,7 @@ final class CameraCaptureService: NSObject {
             "maxStreamsPerHome": Self.maxStreamsPerHome,
             "activeStreams": liveSessions.count,
             "persistentSnapshots": true,
+            "liveLeases": true,
             "fps": Self.defaultFps,
         ]
     }
@@ -247,12 +249,19 @@ final class CameraCaptureService: NSObject {
         guard streamSettles[ObjectIdentifier(control)] == nil,
               !snapshotStreams.contains(accessoryId),
               control.streamState == .notStreaming else { throw CameraError.busy }
+        let home = homeIdForCamera(accessoryId)
+        if let home,
+           liveRegistry.occupied(homeId: home) + snapshotStreams.filter({ homeIdForCamera($0) == home }).count
+               + liveStarts.filter({ $0.value.homeId == home && liveRegistry.cameras[$0.key]?.streamId != $0.value.streamId }).count >= Self.maxStreamsPerHome {
+            throw CameraError.busy
+        }
         snapshotStreams.insert(accessoryId)
         // Stop on success, timeout, cancellation, empty capture, or any error.
         // This is deliberately not startLive: no ticker, fan-out, or idle lease.
         defer {
             control.stopStream()
             snapshotStreams.remove(accessoryId)
+            pumpLiveQueue()
         }
         switch await startStream(control, timeout: CameraSnapshotPolicy.streamStartTimeout) {
         case .started: break
@@ -279,24 +288,29 @@ final class CameraCaptureService: NSObject {
         // are muted. Keep this callback bounded too: waiting indefinitely for
         // the async HomeKit alternative would leak our short-lived stream.
         let settle = MuteSettle()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            settle.continuation = continuation
-            stream.updateAudioStreamSetting(.muted) { error in
-                Task { @MainActor in
-                    guard let cont = settle.claim() else { return }
-                    if Self.isAuthorizationFailure(error) {
-                        cont.resume(throwing: CameraError.accessDenied)
-                    } else if let error {
-                        cont.resume(throwing: CameraError.streamFailed("Could not mute camera audio: \(error.localizedDescription)"))
-                    } else {
-                        cont.resume()
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                settle.continuation = continuation
+                stream.updateAudioStreamSetting(.muted) { error in
+                    Task { @MainActor in
+                        guard let cont = settle.claim() else { return }
+                        if Self.isAuthorizationFailure(error) {
+                            cont.resume(throwing: CameraError.accessDenied)
+                        } else if let error {
+                            cont.resume(throwing: CameraError.streamFailed("Could not mute camera audio: \(error.localizedDescription)"))
+                        } else {
+                            cont.resume()
+                        }
                     }
                 }
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(CameraSnapshotPolicy.streamMuteTimeout * 1_000_000_000))
+                    settle.claim()?.resume(throwing: CameraError.streamFailed("Could not confirm muted camera audio in time."))
+                }
             }
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(CameraSnapshotPolicy.streamMuteTimeout * 1_000_000_000))
-                settle.claim()?.resume(throwing: CameraError.streamFailed("Could not confirm muted camera audio in time."))
-            }
+        } onCancel: {
+            Task { @MainActor in settle.claim()?.resume(throwing: CancellationError()) }
         }
     }
 
@@ -378,90 +392,177 @@ final class CameraCaptureService: NSObject {
     private final class LiveSession {
         let accessoryId: String
         let homeId: String?
+        let streamId: String
         let name: String
         let control: HMCameraStreamControl
         let slot: Slot
         let started = Date()
-        var lastKeepalive = Date()
         var seq = 0
         let quality: CGFloat
         let maxWidth: Int
-        init(accessoryId: String, homeId: String?, name: String, control: HMCameraStreamControl, slot: Slot, quality: CGFloat, maxWidth: Int) {
+        init(accessoryId: String, homeId: String?, streamId: String, name: String, control: HMCameraStreamControl, slot: Slot, quality: CGFloat, maxWidth: Int) {
             self.accessoryId = accessoryId; self.homeId = homeId; self.name = name; self.control = control
+            self.streamId = streamId
             self.slot = slot; self.quality = quality; self.maxWidth = maxWidth
         }
     }
     private var liveSessions: [String: LiveSession] = [:]
+    private var liveRegistry = CameraLiveRegistry()
+    private var liveOptions: [String: (width: Int, quality: Double)] = [:]
+    private struct LiveStart {
+        let streamId: String
+        let homeId: String
+        let task: Task<Void, Never>
+    }
+    private var liveStarts: [String: LiveStart] = [:]
+    private var lastLivePersistence: [String: Date] = [:]
     private var ticker: Task<Void, Never>?
     private var fps: Double = CameraCaptureService.defaultFps
     private(set) var lastCaptureMs = 0
 
-    func startLive(accessoryId: String, fps: Double?, maxWidth: Int?, quality: Double?) async throws -> [String: Any] {
-        if let existing = liveSessions[accessoryId] {
-            existing.lastKeepalive = Date()
-            return liveStatus(existing, started: false)
+    private func homeIdForCamera(_ accessoryId: String) -> String? {
+        homeKitManager.homes.first { home in home.accessories.contains { $0.uniqueIdentifier.uuidString == accessoryId } }?.uniqueIdentifier.uuidString
+    }
+
+    func startLive(accessoryId: String, fps: Double?, maxWidth: Int?, quality: Double?, viewerId: String? = nil, viewerInstance: String? = nil) async throws -> [String: Any] {
+        guard cacheSession.account != nil else { throw CameraError.accessDenied }
+        let accessory = try homeKitManager.hmAccessory(id: accessoryId)
+        let id = accessory.uniqueIdentifier.uuidString
+        guard accessory.cameraProfiles?.first?.streamControl != nil, let home = homeIdForCamera(id) else { throw CameraError.notSupported }
+        reconcileLiveViewers()
+        let viewer = viewerId ?? "legacy:\(id)"
+        do {
+            _ = try liveRegistry.acquire(accessoryId: id, homeId: home, viewerId: viewer, instance: viewerInstance ?? "")
+        } catch { throw CameraError.viewerLimit }
+        if liveOptions[id] == nil {
+            let requestedQuality = quality?.isFinite == true ? quality! : Double(Self.defaultLiveQuality)
+            liveOptions[id] = (min(max(maxWidth ?? Self.defaultLiveWidth, 160), 1280), min(max(requestedQuality, 0.2), 0.9))
         }
+        if let fps, fps.isFinite { self.fps = min(max(fps, 0.5), 10) }
+        pumpLiveQueue()
+        ensureTicker()
+        return livePayload(liveRegistry.cameras[id]!, viewerIds: [viewer])
+    }
+
+    private func startPhysicalLive(_ reservation: CameraLiveRegistry.Camera, session: CameraCacheSession) async throws {
+        let accessoryId = reservation.accessoryId
         let accessory = try homeKitManager.hmAccessory(id: accessoryId)
         guard let control = accessory.cameraProfiles?.first?.streamControl else {
             throw CameraError.notSupported
         }
         guard streamSettles[ObjectIdentifier(control)] == nil,
-              !snapshotStreams.contains(accessoryId) else { throw CameraError.busy }
+              !snapshotStreams.contains(accessoryId), control.streamState == .notStreaming else { throw CameraError.busy }
         let canvas = try readyCanvas()
-        let homeId = homeKitManager.homes.first { $0.accessories.contains(accessory) }?.uniqueIdentifier.uuidString
-
+        var installed = false
+        defer { if !installed { control.stopStream() } }
         let outcome = await startStream(control)
+        try Task.checkCancellation()
+        guard cacheSession == session, liveRegistry.cameras[accessoryId]?.streamId == reservation.streamId else { throw CancellationError() }
         switch outcome {
         case .started: break
         case .timeout: throw CameraError.streamTimeout
         case .failed(let error):
+            if Self.isAuthorizationFailure(error) { throw CameraError.accessDenied }
             if let hm = error as? HMError, hm.code == .accessoryIsBusy { throw CameraError.busy }
             if (error as NSError).domain == HMErrorDomain, (error as NSError).code == HMError.accessoryIsBusy.rawValue { throw CameraError.busy }
             throw CameraError.streamFailed(error.localizedDescription)
         }
         guard let stream = control.cameraStream else { control.stopStream(); throw CameraError.streamFailed("no stream") }
-
+        try await muteStillStream(stream)
+        try Task.checkCancellation()
+        guard cacheSession == session, liveRegistry.cameras[accessoryId]?.streamId == reservation.streamId else { throw CancellationError() }
+        _ = try homeKitManager.hmAccessory(id: accessoryId)
         let slot = allocateSlot(kind: .live, accessoryId: accessoryId, aspect: stream.aspectRatio)
         canvas.addSubview(slot.view)
         slot.view.cameraSource = stream
-        let session = LiveSession(accessoryId: accessoryId, homeId: homeId,
+        let options = liveOptions[accessoryId] ?? (Self.defaultLiveWidth, Double(Self.defaultLiveQuality))
+        let live = LiveSession(accessoryId: accessoryId, homeId: reservation.homeId, streamId: reservation.streamId,
                                   name: AccessoryModel.userFacingName(of: accessory), control: control, slot: slot,
-                                  quality: CGFloat(quality ?? Double(Self.defaultLiveQuality)),
-                                  maxWidth: min(max(maxWidth ?? Self.defaultLiveWidth, 160), 1280))
-        liveSessions[accessoryId] = session
-        if let fps = fps { self.fps = min(max(fps, 0.5), 10) }
-        ensureTicker()
-        onLiveState?(["accessoryId": accessoryId, "state": "streaming"])
-        return liveStatus(session, started: true)
+                                  quality: CGFloat(options.1), maxWidth: options.0)
+        liveSessions[accessoryId] = live
+        installed = true
+        _ = liveRegistry.streaming(accessoryId: accessoryId, streamId: reservation.streamId)
+        if let camera = liveRegistry.cameras[accessoryId] { onLiveState?(livePayload(camera)) }
     }
 
-    func keepalive(accessoryId: String) -> [String: Any] {
-        guard let s = liveSessions[accessoryId] else { return ["accessoryId": accessoryId, "state": "stopped"] }
-        s.lastKeepalive = Date()
-        return liveStatus(s, started: false)
+    func keepalive(accessoryId: String, viewerId: String? = nil) -> [String: Any] {
+        let id = accessoryId.uppercased()
+        reconcileLiveViewers()
+        let viewer = viewerId ?? "legacy:\(id)"
+        guard let camera = liveRegistry.touch(accessoryId: id, viewerId: viewer) else { return ["accessoryId": id, "state": "stopped", "reason": "expired"] }
+        return livePayload(camera, viewerIds: [viewer])
     }
 
-    func stopLive(accessoryId: String?) -> [String: Any] {
-        if let id = accessoryId { endLive(id, reason: "stopped") } else { for id in Array(liveSessions.keys) { endLive(id, reason: "stopped") } }
+    func stopLive(accessoryId: String?, viewerId: String? = nil) -> [String: Any] {
+        if let id = accessoryId?.uppercased() {
+            if let viewerId {
+                liveRegistry.release(accessoryId: id, viewerId: viewerId)
+                if liveRegistry.cameras[id] == nil { endLive(id, reason: "stopped") }
+            } else { endLive(id, reason: "stopped") }
+        } else if viewerId == nil {
+            for id in Set(liveRegistry.cameras.keys).union(liveSessions.keys).union(liveStarts.keys) { endLive(id, reason: "stopped") }
+        }
+        pumpLiveQueue()
         return ["activeStreams": liveSessions.count]
     }
 
-    private func liveStatus(_ s: LiveSession, started: Bool) -> [String: Any] {
-        [
-            "accessoryId": s.accessoryId,
-            "state": "streaming",
-            "started": started,
+    private func livePayload(_ camera: CameraLiveRegistry.Camera, viewerIds: [String]? = nil) -> [String: Any] {
+        let viewers = viewerIds ?? Array(camera.viewers.keys)
+        var payload: [String: Any] = [
+            "accessoryId": camera.accessoryId, "homeId": camera.homeId,
+            "streamId": camera.streamId, "state": camera.state.rawValue,
+            "viewerIds": viewers,
+            "viewerInstances": Array(Set(viewers.compactMap { camera.viewers[$0]?.instance }.filter { !$0.isEmpty })),
             "fps": fps,
-            "width": Int(s.slot.view.bounds.width),
-            "height": Int(s.slot.view.bounds.height),
             "activeStreams": liveSessions.count,
+            "maxStreamsPerHome": Self.maxStreamsPerHome,
         ]
+        if let position = liveRegistry.queuePosition(accessoryId: camera.accessoryId) { payload["queuePosition"] = position }
+        return payload
+    }
+
+    private func pumpLiveQueue() {
+        guard cacheSession.account != nil else { return }
+        var external: [String: Int] = [:]
+        for id in snapshotStreams { if let home = homeIdForCamera(id) { external[home, default: 0] += 1 } }
+        for (id, start) in liveStarts where liveRegistry.cameras[id]?.streamId != start.streamId { external[start.homeId, default: 0] += 1 }
+        let starts = liveRegistry.reserveStarts(externalSlots: external, blockedAccessoryIds: Set(liveStarts.keys))
+        for reservation in starts {
+            let session = cacheSession
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { if self.liveStarts[reservation.accessoryId]?.streamId == reservation.streamId { self.liveStarts[reservation.accessoryId] = nil } }
+                do { try await self.startPhysicalLive(reservation, session: session) }
+                catch {
+                    guard !Task.isCancelled, self.cacheSession == session,
+                          self.liveRegistry.cameras[reservation.accessoryId]?.streamId == reservation.streamId else { return }
+                    if (error as? CameraError)?.code == "CAMERA_BUSY" {
+                        self.liveRegistry.retry(accessoryId: reservation.accessoryId, streamId: reservation.streamId, after: Date().addingTimeInterval(3))
+                        if let camera = self.liveRegistry.cameras[reservation.accessoryId] { self.onLiveState?(self.livePayload(camera)) }
+                    } else {
+                        self.endLive(reservation.accessoryId, reason: (error as? CameraError)?.code ?? "STREAM_FAILED")
+                    }
+                }
+            }
+            liveStarts[reservation.accessoryId] = LiveStart(streamId: reservation.streamId, homeId: reservation.homeId, task: task)
+        }
+    }
+
+    private func reconcileLiveViewers() {
+        for ended in liveRegistry.expire() {
+            var payload = livePayload(ended.camera, viewerIds: [ended.viewer.id])
+            payload["state"] = "stopped"; payload["reason"] = ended.reason
+            onLiveState?(payload)
+        }
+        for (id, start) in liveStarts where liveRegistry.cameras[id]?.streamId != start.streamId { start.task.cancel() }
+        for (id, live) in Array(liveSessions) where liveRegistry.cameras[id]?.streamId != live.streamId { closePhysicalLive(id) }
+        for id in Array(liveOptions.keys) where liveRegistry.cameras[id] == nil { liveOptions[id] = nil }
     }
 
     private func ensureTicker() {
         guard ticker == nil else { return }
         ticker = Task { @MainActor [weak self] in
-            while let self = self, !self.liveSessions.isEmpty, !Task.isCancelled {
+            while let self = self, !self.liveRegistry.cameras.isEmpty || !self.liveStarts.isEmpty, !Task.isCancelled {
                 self.tick()
                 try? await Task.sleep(nanoseconds: UInt64(1_000_000_000 / self.fps))
             }
@@ -471,57 +572,93 @@ final class CameraCaptureService: NSObject {
 
     private func tick() {
         let now = Date()
-        for (id, s) in liveSessions {
-            if now.timeIntervalSince(s.lastKeepalive) > Self.liveIdle { endLive(id, reason: "idle") }
-            else if now.timeIntervalSince(s.started) > Self.liveHardCap { endLive(id, reason: "expired") }
+        reconcileLiveViewers()
+        for (id, s) in Array(liveSessions) {
+            if now.timeIntervalSince(s.started) > Self.liveHardCap { endLive(id, reason: "expired") }
             else if s.control.streamState == .notStreaming { endLive(id, reason: "stream ended") }
+            else if s.seq == 0 && now.timeIntervalSince(s.started) > 8 { endLive(id, reason: "CAMERA_CAPTURE_UNAVAILABLE") }
         }
+        pumpLiveQueue()
         guard !liveSessions.isEmpty, let canvas = CameraEngine.shared.canvas else { return }
         let t0 = DispatchTime.now()
         guard let (cg, scale) = Self.captureWindowImage(of: canvas) else { return }
         lastCaptureMs = Int((DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000)
         for s in liveSessions.values {
-            guard let crop = Self.crop(cg, to: s.slot.view, in: canvas, scale: scale),
+            guard let camera = liveRegistry.cameras[s.accessoryId], camera.streamId == s.streamId,
+                  let crop = Self.crop(cg, to: s.slot.view, in: canvas, scale: scale),
+                  s.seq > 0 || Self.stats(of: crop).isPicture,
                   let data = Self.jpeg(crop, maxWidth: s.maxWidth, quality: s.quality) else { continue }
             s.seq += 1
             let encodedWidth = min(crop.width, s.maxWidth)
-            onFrame?([
-                "accessoryId": s.accessoryId,
+            var frame = livePayload(camera)
+            frame.merge([
                 "seq": s.seq,
                 "capturedAt": ISO8601DateFormatter().string(from: now),
                 "width": encodedWidth,
                 "height": Int(Double(crop.height) * Double(encodedWidth) / Double(crop.width)),
                 "jpeg": data,
-            ])
+            ], uniquingKeysWith: { _, new in new })
+            onFrame?(frame)
+            snapshotCache[s.accessoryId] = CachedSnapshot(jpeg: data, capturedAt: now, width: encodedWidth,
+                height: Int(Double(crop.height) * Double(encodedWidth) / Double(crop.width)), source: "stream", requestedWidth: s.maxWidth)
+            if now.timeIntervalSince(lastLivePersistence[s.accessoryId] ?? .distantPast) >= 5 { persistLiveImage(s) }
         }
     }
 
     private func endLive(_ accessoryId: String, reason: String) {
+        let camera = liveRegistry.finish(accessoryId: accessoryId)
+        liveStarts[accessoryId]?.task.cancel()
+        closePhysicalLive(accessoryId)
+        liveOptions[accessoryId] = nil
+        if let camera {
+            var payload = livePayload(camera)
+            payload["state"] = "stopped"; payload["reason"] = reason
+            onLiveState?(payload)
+        }
+    }
+
+    private func closePhysicalLive(_ accessoryId: String) {
         guard let s = liveSessions.removeValue(forKey: accessoryId) else { return }
+        persistLiveImage(s)
         releaseSlot(s.slot)
         s.control.stopStream()
-        print("[Camera] live session ended for \(s.name): \(reason) after \(s.seq) frames")
-        onLiveState?(["accessoryId": accessoryId, "state": "stopped", "reason": reason])
+    }
+
+    private func persistLiveImage(_ s: LiveSession) {
+        guard cacheSession.account != nil, let image = snapshotCache[s.accessoryId],
+              let homeId = s.homeId, let home = UUID(uuidString: homeId), let accessory = UUID(uuidString: s.accessoryId) else { return }
+        let session = cacheSession
+        lastLivePersistence[s.accessoryId] = Date()
+        Task { await snapshotStore.save(image, home: home, accessory: accessory, session: session) }
     }
 
     private enum StreamOutcome { case started, timeout, failed(Error) }
     private var streamSettles: [ObjectIdentifier: StreamSettle] = [:]
 
     private func startStream(_ control: HMCameraStreamControl, timeout: TimeInterval? = nil) async -> StreamOutcome {
+        if Task.isCancelled { return .failed(CancellationError()) }
         let bound = timeout ?? Self.streamStartBound
         let key = ObjectIdentifier(control)
         control.delegate = self
         let settle = StreamSettle()
         streamSettles[key] = settle
         defer { streamSettles[key] = nil }
-        return await withCheckedContinuation { (continuation: CheckedContinuation<StreamOutcome, Never>) in
-            settle.continuation = continuation
-            control.startStream()
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(bound * 1_000_000_000))
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<StreamOutcome, Never>) in
+                settle.continuation = continuation
+                control.startStream()
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(bound * 1_000_000_000))
+                    guard let cont = settle.claim() else { return }
+                    control.stopStream()
+                    cont.resume(returning: .timeout)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in
                 guard let cont = settle.claim() else { return }
                 control.stopStream()
-                cont.resume(returning: .timeout)
+                cont.resume(returning: .failed(CancellationError()))
             }
         }
     }
@@ -693,6 +830,7 @@ extension CameraCaptureService: HMCameraStreamControlDelegate {
 
 enum CameraError: LocalizedError {
     case accessDenied
+    case viewerLimit
     case notSupported
     case engineUnavailable
     case captureUnavailable
@@ -706,6 +844,7 @@ enum CameraError: LocalizedError {
     var code: String {
         switch self {
         case .accessDenied: return "PERMISSION_DENIED"
+        case .viewerLimit: return "CAMERA_VIEWER_LIMIT"
         case .notSupported: return "CAMERA_NOT_SUPPORTED"
         case .engineUnavailable: return "CAMERA_UNAVAILABLE"
         case .captureUnavailable: return "CAMERA_CAPTURE_UNAVAILABLE"
@@ -721,6 +860,7 @@ enum CameraError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessDenied: return "Camera access was not authorized"
+        case .viewerLimit: return "Too many camera viewers are waiting; close another live view and try again"
         case .notSupported: return "This accessory has no camera"
         case .engineUnavailable: return "The camera engine window is not available on this relay"
         case .captureUnavailable: return "The camera engine window could not be captured; restart Homecast on the relay Mac"

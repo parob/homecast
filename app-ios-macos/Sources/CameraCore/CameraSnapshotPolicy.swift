@@ -39,7 +39,7 @@ enum CameraLogPolicy {
         "homeId", "accessoryId", "capturedAt", "mimeType", "width", "height", "cached", "source",
         "maxWidth", "maxAgeSec", "seq", "state", "reason", "started", "activeStreams", "fps", "quality",
         "supported", "engineWindow", "captureAvailable", "screenRecordingAuthorization", "screenRecording",
-        "maxStreamsPerHome", "persistentSnapshots", "allowStaleOnError", "stale",
+        "maxStreamsPerHome", "persistentSnapshots", "allowStaleOnError", "stale", "liveLeases", "queuePosition",
     ])
 
     static func metadata(method: String, value: Any) -> Any {
