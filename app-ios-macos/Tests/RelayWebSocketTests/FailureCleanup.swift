@@ -4,6 +4,9 @@
 extension RelayWebSocketBridge {
     static func testFailureCleanup() -> Bool {
         let bridge = RelayWebSocketBridge()
+        // Only explicit test events may retire these tasks, not host-network changes.
+        bridge.pathMonitor.pathUpdateHandler = nil
+        bridge.pathMonitor.cancel()
         let session = URLSession(configuration: .ephemeral)
         defer { bridge.shutdown(); session.invalidateAndCancel() }
         var failures = 0
