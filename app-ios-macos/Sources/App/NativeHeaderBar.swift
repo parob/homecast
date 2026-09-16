@@ -84,6 +84,11 @@ final class NativeHeaderModel: ObservableObject {
     /// it sits above every web layer, and a drawer sliding in under a bar
     /// that stays put is not how a presented sheet behaves.
     @Published var covered = false
+    /// A widget is expanded over the page. The bar stays — the page's own
+    /// header stays reachable over a widget, and activating it dismisses the
+    /// widget — but dimmed: it floats above the page's scrim, and undimmed it
+    /// was the one thing on screen not behind it.
+    @Published var dimmed = false
 
     struct MenuItem: Identifiable, Equatable {
         let id: String
@@ -203,6 +208,7 @@ final class NativeHeaderModel: ObservableObject {
         }
         if let value = payload["appearance"] as? String { appearance = value }
         if let value = payload["covered"] as? Bool { covered = value }
+        if let value = payload["dimmed"] as? Bool { dimmed = value }
         if let raw = payload["navigation"] as? [[String: Any]] {
             navigation = raw.compactMap { section in
                 guard let id = section["id"] as? String, let items = section["items"] as? [[String: Any]] else { return nil }
@@ -435,14 +441,17 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         defer { wasOnPage = onPage }
 
         if awaitingHome, !model.isOnPage {
-            // The page has drawn the home view under the cover. Put it back
-            // where the snapshot shows it before the cover lifts.
+            // The page has reported the home view. Its content fills in over
+            // the next few frames; put it back where the snapshot shows it as
+            // soon as it is tall enough, then lift the cover.
             awaitingHome = false
-            if let homeOffset, let page = web as? PageSnapshotting {
-                page.restorePageOffset(homeOffset)
-            }
+            let target = homeOffset
             homeOffset = nil
-            liftCover()
+            if let target, let page = web as? PageSnapshotting {
+                restoreThenLift(page: page, offset: target, attempts: 24)
+            } else {
+                liftCover()
+            }
         }
 
         if onPage, !wasOnPage, ghost == nil, nav.viewControllers == [web] {
@@ -600,6 +609,19 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: timeout)
     }
 
+    /// Tries the offset once a frame (up to `attempts`, about 400ms), and
+    /// lifts the cover as soon as it takes — or when time is up, at the top.
+    private func restoreThenLift(page: PageSnapshotting, offset: CGFloat, attempts: Int) {
+        if page.restorePageOffset(offset) || attempts <= 0 {
+            liftCover()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self, weak page] in
+            guard let self, let page else { return }
+            self.restoreThenLift(page: page, offset: offset, attempts: attempts - 1)
+        }
+    }
+
     private func liftCover() {
         coverTimeout?.cancel()
         coverTimeout = nil
@@ -719,6 +741,8 @@ enum WebHostingLayout {
     /// On a room, group or collection page the home's name sits as a small
     /// line above the big name; the band grows by this much to hold it.
     static let eyebrowHeight: CGFloat = 18
+    /// The bar's alpha while a widget is expanded over the page.
+    static let dimmedAlpha: CGFloat = 0.35
     /// How far past the top a pull has to go to mean the hard reload rather
     /// than a refresh — roughly what a 500px finger travel came to on the
     /// web control once the scroll view's rubber band is accounted for.
@@ -762,7 +786,12 @@ protocol PageSnapshotting: AnyObject {
     /// The page's scroll offset, so a pop can put the home back where the
     /// snapshot shows it.
     var pageOffset: CGFloat { get }
-    func restorePageOffset(_ offset: CGFloat)
+    /// Scrolls to `offset` if the page is tall enough to reach it, and says
+    /// whether it was. The home's content arrives over a few frames after
+    /// the page reports the heading; asked too early, the scroll view clamps
+    /// to the short page and the offset is lost.
+    @discardableResult
+    func restorePageOffset(_ offset: CGFloat) -> Bool
 }
 
 final class WebHostingController<Content: View>: UIHostingController<Content>, PageSnapshotting {
@@ -788,6 +817,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     private var largeTitleEnabled = true
     /// A push is being drawn: the inline title is held (see `setPushing`).
     private var pushing = false
+    /// Mirrors `NativeHeaderModel.dimmed`: the whole bar and the large title
+    /// at a fraction of their alpha while a widget is expanded.
+    private var dimmed = false
     private weak var boundModel: NativeHeaderModel?
 
     var pageOffset: CGFloat {
@@ -795,19 +827,24 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         return scroll.contentOffset.y + scroll.adjustedContentInset.top
     }
 
-    /// Back to `offset` (as `pageOffset` reports it), clamped to what the
-    /// page can now scroll to, without animation.
-    func restorePageOffset(_ offset: CGFloat) {
-        guard let scroll = webScrollView else { return }
+    /// Back to `offset` (as `pageOffset` reports it), without animation.
+    /// Returns false, and does nothing, while the page is still too short to
+    /// hold that offset.
+    @discardableResult
+    func restorePageOffset(_ offset: CGFloat) -> Bool {
+        guard let scroll = webScrollView else { return true }
         let top = -scroll.adjustedContentInset.top
         let maxY = max(top, scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height)
-        let y = min(max(top, offset + top), maxY)
-        guard abs(scroll.contentOffset.y - y) > 0.5 else { return }
-        UIView.performWithoutAnimation {
-            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false)
+        let wanted = max(top, offset + top)
+        guard wanted <= maxY + 0.5 else { return false }
+        if abs(scroll.contentOffset.y - wanted) > 0.5 {
+            UIView.performWithoutAnimation {
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: wanted), animated: false)
+            }
+            mirrorOffset()
+            updateTitleTransition()
         }
-        mirrorOffset()
-        updateTitleTransition()
+        return true
     }
 
     func setPushing(_ pushing: Bool) {
@@ -1265,7 +1302,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             // home small above room — and the inline title then carries the
             // same pair the other way up.
             let progress = collapseProgress
-            largeTitleArea.alpha = max(0, 1 - progress / 0.55)
+            let dim: CGFloat = dimmed ? WebHostingLayout.dimmedAlpha : 1
+            largeTitleArea.alpha = max(0, 1 - progress / 0.55) * dim
             if !pushing { inlineTitle.alpha = max(0, (progress - 0.5) / 0.5) }
         }
     }
@@ -1530,6 +1568,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         largeChevron.tintColor = ink ?? .label
         largeChevron.backgroundColor = (ink ?? .label).withAlphaComponent(0.18)
 
+        if dimmed != model.dimmed {
+            dimmed = model.dimmed
+            let alpha: CGFloat = dimmed ? WebHostingLayout.dimmedAlpha : 1
+            UIView.animate(withDuration: 0.2, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                self.navigationController?.navigationBar.alpha = alpha
+            }
+            updateTitleTransition()
+        }
         if largeTitleEnabled != model.largeTitle {
             largeTitleEnabled = model.largeTitle
             largeTitleArea.isHidden = !largeTitleEnabled || barHidden
