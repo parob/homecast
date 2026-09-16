@@ -23,6 +23,7 @@
 		C10000AC2 /* CameraCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC3 /* CameraCaptureService.swift */; };
 		C10000AC4 /* CameraSnapshotPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC5 /* CameraSnapshotPolicy.swift */; };
 		C10000AC6 /* CameraSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC7 /* CameraSnapshotStore.swift */; };
+		C10000AC8 /* CameraLiveRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000AC9 /* CameraLiveRegistry.swift */; };
 		A1000010A /* HomeKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000010F /* HomeKit.framework */; };
 		A1000011A /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000011F /* UIKit.framework */; };
 		A1000020A /* MenuBarPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020F /* MenuBarPlugin.swift */; };
@@ -125,6 +126,7 @@
 		C10000AC3 /* CameraCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCaptureService.swift; sourceTree = "<group>"; };
 		C10000AC5 /* CameraSnapshotPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../CameraCore/CameraSnapshotPolicy.swift; sourceTree = "<group>"; };
 		C10000AC7 /* CameraSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../CameraCore/CameraSnapshotStore.swift; sourceTree = "<group>"; };
+		C10000AC9 /* CameraLiveRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../CameraCore/CameraLiveRegistry.swift; sourceTree = "<group>"; };
 		A1000008F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000009F /* Homecast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Homecast.entitlements; sourceTree = "<group>"; };
 		A1000010F /* HomeKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HomeKit.framework; path = System/Library/Frameworks/HomeKit.framework; sourceTree = SDKROOT; };
@@ -299,6 +301,7 @@
 				C10000AC3 /* CameraCaptureService.swift */,
 				C10000AC5 /* CameraSnapshotPolicy.swift */,
 				C10000AC7 /* CameraSnapshotStore.swift */,
+				C10000AC9 /* CameraLiveRegistry.swift */,
 			);
 			path = HomeKit;
 			sourceTree = "<group>";
@@ -542,6 +545,7 @@
 				C10000AC2 /* CameraCaptureService.swift in Sources */,
 				C10000AC4 /* CameraSnapshotPolicy.swift in Sources */,
 				C10000AC6 /* CameraSnapshotStore.swift in Sources */,
+				C10000AC8 /* CameraLiveRegistry.swift in Sources */,
 				B2000001A /* BuildInfo.swift in Sources */,
 				C1000001A /* LocalHTTPServer.swift in Sources */,
 				C1000002A /* LocalNetworkBridge.swift in Sources */,

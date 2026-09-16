@@ -1588,12 +1588,16 @@ struct WebViewContainer: UIViewRepresentable {
         // as a drop-in replacement for `new WebSocket(url)` when
         // window.homecastNativeRelayWs === true.
         window.homecastNativeRelayWs = true;
+        window.homecastNativeRelayWsBackpressure = true;
         window.__relay_ws_sockets = {};
         window.__relay_ws_event = function(payload) {
             try {
                 var sock = window.__relay_ws_sockets[payload.socketId];
                 if (!sock) return;
                 switch (payload.type) {
+                    case 'sent':
+                        if (sock._onSent) sock._onSent(payload.bytes);
+                        break;
                     case 'open':
                         sock._onOpen();
                         break;

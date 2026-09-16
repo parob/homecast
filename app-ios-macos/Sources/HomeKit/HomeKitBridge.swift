@@ -491,12 +491,14 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 return try await cameras.startLive(accessoryId: accessoryId,
                                                    fps: payload["fps"] as? Double,
                                                    maxWidth: payload["maxWidth"] as? Int,
-                                                   quality: payload["quality"] as? Double)
+                                                   quality: payload["quality"] as? Double,
+                                                   viewerId: payload["viewerId"] as? String,
+                                                   viewerInstance: payload["viewerInstance"] as? String)
             case "camera.live.keepalive":
                 guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
-                return cameras.keepalive(accessoryId: accessoryId)
+                return cameras.keepalive(accessoryId: accessoryId, viewerId: payload["viewerId"] as? String)
             default:
-                return cameras.stopLive(accessoryId: payload["accessoryId"] as? String)
+                return cameras.stopLive(accessoryId: payload["accessoryId"] as? String, viewerId: payload["viewerId"] as? String)
             }
             #else
             throw CameraError.engineUnavailable

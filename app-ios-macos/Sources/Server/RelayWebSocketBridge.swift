@@ -204,6 +204,7 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             return
         }
         state.task.send(.string(text)) { [weak self] error in
+            self?.emitEvent(socketId: socketId, type: "sent", extra: ["bytes": text.utf8.count])
             if let error = error {
                 self?.handleTaskFailure(socketId: socketId, error: error)
             }
