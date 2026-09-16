@@ -396,6 +396,12 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// jumps when the cover lifts. nil when there was no snapshot.
     private var pendingHomeOffset: CGFloat?
     private var homeOffset: CGFloat?
+    /// Whether the home's compact title was showing when it was captured (the
+    /// home scrolled past its large title). The ghost carries a look-alike
+    /// of it then, so the home's name is in the bar from the first frame of
+    /// the pop — the bar cross-fades the room's title into it — instead of
+    /// arriving with the live home a beat after the pop has landed.
+    private var pendingHomeInlineTitle = false
     private var cover: UIView?
     private var coverTimeout: DispatchWorkItem?
     /// The push, waiting for the page to say the room is painted (or for
@@ -429,9 +435,18 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         }
     }
     private var wasOnPage = false
-    /// A pop has landed and the page has been told to go home; the next
-    /// report of the home heading lifts the cover.
+    /// The page has been told to go home; the next report of the home
+    /// heading (and the paint after it) lifts the cover.
     private var awaitingHome = false
+    /// The room, pictured, laid over the web view from the moment the pop is
+    /// certain to land until it has: the page is told to go home THEN, not
+    /// when the pop lands, so the home renders under the picture while the
+    /// room slides away — and the wait to scroll after landing is the pop's
+    /// own animation shorter. A tap on the back button is certain at once;
+    /// a swipe once the finger lifts without cancelling.
+    private var roomOverlay: UIView?
+    /// The home was painted before the pop landed: no cover needed then.
+    private var homePaintedEarly = false
 
     init(nav: UINavigationController, web: UIViewController, model: NativeHeaderModel) {
         self.nav = nav
@@ -460,6 +475,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         pendingSnapshot = Self.still(image)
         pendingPushCover = Self.still(image)
         pendingHomeOffset = page.pageOffset
+        pendingHomeInlineTitle = page.inlineTitleAlpha > 0.5
         // From here until the slide has run, the bar's title is held: the
         // page controller applies the room's title on the same message as
         // this, and an unheld title switched to the room's name — centred
@@ -470,6 +486,27 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         // then clamped to the top when its shorter content had laid out.
         page.setPushing(true)
         page.restorePageOffset(0)
+    }
+
+    /// A copy of the page controller's compact title, inert: headline text
+    /// and the small chevron, in the bar's ink.
+    private static func inlineTitleLookalike(_ title: String, ink: UIColor?) -> UIView {
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = UIFont.preferredFont(forTextStyle: .headline)
+            return attributes
+        }
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+        config.imagePlacement = .trailing
+        config.imagePadding = 6
+        config.contentInsets = .zero
+        config.baseForegroundColor = ink ?? .label
+        let button = UIButton(configuration: config)
+        button.isUserInteractionEnabled = false
+        button.sizeToFit()
+        return button
     }
 
     private static func still(_ image: UIImage) -> UIView {
@@ -491,9 +528,18 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             awaitingHome = false
             let target = homeOffset
             homeOffset = nil
-            let flat = !(cover is UIImageView)
             let lift: () -> Void = { [weak self, weak web] in
                 guard let self else { return }
+                if self.ghost != nil {
+                    // Still sliding: the home is ready before the pop has
+                    // landed. Put it in place now; the landing skips the cover.
+                    self.homePaintedEarly = true
+                    if let target, let page = web as? PageSnapshotting {
+                        self.restoreThenLift(page: page, offset: target, attempts: 24)
+                    }
+                    return
+                }
+                let flat = !(self.cover is UIImageView)
                 if let target, let page = web as? PageSnapshotting {
                     self.restoreThenLift(page: page, offset: target, attempts: 24)
                 } else {
@@ -523,12 +569,17 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             // A bare chevron, like the page's own crumbs: the compact title
             // already names the home under the room.
             ghost.navigationItem.backButtonDisplayMode = .minimal
-            // No title: the ghost's view carries the home's large title in
-            // its snapshot, as the web controller's does on the home view,
-            // where the bar's own title is faded out. A plain "George
-            // Street" in the bar for the length of the pop, gone the moment
-            // it landed, read as a flash.
+            // The bar's title during the pop: the home's compact title if the
+            // home had scrolled past its large one (a look-alike, so the name
+            // is there from the first frame and the swap to the live one is
+            // invisible), and nothing otherwise — the large name is in the
+            // picture, and a title in the bar for the length of the pop that
+            // vanished when it landed read as a flash.
             ghost.navigationItem.title = nil
+            if pendingHomeInlineTitle {
+                ghost.navigationItem.titleView = Self.inlineTitleLookalike(model.title, ink: nav.navigationBar.tintColor)
+            }
+            pendingHomeInlineTitle = false
             // The same trailing buttons the web controller shows, as
             // look-alikes: the bar animates between the two navigation items
             // during the pop, and a ghost with no items had the search and ⋯
@@ -657,15 +708,73 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     // MARK: UINavigationControllerDelegate
 
 
+    func navigationController(_ navigationController: UINavigationController, willShow viewController: UIViewController, animated: Bool) {
+        guard let ghost, viewController === ghost, animated else { return }
+        // A pop towards the ghost has begun. Send the page home as soon as
+        // the pop is certain to land: now for a tap on the back button, or
+        // when a swipe's finger lifts without cancelling.
+        guard let coordinator = navigationController.transitionCoordinator else { return }
+        if coordinator.isInteractive {
+            coordinator.notifyWhenInteractionChanges { [weak self] context in
+                if !context.isCancelled { self?.sendHomeEarly() }
+            }
+        } else {
+            sendHomeEarly()
+        }
+    }
+
+    private func sendHomeEarly() {
+        guard !awaitingHome, let web, let page = web as? PageSnapshotting else { return }
+        awaitingHome = true
+        homePaintedEarly = false
+        // The room's picture over the web view first, so the page can change
+        // underneath it while the room is still sliding.
+        page.renderedSnapshotImage { [weak self, weak web] image in
+            guard let self, let web else { return }
+            if let image {
+                let overlay = Self.still(image)
+                overlay.frame = web.view.bounds
+                overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                web.view.addSubview(overlay)
+                self.roomOverlay = overlay
+            }
+            self.model.navigate("home:")
+        }
+        // However the page answers, nothing here outstays it.
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.awaitingHome = false
+            self?.pendingLift = nil
+            self?.pendingLiftFallback?.cancel()
+            self?.pendingLiftFallback = nil
+            self?.roomOverlay?.removeFromSuperview()
+            self?.roomOverlay = nil
+            self?.liftCover()
+        }
+        coverTimeout?.cancel()
+        coverTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+    }
+
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
         guard let ghost, viewController === ghost, let web, let nav else { return }
         // The pop has landed: the ghost is all that is on the stack.
+        self.ghost = nil
+        if homePaintedEarly {
+            // The home was drawn while the room slid away: nothing to hide.
+            homePaintedEarly = false
+            UIView.performWithoutAnimation {
+                nav.setViewControllers([web], animated: false)
+                nav.navigationBar.layoutIfNeeded()
+            }
+            roomOverlay?.removeFromSuperview()
+            roomOverlay = nil
+            return
+        }
         let snapshot = ghost.takeSnapshot()
         snapshot.frame = nav.view.bounds
         snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         nav.view.insertSubview(snapshot, belowSubview: nav.navigationBar)
         cover = snapshot
-        self.ghost = nil
         // Without implicit animation, or the bar cross-fades the ghost's
         // look-alike buttons into the web controller's real ones — a second
         // fade on top of the pop's own.
@@ -673,19 +782,14 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             nav.setViewControllers([web], animated: false)
             nav.navigationBar.layoutIfNeeded()
         }
-        awaitingHome = true
-        model.navigate("home:")
-        // However the page answers, the cover does not outstay it.
-        let timeout = DispatchWorkItem { [weak self] in
-            self?.awaitingHome = false
-            self?.pendingLift = nil
-            self?.pendingLiftFallback?.cancel()
-            self?.pendingLiftFallback = nil
-            self?.liftCover()
+        // Under the cover now; the room's picture has done its job.
+        roomOverlay?.removeFromSuperview()
+        roomOverlay = nil
+        if !awaitingHome {
+            // The early send did not happen (a pop that was not animated);
+            // send now.
+            sendHomeEarly()
         }
-        coverTimeout?.cancel()
-        coverTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: timeout)
     }
 
     /// Tries the offset once a frame (up to `attempts`, about 400ms), and
@@ -704,6 +808,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     private func liftCover(immediately: Bool = false) {
         coverTimeout?.cancel()
         coverTimeout = nil
+        roomOverlay?.removeFromSuperview()
+        roomOverlay = nil
         guard let cover else { return }
         self.cover = nil
         if immediately {
@@ -877,6 +983,9 @@ protocol PageSnapshotting: AnyObject {
     /// The page's scroll offset, so a pop can put the home back where the
     /// snapshot shows it.
     var pageOffset: CGFloat { get }
+    /// The compact title's alpha — 1 once the page has scrolled the large
+    /// title away, 0 at the top.
+    var inlineTitleAlpha: CGFloat { get }
     /// Scrolls to `offset` if the page is tall enough to reach it, and says
     /// whether it was. The home's content arrives over a few frames after
     /// the page reports the heading; asked too early, the scroll view clamps
@@ -912,6 +1021,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// at a fraction of their alpha while a widget is expanded.
     private var dimmed = false
     private weak var boundModel: NativeHeaderModel?
+
+    var inlineTitleAlpha: CGFloat { inlineTitle.alpha }
 
     var pageOffset: CGFloat {
         guard let scroll = webScrollView else { return 0 }
