@@ -445,6 +445,16 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         pendingSnapshot = Self.still(image)
         pendingPushCover = Self.still(image)
         pendingHomeOffset = page.pageOffset
+        // From here until the slide has run, the bar's title is held: the
+        // page controller applies the room's title on the same message as
+        // this, and an unheld title switched to the room's name — centred
+        // in the bar, over a cover still showing the home — before anything
+        // had moved. And the page starts the room at its top: the document
+        // keeps its offset across the change, so a room opened from a
+        // scrolled home came in scrolled, its large title already gone, and
+        // then clamped to the top when its shorter content had laid out.
+        page.setPushing(true)
+        page.restorePageOffset(0)
     }
 
     private static func still(_ image: UIImage) -> UIView {
@@ -512,6 +522,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 animatePush(from: pushCover, settingStack: [ghost, web])
             } else {
                 nav.setViewControllers([ghost, web], animated: false)
+                (web as? PageSnapshotting)?.setPushing(false)
             }
         } else if !onPage, ghost != nil, !awaitingHome, nav.viewControllers.count == 2 {
             // Home by some other road: no pop to animate.
@@ -522,6 +533,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             pendingHomeOffset = nil
             homeOffset = nil
         } else if !onPage {
+            if pendingPushCover != nil { (web as? PageSnapshotting)?.setPushing(false) }
             pendingSnapshot = nil
             pendingPushCover = nil
             pendingHomeOffset = nil
@@ -538,7 +550,6 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// room arriving in pieces.
     private func animatePush(from home: UIView, settingStack stack: [UIViewController]) {
         guard let nav, let web else { return }
-        (web as? PageSnapshotting)?.setPushing(true)
         let width = nav.view.bounds.width
         home.frame = nav.view.bounds
         home.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -549,9 +560,10 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         home.addSubview(veil)
         nav.view.insertSubview(home, belowSubview: nav.navigationBar)
         cover = home
-        // Until the page says it has painted the room (two frames after it
-        // sent the heading), or a beat has passed for a page that never says,
-        // the home snapshot covers the screen. Then the room is snapshotted
+        // Until the page says it has painted the room (once the document has
+        // been still for two frames, at most 600ms after the heading), or a
+        // little longer than that has passed for a page that never says, the
+        // home snapshot covers the screen. Then the room is snapshotted
         // and the pair animate. `afterScreenUpdates: true` so the picture is
         // of the room as drawn, not the frame before it. A picture taken on a
         // fixed short delay slid in blank on a slow page, and the room then
@@ -605,7 +617,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         pendingPushStart = start
         let fallback = DispatchWorkItem { [weak self] in self?.pagePainted() }
         pendingPushFallback = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: fallback)
     }
 
     // MARK: UINavigationControllerDelegate
