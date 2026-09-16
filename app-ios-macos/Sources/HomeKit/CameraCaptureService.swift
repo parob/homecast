@@ -34,10 +34,6 @@ final class CameraCaptureService: NSObject {
     /// measured on two homes. Reported so the UI can explain, not enforced
     /// here — HomeKit enforces it and we surface the answer.
     static let maxStreamsPerHome = 2
-    /// Below this the camera is asked again for a snapshot; above it the last
-    /// one is served. Battery cameras wake on every request.
-    static let snapshotFloor: TimeInterval = 3
-    static let snapshotBound: TimeInterval = 20
     static let streamStartBound: TimeInterval = 20
     /// A live session with no keepalive for this long is stopped.
     static let liveIdle: TimeInterval = 30
@@ -46,7 +42,6 @@ final class CameraCaptureService: NSObject {
     static let defaultFps: Double = 4
     static let defaultLiveWidth = 960
     static let defaultLiveQuality: CGFloat = 0.6
-    static let defaultSnapshotWidth = 1280
     static let snapshotQuality: CGFloat = 0.7
 
     // MARK: - Capability
@@ -122,16 +117,21 @@ final class CameraCaptureService: NSObject {
         let capturedAt: Date
         let width: Int
         let height: Int
+        let source: String
+        let requestedWidth: Int
     }
     private var snapshotCache: [String: CachedSnapshot] = [:]
     private var snapshotInFlight: [String: Task<CachedSnapshot, Error>] = [:]
     private var lastPhysicalSnapshot: [String: Date] = [:]
+    /// A still temporarily owns a stream, but never publishes live frames.
+    private var snapshotStreams: Set<String> = []
 
     func snapshot(accessoryId: String, maxWidth: Int?, maxAgeSec: Double?) async throws -> [String: Any] {
-        let width = min(max(maxWidth ?? Self.defaultSnapshotWidth, 160), 1920)
+        let width = CameraSnapshotPolicy.requestedWidth(maxWidth)
         let maxAge = maxAgeSec ?? 10
         if let cached = snapshotCache[accessoryId],
-           Date().timeIntervalSince(cached.capturedAt) <= max(maxAge, Self.snapshotFloor) {
+           CameraSnapshotPolicy.canReuse(capturedAt: cached.capturedAt, cachedWidth: cached.requestedWidth,
+                                         requestedWidth: width, maxAge: maxAge) {
             return Self.snapshotPayload(accessoryId: accessoryId, cached, fromCache: true)
         }
         if let inFlight = snapshotInFlight[accessoryId] {
@@ -156,36 +156,124 @@ final class CameraCaptureService: NSObject {
             "width": s.width,
             "height": s.height,
             "cached": fromCache,
+            "source": s.source,
         ]
     }
 
     private func captureSnapshot(accessoryId: String, width: Int) async throws -> CachedSnapshot {
         let accessory = try homeKitManager.hmAccessory(id: accessoryId)
-        guard let control = accessory.cameraProfiles?.first?.snapshotControl else {
+        guard let profile = accessory.cameraProfiles?.first else {
             throw CameraError.notSupported
         }
         // Pace physical requests even when the previous one failed or HomeKit
         // returned an old captureDate. Cache age alone cannot enforce this.
-        if let last = lastPhysicalSnapshot[accessoryId] {
-            let remaining = Self.snapshotFloor - Date().timeIntervalSince(last)
-            if remaining > 0 {
-                try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
+        let remaining = CameraSnapshotPolicy.waitBeforeCapture(lastAttempt: lastPhysicalSnapshot[accessoryId])
+        if remaining > 0 {
+            try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         }
         let canvas = try readyCanvas()
         lastPhysicalSnapshot[accessoryId] = Date()
 
+        // HomeKit's captureDate is the SNAPSHOT REQUEST date. Several cameras
+        // return old pixels with a new date. A short stream gives us
+        // a current frame without relying on that snapshot cache. Measured by
+        // changing room lights: takeSnapshot stayed dark, the stream did not.
+        if let control = profile.streamControl {
+            return try await captureStreamStill(accessoryId: accessoryId, control: control,
+                                                canvas: canvas, width: width)
+        }
+        guard let control = profile.snapshotControl else { throw CameraError.notSupported }
         let snapshot = try await takeSnapshot(control)
-        let slot = allocateSlot(kind: .snapshot, accessoryId: accessoryId, aspect: snapshot.aspectRatio)
+        // Snapshot-only accessories cannot promise pixel freshness. The source
+        // flag lets clients label this as a request time rather than a capture.
+        return try await captureSource(snapshot, accessoryId: accessoryId, canvas: canvas,
+                                       width: width, capturedAt: snapshot.captureDate, source: "snapshot")
+    }
+
+    private func captureStreamStill(accessoryId: String, control: HMCameraStreamControl,
+                                    canvas: CameraEngineCanvas, width: Int) async throws -> CachedSnapshot {
+        // A live viewer already owns the stream: borrow it, never stop it.
+        if let live = liveSessions[accessoryId], control.streamState == .streaming {
+            // Reuse its rendered view too. Binding a second HMCameraView is
+            // unnecessary and could disturb the live viewer's compositor slot.
+            return try await captureSlot(live.slot, canvas: canvas, width: width, source: "stream")
+        }
+        guard streamSettles[ObjectIdentifier(control)] == nil,
+              !snapshotStreams.contains(accessoryId),
+              control.streamState == .notStreaming else { throw CameraError.busy }
+        snapshotStreams.insert(accessoryId)
+        // Stop on success, timeout, cancellation, empty capture, or any error.
+        // This is deliberately not startLive: no ticker, fan-out, or idle lease.
+        defer {
+            control.stopStream()
+            snapshotStreams.remove(accessoryId)
+        }
+        switch await startStream(control, timeout: CameraSnapshotPolicy.streamStartTimeout) {
+        case .started: break
+        case .timeout: throw CameraError.snapshotTimeout
+        case .failed(let error):
+            if (error as NSError).domain == HMErrorDomain,
+               (error as NSError).code == HMError.accessoryIsBusy.rawValue { throw CameraError.busy }
+            throw CameraError.streamFailed(error.localizedDescription)
+        }
+        try Task.checkCancellation()
+        guard let stream = control.cameraStream, control.streamState == .streaming else {
+            throw CameraError.streamFailed("The camera stream ended before a frame arrived.")
+        }
+        // A still never opts into listening or talkback.
+        try await muteStillStream(stream)
+        return try await captureSource(stream, accessoryId: accessoryId, canvas: canvas,
+                                       width: width, source: "stream")
+    }
+
+    private func muteStillStream(_ stream: HMCameraStream) async throws {
+        guard stream.audioStreamSetting != .muted else { return }
+        // Do not render a still's stream unless incoming AND outgoing audio
+        // are muted. Keep this callback bounded too: waiting indefinitely for
+        // the async HomeKit alternative would leak our short-lived stream.
+        let settle = MuteSettle()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            settle.continuation = continuation
+            stream.updateAudioStreamSetting(.muted) { error in
+                Task { @MainActor in
+                    guard let cont = settle.claim() else { return }
+                    if let error {
+                        cont.resume(throwing: CameraError.streamFailed("Could not mute camera audio: \(error.localizedDescription)"))
+                    } else {
+                        cont.resume()
+                    }
+                }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(CameraSnapshotPolicy.streamMuteTimeout * 1_000_000_000))
+                settle.claim()?.resume(throwing: CameraError.streamFailed("Could not confirm muted camera audio in time."))
+            }
+        }
+    }
+
+    private func captureSource(_ cameraSource: HMCameraSource, accessoryId: String,
+                               canvas: CameraEngineCanvas, width: Int,
+                               capturedAt: Date? = nil, source: String) async throws -> CachedSnapshot {
+        let slot = allocateSlot(kind: .snapshot, accessoryId: accessoryId, aspect: cameraSource.aspectRatio)
         defer { releaseSlot(slot) }
         canvas.addSubview(slot.view)
-        slot.view.cameraSource = snapshot
+        slot.view.cameraSource = cameraSource
+        // Start-stream means transport is established, not that the first
+        // decoded frame has reached the out-of-process compositor yet.
+        if source == "stream" {
+            try await Task.sleep(nanoseconds: UInt64(CameraSnapshotPolicy.streamWarmup * 1_000_000_000))
+        }
+        return try await captureSlot(slot, canvas: canvas, width: width,
+                                     capturedAt: capturedAt, source: source)
+    }
 
+    private func captureSlot(_ slot: Slot, canvas: CameraEngineCanvas, width: Int,
+                             capturedAt: Date? = nil, source: String) async throws -> CachedSnapshot {
         // The image lands in the slot asynchronously; poll the window until
         // the crop stops being empty.
         var best: (Data, Int, Int)?
-        for _ in 0..<20 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+        for _ in 0..<Int(CameraSnapshotPolicy.compositorTimeout / 0.05) {
+            try await Task.sleep(nanoseconds: 50_000_000)
             guard let (cg, scale) = Self.captureWindowImage(of: canvas) else { continue }
             guard let crop = Self.crop(cg, to: slot.view, in: canvas, scale: scale) else { continue }
             let stats = Self.stats(of: crop)
@@ -196,7 +284,8 @@ final class CameraCaptureService: NSObject {
             }
         }
         guard let (data, w, h) = best else { throw CameraError.captureEmpty }
-        return CachedSnapshot(jpeg: data, capturedAt: snapshot.captureDate, width: w, height: h)
+        return CachedSnapshot(jpeg: data, capturedAt: capturedAt ?? Date(), width: w, height: h,
+                              source: source, requestedWidth: width)
     }
 
     private var snapshotSettles: [ObjectIdentifier: SnapshotSettle] = [:]
@@ -214,7 +303,7 @@ final class CameraCaptureService: NSObject {
             // A plain timer arm: nothing can cancel the HomeKit call, so the
             // clock answers when the delegate never does.
             Task {
-                try? await Task.sleep(nanoseconds: UInt64(Self.snapshotBound * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(CameraSnapshotPolicy.snapshotTimeout * 1_000_000_000))
                 // A timer belongs to this request. Looking up by control here
                 // could claim a newer request after this one already finished.
                 guard let cont = settle.claim() else { return }
@@ -260,7 +349,8 @@ final class CameraCaptureService: NSObject {
         guard let control = accessory.cameraProfiles?.first?.streamControl else {
             throw CameraError.notSupported
         }
-        guard streamSettles[ObjectIdentifier(control)] == nil else { throw CameraError.busy }
+        guard streamSettles[ObjectIdentifier(control)] == nil,
+              !snapshotStreams.contains(accessoryId) else { throw CameraError.busy }
         let canvas = try readyCanvas()
         let homeId = homeKitManager.homes.first { $0.accessories.contains(accessory) }?.uniqueIdentifier.uuidString
 
@@ -361,7 +451,8 @@ final class CameraCaptureService: NSObject {
     private enum StreamOutcome { case started, timeout, failed(Error) }
     private var streamSettles: [ObjectIdentifier: StreamSettle] = [:]
 
-    private func startStream(_ control: HMCameraStreamControl) async -> StreamOutcome {
+    private func startStream(_ control: HMCameraStreamControl, timeout: TimeInterval? = nil) async -> StreamOutcome {
+        let bound = timeout ?? Self.streamStartBound
         let key = ObjectIdentifier(control)
         control.delegate = self
         let settle = StreamSettle()
@@ -371,7 +462,7 @@ final class CameraCaptureService: NSObject {
             settle.continuation = continuation
             control.startStream()
             Task {
-                try? await Task.sleep(nanoseconds: UInt64(Self.streamStartBound * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(bound * 1_000_000_000))
                 guard let cont = settle.claim() else { return }
                 control.stopStream()
                 cont.resume(returning: .timeout)
@@ -383,7 +474,7 @@ final class CameraCaptureService: NSObject {
 
     private enum SlotKind { case snapshot, live }
 
-    private final class Slot {
+    @MainActor private final class Slot {
         let kind: SlotKind
         let accessoryId: String
         let aspect: CGFloat
@@ -429,18 +520,18 @@ final class CameraCaptureService: NSObject {
 
     /// One window-server capture of the window hosting `view`, plus its
     /// pixels-per-point scale. Require the engine's title AND its below-desktop
-    /// level; dimensions alone also match a resized dashboard window.
+    /// level; dimensions alone also match a resized dashboard window. Do not
+    /// require AppKit's point dimensions to equal UIKit's: Catalyst scales
+    /// 1280×720 to 1153×649 on some displays. The pixel ratio below accounts
+    /// for that scale as well as Retina backing resolution.
     private static func captureWindowImage(of view: UIView) -> (CGImage, CGFloat)? {
         guard let window = view.window else { return nil }
         let pid = ProcessInfo.processInfo.processIdentifier
         guard let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let wanted = window.bounds.size
         let mine = list.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
         let match = mine.first { w in
-            guard w[kCGWindowName as String] as? String == CameraEngine.windowTitle,
-                  w[kCGWindowLayer as String] as? Int == Int(CGWindowLevelForKey(.desktopWindow)) - 1 else { return false }
-            let b = w[kCGWindowBounds as String] as? [String: Double] ?? [:]
-            return abs((b["Width"] ?? 0) - Double(wanted.width)) < 2 && abs((b["Height"] ?? 0) - Double(wanted.height)) < 40
+            w[kCGWindowName as String] as? String == CameraEngine.windowTitle &&
+            w[kCGWindowLayer as String] as? Int == Int(CGWindowLevelForKey(.desktopWindow)) - 1
         }
         guard let number = match?[kCGWindowNumber as String] as? UInt32,
               let cg = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(number), [.boundsIgnoreFraming, .bestResolution]) else { return nil }
@@ -500,6 +591,10 @@ final class CameraCaptureService: NSObject {
     private final class StreamSettle {
         var continuation: CheckedContinuation<StreamOutcome, Never>?
         func claim() -> CheckedContinuation<StreamOutcome, Never>? { defer { continuation = nil }; return continuation }
+    }
+    @MainActor private final class MuteSettle {
+        var continuation: CheckedContinuation<Void, Error>?
+        func claim() -> CheckedContinuation<Void, Error>? { defer { continuation = nil }; return continuation }
     }
 }
 
