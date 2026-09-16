@@ -488,27 +488,6 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         page.restorePageOffset(0)
     }
 
-    /// A copy of the page controller's compact title, inert: headline text
-    /// and the small chevron, in the bar's ink.
-    private static func inlineTitleLookalike(_ title: String, ink: UIColor?) -> UIView {
-        var config = UIButton.Configuration.plain()
-        config.title = title
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-            var attributes = attributes
-            attributes.font = UIFont.preferredFont(forTextStyle: .headline)
-            return attributes
-        }
-        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
-        config.imagePlacement = .trailing
-        config.imagePadding = 6
-        config.contentInsets = .zero
-        config.baseForegroundColor = ink ?? .label
-        let button = UIButton(configuration: config)
-        button.isUserInteractionEnabled = false
-        button.sizeToFit()
-        return button
-    }
-
     private static func still(_ image: UIImage) -> UIView {
         let view = UIImageView(image: image)
         view.contentMode = .scaleAspectFill
@@ -576,8 +555,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             // picture, and a title in the bar for the length of the pop that
             // vanished when it landed read as a flash.
             ghost.navigationItem.title = nil
-            if pendingHomeInlineTitle {
-                ghost.navigationItem.titleView = Self.inlineTitleLookalike(model.title, ink: nav.navigationBar.tintColor)
+            if pendingHomeInlineTitle, let page = web as? PageSnapshotting {
+                ghost.navigationItem.titleView = page.compactTitleLookalike(model.title)
             }
             pendingHomeInlineTitle = false
             // The same trailing buttons the web controller shows, as
@@ -986,6 +965,10 @@ protocol PageSnapshotting: AnyObject {
     /// The compact title's alpha — 1 once the page has scrolled the large
     /// title away, 0 at the top.
     var inlineTitleAlpha: CGFloat { get }
+    /// An inert copy of the compact title showing `title`, built and sized
+    /// the way the live one is, so the bar places both identically and the
+    /// hand-over from one to the other moves nothing.
+    func compactTitleLookalike(_ title: String) -> UIView
     /// Scrolls to `offset` if the page is tall enough to reach it, and says
     /// whether it was. The home's content arrives over a few frames after
     /// the page reports the heading; asked too early, the scroll view clamps
@@ -1249,7 +1232,22 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// menu. Faded in as the large one fades out. On a room page it is the
     /// room's name with the home's beneath it as a subtitle, so both stay in
     /// view however far the page has scrolled.
-    private lazy var inlineTitle: UIButton = {
+    private lazy var inlineTitle: UIButton = Self.makeInlineTitleButton()
+
+    func compactTitleLookalike(_ title: String) -> UIView {
+        let button = Self.makeInlineTitleButton()
+        button.configuration?.title = title
+        button.configuration?.baseForegroundColor = navigationController?.navigationBar.tintColor ?? .label
+        button.alpha = 1
+        button.isUserInteractionEnabled = false
+        let host = InlineTitleHost()
+        host.clipsToBounds = false
+        host.addSubview(button)
+        Self.layoutInlineTitle(button, in: host, available: max(80, view.bounds.width - 2 * 120))
+        return host
+    }
+
+    private static func makeInlineTitleButton() -> UIButton {
         var config = UIButton.Configuration.plain()
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
@@ -1278,7 +1276,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         button.showsMenuAsPrimaryAction = true
         button.alpha = 0
         return button
-    }()
+    }
 
     /// On a room, group or collection page: the home's name, small, on the
     /// line above the big room name — so the bar itself can stay empty while
@@ -1320,27 +1318,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// between its trailing buttons and their mirror on the left — beyond
     /// that the texts truncate.
     private func layoutInlineTitles() {
-        let available = max(80, view.bounds.width - 2 * 120)
-        // A configuration-based button applies a new title on its next
-        // layout pass, so measuring straight after setting one measures the
-        // old configuration: "Clitheroe Road" came out 68pt wide and the bar
-        // drew a sliver (measured with the probe). Lay it out first.
-        inlineTitle.setNeedsUpdateConfiguration()
-        inlineTitle.setNeedsLayout()
-        inlineTitle.layoutIfNeeded()
-        // Whole points with a little slack: the measured sizes are thirds of
-        // a point and the bar's container rounds them down, which shaved the
-        // last glyph and the chevron's edge (reported as a slight clip).
-        let slack: CGFloat = 12
-        let buttonSize = inlineTitle.intrinsicContentSize
-        inlineTitle.bounds = CGRect(x: 0, y: 0, width: min(available, ceil(buttonSize.width) + 4), height: ceil(buttonSize.height) + 2)
-        let width = min(available + slack, inlineTitle.bounds.width + slack)
-        let height = inlineTitle.bounds.height + 2
-        let size = CGSize(width: width, height: height)
-        let grew = size != inlineTitleHost.preferredSize
-        inlineTitleHost.preferredSize = size
-        inlineTitleHost.frame = CGRect(origin: .zero, size: size)
-        inlineTitle.center = CGPoint(x: width / 2, y: height / 2)
+        let grew = Self.layoutInlineTitle(inlineTitle, in: inlineTitleHost, available: max(80, view.bounds.width - 2 * 120))
         // The bar measures a title view when it is attached and not again:
         // a host attached empty and filled later stayed a sliver ("Bedr…",
         // "Clither…"). Re-attaching it is what makes the bar look again.
@@ -1348,6 +1326,34 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             navigationItem.titleView = nil
             navigationItem.titleView = inlineTitleHost
         }
+    }
+
+    /// Sizes the button to its text and the host to the button, and says
+    /// whether the host's size changed. Shared with the look-alike the
+    /// navigator puts in the bar during a pop, so the two are placed alike.
+    @discardableResult
+    private static func layoutInlineTitle(_ button: UIButton, in host: InlineTitleHost, available: CGFloat) -> Bool {
+        // A configuration-based button applies a new title on its next
+        // layout pass, so measuring straight after setting one measures the
+        // old configuration: "Clitheroe Road" came out 68pt wide and the bar
+        // drew a sliver (measured with the probe). Lay it out first.
+        button.setNeedsUpdateConfiguration()
+        button.setNeedsLayout()
+        button.layoutIfNeeded()
+        // Whole points with a little slack: the measured sizes are thirds of
+        // a point and the bar's container rounds them down, which shaved the
+        // last glyph and the chevron's edge (reported as a slight clip).
+        let slack: CGFloat = 12
+        let buttonSize = button.intrinsicContentSize
+        button.bounds = CGRect(x: 0, y: 0, width: min(available, ceil(buttonSize.width) + 4), height: ceil(buttonSize.height) + 2)
+        let width = min(available + slack, button.bounds.width + slack)
+        let height = button.bounds.height + 2
+        let size = CGSize(width: width, height: height)
+        let grew = size != host.preferredSize
+        host.preferredSize = size
+        host.frame = CGRect(origin: .zero, size: size)
+        button.center = CGPoint(x: width / 2, y: height / 2)
+        return grew
     }
 
     /// The band under the compact bar holding the large title. Not clipped:
