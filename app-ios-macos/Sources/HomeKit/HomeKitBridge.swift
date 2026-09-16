@@ -93,6 +93,7 @@ final class BridgeLoad {
 /// bridge works perfectly well.
 @MainActor
 class HomeKitBridge: NSObject, ObservableObject {
+    func updateCameraSession(token: String?) {}
     func attach(webView: WKWebView) {}
     func detach() {}
     func handle(method: String?, payload: [String: Any]?, callbackId: String?) {}
@@ -127,6 +128,12 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         return service
     }()
     #endif
+
+    func updateCameraSession(token: String?) {
+        #if targetEnvironment(macCatalyst)
+        cameras.updateSession(token: token, staging: AppConfig.isStaging)
+        #endif
+    }
 
     /// In-memory relay log buffer (capped to prevent unbounded growth)
     private var relayLogBuffer: [[String: Any]] = []
@@ -477,7 +484,8 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
                 return try await cameras.snapshot(accessoryId: accessoryId,
                                                   maxWidth: payload["maxWidth"] as? Int,
-                                                  maxAgeSec: payload["maxAgeSec"] as? Double)
+                                                  maxAgeSec: payload["maxAgeSec"] as? Double,
+                                                  allowStaleOnError: payload["allowStaleOnError"] as? Bool ?? false)
             case "camera.live.start":
                 guard let accessoryId = payload["accessoryId"] as? String else { throw HomeKitBridgeError.missingParameter("accessoryId") }
                 return try await cameras.startLive(accessoryId: accessoryId,
