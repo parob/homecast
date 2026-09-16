@@ -144,6 +144,19 @@ final class NativeHeaderModel: ObservableObject {
     /// shows a bar that already knows its title. The first attempt dropped
     /// messages while off and came up blank — that was the second thing wrong.
     func merge(_ payload: [String: Any]) {
+        // Before anything lands: whether this message takes the page from
+        // the home view onto a room, group or collection. The navigator
+        // snapshots the home view in that instant — the page has posted this
+        // before WebKit has drawn the new view, so what is on screen is still
+        // the home (see `NativeHeaderNavigator`).
+        let nextTitle = payload["title"] as? String ?? title
+        let nextHeading = payload["heading"] as? String ?? heading
+        // Only from a home that was actually showing: the first payload after
+        // launch can land straight on a restored room, and what is on screen
+        // then is the loading view, which is nothing to slide back to.
+        if !title.isEmpty, !Self.isPage(heading: heading, title: title), Self.isPage(heading: nextHeading, title: nextTitle) {
+            pageWillAppear?()
+        }
         if let value = payload["title"] as? String { title = value }
         if let value = payload["heading"] as? String { heading = value }
         if payload.index(forKey: "subtitle") != nil {
@@ -219,6 +232,18 @@ final class NativeHeaderModel: ObservableObject {
         }
         return UIColor(red: r, green: g, blue: b, alpha: a)
     }
+
+    /// A page heading (room, group, collection) distinct from the home name.
+    static func isPage(heading: String, title: String) -> Bool {
+        let h = heading.trimmingCharacters(in: .whitespaces)
+        return !h.isEmpty && h != title
+    }
+
+    var isOnPage: Bool { Self.isPage(heading: heading, title: title) }
+
+    /// Called synchronously, from the message that moves the page onto a
+    /// room, group or collection, before the new heading is stored.
+    var pageWillAppear: (() -> Void)?
 
     // MARK: - Back into the page
 
@@ -303,6 +328,12 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
         self.content = content()
     }
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var navigator: NativeHeaderNavigator?
+    }
+
     func makeUIViewController(context: Context) -> UINavigationController {
         let root = WebHostingController(rootView: content)
         let nav = UINavigationController(navigationBarClass: PassthroughNavigationBar.self, toolbarClass: nil)
@@ -311,11 +342,268 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
         nav.navigationBar.prefersLargeTitles = false
         root.navigationItem.largeTitleDisplayMode = .never
         root.bind(NativeHeaderModel.shared)
+        context.coordinator.navigator = NativeHeaderNavigator(nav: nav, web: root, model: NativeHeaderModel.shared)
         return nav
     }
 
     func updateUIViewController(_ nav: UINavigationController, context: Context) {
-        (nav.viewControllers.first as? WebHostingController<Content>)?.rootView = content
+        // The web controller is the top of the stack, or under a ghost's
+        // cover for a frame while a pop lands — never assume it is first.
+        (nav.viewControllers.last(where: { $0 is WebHostingController<Content> }) as? WebHostingController<Content>)?.rootView = content
+    }
+}
+
+/// The back button and the swipe back, on a room, group or collection.
+///
+/// The web view never moves and is never pushed. When the page reports a
+/// heading, the navigator puts a *ghost* controller UNDER the web controller
+/// — `[ghost, web]`, set without animation — showing a snapshot of the home
+/// view taken in the instant before the page drew the room. From then on
+/// UIKit does what it does for any second screen: draws the back button and
+/// arms the interactive pop, and a tap or an edge swipe animates the room
+/// sliding away over the home, exactly as a pushed screen would.
+///
+/// When the pop lands the stack is `[ghost]`. The snapshot is lifted out of
+/// the ghost to cover the whole navigation view, the stack is put back to
+/// `[web]` with no animation (the web view, still drawing the room, comes
+/// back under the cover), and the page is told to go home. The page reports
+/// the home heading once it has drawn it, and the cover fades. A cancelled
+/// swipe leaves `[ghost, web]` as it was and nothing here runs.
+///
+/// Going home any other way — the title menu, the page's own controls —
+/// takes the ghost out without animation: there is nothing to slide.
+final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
+    private weak var nav: UINavigationController?
+    private weak var web: UIViewController?
+    private let model: NativeHeaderModel
+    private var cancellable: AnyCancellable?
+    private var ghost: GhostController?
+    /// The home view, captured as the page left it for a room: one copy for
+    /// the ghost to show under the pop, one to slide away over the push.
+    private var pendingSnapshot: UIView?
+    private var pendingPushCover: UIView?
+    private var cover: UIView?
+    private var coverTimeout: DispatchWorkItem?
+    private var wasOnPage = false
+    /// A pop has landed and the page has been told to go home; the next
+    /// report of the home heading lifts the cover.
+    private var awaitingHome = false
+
+    init(nav: UINavigationController, web: UIViewController, model: NativeHeaderModel) {
+        self.nav = nav
+        self.web = web
+        self.model = model
+        super.init()
+        nav.delegate = self
+        model.pageWillAppear = { [weak self] in self?.capture() }
+        cancellable = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.apply() }
+            }
+    }
+
+    /// The home view as it is on screen right now. `afterScreenUpdates:
+    /// false` is the point: it copies what has been presented, which is the
+    /// home view — the page's message arrived before WebKit's next frame.
+    private func capture() {
+        guard let web, web.isViewLoaded, ghost == nil, cover == nil else { return }
+        pendingSnapshot = web.view.snapshotView(afterScreenUpdates: false)
+        pendingPushCover = web.view.snapshotView(afterScreenUpdates: false)
+    }
+
+    private func apply() {
+        guard let nav, let web else { return }
+        let onPage = model.enabled && model.isOnPage
+        defer { wasOnPage = onPage }
+
+        if awaitingHome, !model.isOnPage {
+            // The page has drawn the home view under the cover.
+            awaitingHome = false
+            liftCover()
+        }
+
+        if onPage, !wasOnPage, ghost == nil, nav.viewControllers == [web] {
+            // The colour is read when the ghost is first shown, not now: at
+            // launch the page has not yet told the web view its canvas colour
+            // when the first heading arrives, and a ghost coloured then was
+            // black behind the pop.
+            let ghost = GhostController(snapshot: pendingSnapshot, fallback: { [weak web] in
+                web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
+            })
+            pendingSnapshot = nil
+            // A bare chevron, like the page's own crumbs: the compact title
+            // already names the home under the room.
+            ghost.navigationItem.backButtonDisplayMode = .minimal
+            ghost.navigationItem.title = model.title
+            self.ghost = ghost
+            nav.setViewControllers([ghost, web], animated: false)
+            if let pushCover = pendingPushCover {
+                pendingPushCover = nil
+                animatePush(from: pushCover)
+            }
+        } else if !onPage, ghost != nil, !awaitingHome, nav.viewControllers.count == 2 {
+            // Home by some other road: no pop to animate.
+            nav.setViewControllers([web], animated: false)
+            ghost = nil
+            pendingSnapshot = nil
+            pendingPushCover = nil
+        } else if !onPage {
+            pendingSnapshot = nil
+            pendingPushCover = nil
+        }
+    }
+
+    /// The push, drawn by hand: UIKit will not animate a stack change that
+    /// keeps the same controller on top. Two snapshots do it — the home, taken
+    /// as the page left it, and the room, taken once WebKit has drawn it —
+    /// and the room slides in over the home, which slides a third of the way
+    /// off under a dimming veil, as UIKit's own push does. Snapshots rather
+    /// than the web view itself: a WKWebView translated off screen only paints
+    /// the tiles it thinks are visible, so sliding the live view in showed the
+    /// room arriving in pieces.
+    private func animatePush(from home: UIView) {
+        guard let nav, let web else { return }
+        let width = nav.view.bounds.width
+        home.frame = nav.view.bounds
+        home.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let veil = UIView(frame: home.bounds)
+        veil.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        veil.backgroundColor = .black
+        veil.alpha = 0
+        home.addSubview(veil)
+        nav.view.insertSubview(home, belowSubview: nav.navigationBar)
+        cover = home
+        // Two frames for WebKit to present the room under the cover, then
+        // snapshot it and animate the pair. `afterScreenUpdates: true` so the
+        // snapshot is of the room, not the frame before it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak web, weak nav] in
+            guard let self, let web, let nav, self.cover === home else { return }
+            guard let room = web.view.snapshotView(afterScreenUpdates: true) else {
+                home.removeFromSuperview()
+                self.cover = nil
+                return
+            }
+            room.frame = nav.view.bounds
+            room.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            room.transform = CGAffineTransform(translationX: width, y: 0)
+            // The shadow UIKit draws down the incoming screen's leading edge.
+            room.layer.shadowColor = UIColor.black.cgColor
+            room.layer.shadowOpacity = 0.12
+            room.layer.shadowRadius = 8
+            room.layer.shadowOffset = CGSize(width: -3, height: 0)
+            nav.view.insertSubview(room, aboveSubview: home)
+            UIView.animate(withDuration: 0.38, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {
+                room.transform = .identity
+                home.transform = CGAffineTransform(translationX: -width / 3, y: 0)
+                veil.alpha = 0.12
+            }, completion: { _ in
+                room.removeFromSuperview()
+                home.removeFromSuperview()
+                if self.cover === home { self.cover = nil }
+            })
+        }
+    }
+
+    // MARK: UINavigationControllerDelegate
+
+
+    func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
+        guard let ghost, viewController === ghost, let web, let nav else { return }
+        // The pop has landed: the ghost is all that is on the stack.
+        let snapshot = ghost.takeSnapshot()
+        snapshot.frame = nav.view.bounds
+        snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        nav.view.insertSubview(snapshot, belowSubview: nav.navigationBar)
+        cover = snapshot
+        self.ghost = nil
+        nav.setViewControllers([web], animated: false)
+        awaitingHome = true
+        model.navigate("home:")
+        // However the page answers, the cover does not outstay it.
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.awaitingHome = false
+            self?.liftCover()
+        }
+        coverTimeout?.cancel()
+        coverTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: timeout)
+    }
+
+    private func liftCover() {
+        coverTimeout?.cancel()
+        coverTimeout = nil
+        guard let cover else { return }
+        self.cover = nil
+        // One frame for WebKit to present the home view, then a short fade so
+        // a stale detail or two (a light that changed) dissolves rather than
+        // pops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            UIView.animate(withDuration: 0.16, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
+        }
+    }
+
+    /// The colour the page has asked the web view to paint under itself —
+    /// what the ghost shows when there was no snapshot to take (the app
+    /// opened straight onto a room).
+    private static func backdropColor(of view: UIView) -> UIColor {
+        func find(_ view: UIView) -> WKWebView? {
+            if let web = view as? WKWebView { return web }
+            for sub in view.subviews { if let hit = find(sub) { return hit } }
+            return nil
+        }
+        // The page sets both when it publishes its canvas colour; the scroll
+        // view's is the one that shows through under the content.
+        if let web = find(view) {
+            if let color = web.scrollView.backgroundColor ?? web.backgroundColor { return color }
+        }
+        return .systemBackground
+    }
+
+    /// Stands in for the home view under the web controller: a snapshot of
+    /// it, or the page's backdrop colour.
+    final class GhostController: UIViewController {
+        private var snapshot: UIView?
+        private let fallback: () -> UIColor
+
+        init(snapshot: UIView?, fallback: @escaping () -> UIColor) {
+            self.snapshot = snapshot
+            self.fallback = fallback
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = fallback()
+            if let snapshot {
+                snapshot.frame = view.bounds
+                snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                view.addSubview(snapshot)
+            }
+        }
+
+        /// Read again as the pop begins: UIKit may load this view while the
+        /// web view is still on its launch colour, and the pop is when the
+        /// colour matters.
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            view.backgroundColor = fallback()
+        }
+
+        /// Hands the snapshot over (to become the cover), leaving the flat
+        /// colour behind.
+        func takeSnapshot() -> UIView {
+            if let snapshot {
+                self.snapshot = nil
+                snapshot.removeFromSuperview()
+                return snapshot
+            }
+            let flat = UIView()
+            flat.backgroundColor = fallback()
+            return flat
+        }
     }
 }
 
@@ -1146,20 +1434,32 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // No leading button, like the Home app: navigation is the title menu.
         navigationItem.leftBarButtonItem = nil
 
+        // The same two items every time, with their menu and action updated
+        // in place: a fresh UIBarButtonItem on every model change is a
+        // replacement to the bar, and on iOS 26 a replaced glass item fades
+        // out and back in — which showed as the search and ⋯ buttons
+        // blinking whenever the stack changed under them.
         var trailing: [UIBarButtonItem] = []
         if model.showOverflow {
             if let menu = Self.buildMenu(model) {
                 // The page's ⋯ menu, drawn by UIKit. Tapping the item opens the
                 // menu directly; an item calls back into the page by id.
-                let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: menu)
-                more.accessibilityLabel = "More"
-                trailing.append(more)
+                moreItem.menu = menu
+                moreItem.primaryAction = nil
             } else {
-                trailing.append(item("ellipsis", label: "More") { model.tap(.overflow) })
+                moreItem.menu = nil
+                moreItem.primaryAction = UIAction(image: UIImage(systemName: "ellipsis")) { _ in model.tap(.overflow) }
             }
+            moreItem.image = UIImage(systemName: "ellipsis")
+            trailing.append(moreItem)
         }
-        if model.showSearch { trailing.append(item("magnifyingglass", label: "Search") { model.tap(.search) }) }
-        navigationItem.rightBarButtonItems = trailing
+        if model.showSearch {
+            searchItem.primaryAction = UIAction(image: UIImage(systemName: "magnifyingglass")) { _ in model.tap(.search) }
+            trailing.append(searchItem)
+        }
+        if navigationItem.rightBarButtonItems ?? [] != trailing {
+            navigationItem.rightBarButtonItems = trailing
+        }
 
         // The connection dot sits beside the large title, after the chevron
         // — the same spot the web heading puts its own. Tapping opens the
@@ -1244,12 +1544,17 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         return UIMenu(children: sections)
     }
 
-    private func item(_ symbol: String, label: String, handler: @escaping () -> Void) -> UIBarButtonItem {
-        let action = UIAction(image: UIImage(systemName: symbol)) { _ in handler() }
-        let item = UIBarButtonItem(primaryAction: action)
-        item.accessibilityLabel = label
+    private lazy var moreItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: nil)
+        item.accessibilityLabel = "More"
         return item
-    }
+    }()
+
+    private lazy var searchItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(primaryAction: UIAction(image: UIImage(systemName: "magnifyingglass")) { _ in })
+        item.accessibilityLabel = "Search"
+        return item
+    }()
 }
 
 #endif
