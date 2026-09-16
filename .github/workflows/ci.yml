@@ -88,6 +88,9 @@ jobs:
       - name: Test native camera policy
         run: swift test --package-path app-ios-macos
 
+      - name: Test native relay cleanup
+        run: bash app-ios-macos/scripts/test-relay-websocket.sh
+
       # iOS as well as Catalyst, because they are different compilations and
       # this job used to run only the second one. Anything inside
       # `#if targetEnvironment(macCatalyst)` — which is most of the relay —
