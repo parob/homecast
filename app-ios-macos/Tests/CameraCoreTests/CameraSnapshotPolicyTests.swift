@@ -50,3 +50,31 @@ final class CameraSnapshotPolicyTests: XCTestCase {
         XCTAssertLessThanOrEqual(pacing + CameraSnapshotPolicy.snapshotTimeout + rendering, 23)
     }
 }
+
+final class CameraLogPolicyTests: XCTestCase {
+    func testCameraLoggingKeepsMetadataWithoutImageDataOrUnknownFields() throws {
+        let pixels = Data("PRIVATE_CAMERA_PIXELS".utf8)
+        let response: [String: Any] = ["jpeg": pixels, "width": 320, "height": 180,
+                                       "cached": false, "source": "stream", "futureImage": pixels]
+        let logged = try XCTUnwrap(CameraLogPolicy.metadata(method: "camera.snapshot", value: response) as? [String: Any])
+        XCTAssertNil(logged["jpeg"])
+        XCTAssertNil(logged["futureImage"])
+        XCTAssertEqual(logged["width"] as? Int, 320)
+        XCTAssertEqual(logged["height"] as? Int, 180)
+        XCTAssertEqual(logged["cached"] as? Bool, false)
+        XCTAssertEqual(logged["source"] as? String, "stream")
+        XCTAssertEqual(response["jpeg"] as? Data, pixels)
+    }
+
+    func testUnexpectedCameraPayloadsAreOmittedRatherThanStringified() {
+        XCTAssertEqual(CameraLogPolicy.metadata(method: "camera.snapshot", value: ["PRIVATE_CAMERA_PIXELS"]) as? String,
+                       "[camera payload omitted]")
+        let logged = CameraLogPolicy.metadata(method: "camera.snapshot", value: ["width": ["jpeg": "PRIVATE_CAMERA_PIXELS"]])
+        XCTAssertTrue((logged as? [String: Any])?.isEmpty == true)
+    }
+
+    func testNonCameraResponsesKeepTheirNormalDiagnosticContent() {
+        let response = ["value": 42]
+        XCTAssertEqual(CameraLogPolicy.metadata(method: "characteristic.get", value: response) as? [String: Int], response)
+    }
+}
