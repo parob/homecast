@@ -378,8 +378,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     private let model: NativeHeaderModel
     private var cancellable: AnyCancellable?
     private var ghost: GhostController?
-    /// The home view, captured as the page left it for a room: one copy for
-    /// the ghost to show under the pop, one to slide away over the push.
+    /// The home view, captured as the page left it for a room: one copy to
+    /// slide away for the push, one for the ghost to stand behind the pop.
     private var pendingSnapshot: UIView?
     private var pendingPushCover: UIView?
     private var cover: UIView?
@@ -403,13 +403,24 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             }
     }
 
-    /// The home view as it is on screen right now. `afterScreenUpdates:
-    /// false` is the point: it copies what has been presented, which is the
-    /// home view — the page's message arrived before WebKit's next frame.
+    /// The home view as it is on screen right now, as an image (see
+    /// `PageSnapshotting`): the page's message arrived before WebKit's next
+    /// frame, so what is presented is still the home. An image and not
+    /// `snapshotView`'s replicant — a replicant only holds its picture while
+    /// it stays in a window, and both a copy kept aside for the ghost and one
+    /// re-parented into it after the push came up blank grey.
     private func capture() {
         guard let web, web.isViewLoaded, ghost == nil, cover == nil else { return }
-        pendingSnapshot = web.view.snapshotView(afterScreenUpdates: false)
-        pendingPushCover = web.view.snapshotView(afterScreenUpdates: false)
+        guard let image = (web as? PageSnapshotting)?.snapshotImage() else { return }
+        pendingSnapshot = Self.still(image)
+        pendingPushCover = Self.still(image)
+    }
+
+    private static func still(_ image: UIImage) -> UIView {
+        let view = UIImageView(image: image)
+        view.contentMode = .scaleAspectFill
+        view.clipsToBounds = true
+        return view
     }
 
     private func apply() {
@@ -435,12 +446,31 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             // A bare chevron, like the page's own crumbs: the compact title
             // already names the home under the room.
             ghost.navigationItem.backButtonDisplayMode = .minimal
-            ghost.navigationItem.title = model.title
+            // No title: the ghost's view carries the home's large title in
+            // its snapshot, as the web controller's does on the home view,
+            // where the bar's own title is faded out. A plain "George
+            // Street" in the bar for the length of the pop, gone the moment
+            // it landed, read as a flash.
+            ghost.navigationItem.title = nil
+            // The same trailing buttons the web controller shows, as
+            // look-alikes: the bar animates between the two navigation items
+            // during the pop, and a ghost with no items had the search and ⋯
+            // buttons slide out for the pop and back in when the stack was
+            // put right, which read as a glitch. Look-alikes rather than the
+            // web's own items — a bar button item belongs to one navigation
+            // item at a time. Inert: the stack is back to the web controller
+            // within a frame of the pop landing.
+            ghost.navigationItem.rightBarButtonItems = (web.navigationItem.rightBarButtonItems ?? []).map { item in
+                let twin = UIBarButtonItem(image: item.image, style: .plain, target: nil, action: nil)
+                twin.accessibilityLabel = item.accessibilityLabel
+                return twin
+            }
             self.ghost = ghost
-            nav.setViewControllers([ghost, web], animated: false)
             if let pushCover = pendingPushCover {
                 pendingPushCover = nil
-                animatePush(from: pushCover)
+                animatePush(from: pushCover, settingStack: [ghost, web])
+            } else {
+                nav.setViewControllers([ghost, web], animated: false)
             }
         } else if !onPage, ghost != nil, !awaitingHome, nav.viewControllers.count == 2 {
             // Home by some other road: no pop to animate.
@@ -462,8 +492,9 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// than the web view itself: a WKWebView translated off screen only paints
     /// the tiles it thinks are visible, so sliding the live view in showed the
     /// room arriving in pieces.
-    private func animatePush(from home: UIView) {
+    private func animatePush(from home: UIView, settingStack stack: [UIViewController]) {
         guard let nav, let web else { return }
+        (web as? PageSnapshotting)?.setPushing(true)
         let width = nav.view.bounds.width
         home.frame = nav.view.bounds
         home.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -478,10 +509,20 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         // snapshot it and animate the pair. `afterScreenUpdates: true` so the
         // snapshot is of the room, not the frame before it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak web, weak nav] in
-            guard let self, let web, let nav, self.cover === home else { return }
+            guard let self, let web, let nav else { return }
+            guard self.cover === home else {
+                if nav.viewControllers != stack { nav.setViewControllers(stack, animated: false) }
+                (web as? PageSnapshotting)?.setPushing(false)
+                return
+            }
+            // The room, as WebKit has now drawn it. `afterScreenUpdates: true`
+            // so the picture is of the room, not the frame before it; a
+            // replicant here is fine, it goes straight on screen.
             guard let room = web.view.snapshotView(afterScreenUpdates: true) else {
+                nav.setViewControllers(stack, animated: false)
                 home.removeFromSuperview()
                 self.cover = nil
+                (web as? PageSnapshotting)?.setPushing(false)
                 return
             }
             room.frame = nav.view.bounds
@@ -494,6 +535,11 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             room.layer.shadowOffset = CGSize(width: -3, height: 0)
             nav.view.insertSubview(room, aboveSubview: home)
             UIView.animate(withDuration: 0.38, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {
+                // Inside the block, so the bar's own changes — the back
+                // button arriving — ease in with the slide rather than
+                // landing a beat before it.
+                nav.setViewControllers(stack, animated: false)
+                nav.navigationBar.layoutIfNeeded()
                 room.transform = .identity
                 home.transform = CGAffineTransform(translationX: -width / 3, y: 0)
                 veil.alpha = 0.12
@@ -501,6 +547,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 room.removeFromSuperview()
                 home.removeFromSuperview()
                 if self.cover === home { self.cover = nil }
+                (web as? PageSnapshotting)?.setPushing(false)
             })
         }
     }
@@ -517,7 +564,13 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         nav.view.insertSubview(snapshot, belowSubview: nav.navigationBar)
         cover = snapshot
         self.ghost = nil
-        nav.setViewControllers([web], animated: false)
+        // Without implicit animation, or the bar cross-fades the ghost's
+        // look-alike buttons into the web controller's real ones — a second
+        // fade on top of the pop's own.
+        UIView.performWithoutAnimation {
+            nav.setViewControllers([web], animated: false)
+            nav.navigationBar.layoutIfNeeded()
+        }
         awaitingHome = true
         model.navigate("home:")
         // However the page answers, the cover does not outstay it.
@@ -676,7 +729,20 @@ enum WebHostingLayout {
 /// The proxy scroll view remains — UIKit still needs a content scroll view it
 /// believes in to draw the scroll-edge effect under the compact bar once
 /// content has moved beneath it.
-final class WebHostingController<Content: View>: UIHostingController<Content> {
+/// What the navigator needs of the page's controller for its transitions:
+/// a picture of the page as it is on screen, and a way to hold the bar's
+/// title still while a push is drawn.
+protocol PageSnapshotting: AnyObject {
+    func snapshotImage() -> UIImage?
+    /// While true the inline title keeps its text and fades out over the
+    /// push instead of switching to the new page's the instant the page
+    /// reports it — under the cover the content is still the old page, and
+    /// a bar that changed first read as a jump. Ending it applies whatever
+    /// arrived meanwhile.
+    func setPushing(_ pushing: Bool)
+}
+
+final class WebHostingController<Content: View>: UIHostingController<Content>, PageSnapshotting {
     private var cancellable: AnyCancellable?
     private var offsetObservation: NSKeyValueObservation?
     private var boundsObservation: NSKeyValueObservation?
@@ -697,6 +763,25 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     private var headingIsPage = false
     /// Mirrors `NativeHeaderModel.largeTitle`.
     private var largeTitleEnabled = true
+    /// A push is being drawn: the inline title is held (see `setPushing`).
+    private var pushing = false
+    private weak var boundModel: NativeHeaderModel?
+
+    func setPushing(_ pushing: Bool) {
+        guard self.pushing != pushing else { return }
+        self.pushing = pushing
+        if pushing {
+            // Out over the slide, from wherever the scroll had left it. The
+            // new page starts at its top, where the inline title is hidden,
+            // so this is also where the offset would take it.
+            UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+                self.inlineTitle.alpha = 0
+            }
+        } else if let model = boundModel {
+            apply(model)
+            updateTitleTransition()
+        }
+    }
     /// The bar is hidden (preview off, or a web overlay is up).
     private var barHidden = false
     /// What the page was last told, so a rotation that changes the bar's
@@ -731,6 +816,28 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
 
         navigationItem.titleView = inlineTitleHost
         buildLargeTitle()
+    }
+
+    /// What is on screen right now, as an image. `drawHierarchy` with
+    /// `afterScreenUpdates: false` copies the presented frame — which is the
+    /// point when this is called from the message that is about to change
+    /// the page — but it replaces the whole web view with WebKit's picture,
+    /// and the large title lives inside the web view's scroll view, so it is
+    /// drawn again on top from its own layers.
+    func snapshotImage() -> UIImage? {
+        let bounds = view.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        return UIGraphicsImageRenderer(bounds: bounds).image { ctx in
+            view.drawHierarchy(in: bounds, afterScreenUpdates: false)
+            guard let scroll = webScrollView, !largeTitleArea.isHidden, largeTitleArea.alpha > 0.01 else { return }
+            let frame = scroll.convert(largeTitleArea.frame, to: view)
+            let g = ctx.cgContext
+            g.saveGState()
+            g.translateBy(x: frame.origin.x, y: frame.origin.y)
+            g.setAlpha(largeTitleArea.alpha)
+            largeTitleArea.layer.render(in: g)
+            g.restoreGState()
+        }
     }
 
     override func contentScrollView(for edge: NSDirectionalRectEdge) -> UIScrollView? {
@@ -1116,7 +1223,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
             // same pair the other way up.
             let progress = collapseProgress
             largeTitleArea.alpha = max(0, 1 - progress / 0.55)
-            inlineTitle.alpha = max(0, (progress - 0.5) / 0.5)
+            if !pushing { inlineTitle.alpha = max(0, (progress - 0.5) / 0.5) }
         }
     }
 
@@ -1320,6 +1427,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
     // MARK: - Model → bar
 
     func bind(_ model: NativeHeaderModel) {
+        boundModel = model
         model.reportInsets = { [weak self] completion in
             guard let self else { return }
             // After a layout pass, so a bar that has only just been shown has
@@ -1414,8 +1522,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // The compact bar: home name; or on a room page the room with the
         // home beneath it, once the heading has scrolled away. The heading
         // shows the home small above the big room name until then.
-        inlineTitle.configuration?.title = headingIsPage ? heading : title
-        inlineTitle.configuration?.subtitle = headingIsPage ? title : nil
+        if !pushing {
+            inlineTitle.configuration?.title = headingIsPage ? heading : title
+            inlineTitle.configuration?.subtitle = headingIsPage ? title : nil
+        }
         largeEyebrowLabel.text = title
         largeTitleLabel.text = headingIsPage ? heading : title
         largeSubtitleButton.setTitle(model.subtitle, for: .normal)
@@ -1426,10 +1536,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         // up, the bar's once that has scrolled away (on a room page the bar
         // is empty until then; the heading carries both names).
         let menu = Self.buildTitleMenu(model)
-        inlineTitle.menu = menu
         largeTitleButton.menu = menu
         largeChevron.isHidden = menu == nil
-        inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+        if !pushing {
+            inlineTitle.menu = menu
+            inlineTitle.configuration?.image = menu == nil ? nil : UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+        }
 
         // No leading button, like the Home app: navigation is the title menu.
         navigationItem.leftBarButtonItem = nil
@@ -1469,7 +1581,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content> {
         largeStatusButton.removeTarget(nil, action: nil, for: .allEvents)
         largeStatusButton.addAction(UIAction { _ in model.tap(.status) }, for: .touchUpInside)
 
-        layoutInlineTitles()
+        if !pushing { layoutInlineTitles() }
         layoutLargeTitle()
         // Now, not on the next layout pass: after a rotation back to
         // portrait there may not be one, and the page kept the landscape
