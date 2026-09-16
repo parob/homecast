@@ -577,16 +577,23 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 (web as? PageSnapshotting)?.setPushing(false)
                 return
             }
-            // The room, as WebKit has now drawn it. `afterScreenUpdates: true`
-            // so the picture is of the room, not the frame before it; a
-            // replicant here is fine, it goes straight on screen.
-            guard let room = web.view.snapshotView(afterScreenUpdates: true) else {
+            // The room, as WebKit paints it — asked of WebKit, not copied from
+            // the screen (see `renderedSnapshotImage`).
+            guard let page = web as? PageSnapshotting else {
                 nav.setViewControllers(stack, animated: false)
                 home.removeFromSuperview()
                 self.cover = nil
+                return
+            }
+            page.renderedSnapshotImage { [weak self, weak web, weak nav] image in
+            guard let self, let web, let nav, self.cover === home, let image else {
+                if let nav, nav.viewControllers != stack { nav.setViewControllers(stack, animated: false) }
+                home.removeFromSuperview()
+                if self?.cover === home { self?.cover = nil }
                 (web as? PageSnapshotting)?.setPushing(false)
                 return
             }
+            let room = Self.still(image)
             room.frame = nav.view.bounds
             room.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             room.transform = CGAffineTransform(translationX: width, y: 0)
@@ -612,6 +619,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 if self.cover === home { self.cover = nil }
                 (web as? PageSnapshotting)?.setPushing(false)
             })
+            }
         }
         pendingPushFallback?.cancel()
         pendingPushStart = start
@@ -819,6 +827,14 @@ enum WebHostingLayout {
 /// title still while a push is drawn.
 protocol PageSnapshotting: AnyObject {
     func snapshotImage() -> UIImage?
+    /// The page as WebKit would paint it now, asked of WebKit itself. For a
+    /// view that has only just been laid out: UIKit's snapshot of a web view
+    /// copies whatever tiles WebKit has rasterised so far, and a room taken
+    /// that way slid in as glass boxes with no icons or text, which arrived
+    /// when the slide stopped. Slower (a round trip to the web process), so
+    /// not for the home capture, which must copy the frame on screen before
+    /// the page changes.
+    func renderedSnapshotImage(completion: @escaping (UIImage?) -> Void)
     /// While true the inline title keeps its text and fades out over the
     /// push instead of switching to the new page's the instant the page
     /// reports it — under the cover the content is still the old page, and
@@ -951,15 +967,42 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         guard bounds.width > 0, bounds.height > 0 else { return nil }
         return UIGraphicsImageRenderer(bounds: bounds).image { ctx in
             view.drawHierarchy(in: bounds, afterScreenUpdates: false)
-            guard let scroll = webScrollView, !largeTitleArea.isHidden, largeTitleArea.alpha > 0.01 else { return }
-            let frame = scroll.convert(largeTitleArea.frame, to: view)
-            let g = ctx.cgContext
-            g.saveGState()
-            g.translateBy(x: frame.origin.x, y: frame.origin.y)
-            g.setAlpha(largeTitleArea.alpha)
-            largeTitleArea.layer.render(in: g)
-            g.restoreGState()
+            drawLargeTitle(in: ctx.cgContext)
         }
+    }
+
+    func renderedSnapshotImage(completion: @escaping (UIImage?) -> Void) {
+        let bounds = view.bounds
+        guard bounds.width > 0, bounds.height > 0, let scroll = webScrollView, let webView = scroll.superview as? WKWebView else {
+            completion(snapshotImage())
+            return
+        }
+        let config = WKSnapshotConfiguration()
+        config.afterScreenUpdates = true
+        webView.takeSnapshot(with: config) { [weak self] image, _ in
+            guard let self else { completion(nil); return }
+            guard let image else { completion(self.snapshotImage()); return }
+            let webFrame = webView.convert(webView.bounds, to: self.view)
+            completion(UIGraphicsImageRenderer(bounds: bounds).image { ctx in
+                // Whatever the web view does not cover (nothing, in practice)
+                // keeps the backdrop; then WebKit's picture, then the title.
+                (webView.scrollView.backgroundColor ?? webView.backgroundColor)?.setFill()
+                ctx.fill(bounds)
+                image.draw(in: webFrame)
+                self.drawLargeTitle(in: ctx.cgContext)
+            })
+        }
+    }
+
+    /// The large title, drawn from its own layers at its place on screen.
+    private func drawLargeTitle(in g: CGContext) {
+        guard let scroll = webScrollView, !largeTitleArea.isHidden, largeTitleArea.alpha > 0.01 else { return }
+        let frame = scroll.convert(largeTitleArea.frame, to: view)
+        g.saveGState()
+        g.translateBy(x: frame.origin.x, y: frame.origin.y)
+        g.setAlpha(largeTitleArea.alpha)
+        largeTitleArea.layer.render(in: g)
+        g.restoreGState()
     }
 
     override func contentScrollView(for edge: NSDirectionalRectEdge) -> UIScrollView? {
