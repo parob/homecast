@@ -479,7 +479,9 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             if let target, let page = web as? PageSnapshotting {
                 restoreThenLift(page: page, offset: target, attempts: 24)
             } else {
-                liftCover()
+                // A flat cover (the app opened straight onto the room): there
+                // is no picture to match, so it goes at once.
+                liftCover(immediately: cover is UIImageView == false)
             }
         }
 
@@ -672,18 +674,22 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         }
     }
 
-    private func liftCover() {
+    private func liftCover(immediately: Bool = false) {
         coverTimeout?.cancel()
         coverTimeout = nil
         guard let cover else { return }
         self.cover = nil
-        // A few frames for WebKit to present the home view — including the
-        // page taking back the 18pt the room page pads for its eyebrow, which
-        // it does a message round-trip after the heading changes — then a
-        // short fade so a stale detail or two (a light that changed)
-        // dissolves rather than pops.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            UIView.animate(withDuration: 0.18, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
+        if immediately {
+            cover.removeFromSuperview()
+            return
+        }
+        // A frame for WebKit to present the home view (the page pads for the
+        // room's eyebrow itself now, so nothing moves later), then a short
+        // fade so a stale detail or two (a light that changed) dissolves
+        // rather than pops. Short: until the cover is gone the page under it
+        // reads as not yet scrollable.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            UIView.animate(withDuration: 0.12, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
         }
     }
 
