@@ -405,13 +405,28 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// started nothing, and the home's cover stayed on screen for good.
     private var pendingPushStart: (() -> Void)?
     private var pendingPushFallback: DispatchWorkItem?
+    /// The pop's cover, waiting for the page to say the home is painted: the
+    /// heading arrives from the page's first render, and the grid follows in
+    /// a deferred one — lifted on the heading, the cover came off a home
+    /// still showing the room's tiles under the home's title, with no pills
+    /// and no section headings, for a beat.
+    private var pendingLift: (() -> Void)?
+    private var pendingLiftFallback: DispatchWorkItem?
 
     private func pagePainted() {
-        guard let start = pendingPushStart else { return }
-        pendingPushStart = nil
-        pendingPushFallback?.cancel()
-        pendingPushFallback = nil
-        start()
+        if let start = pendingPushStart {
+            pendingPushStart = nil
+            pendingPushFallback?.cancel()
+            pendingPushFallback = nil
+            start()
+            return
+        }
+        if let lift = pendingLift {
+            pendingLift = nil
+            pendingLiftFallback?.cancel()
+            pendingLiftFallback = nil
+            lift()
+        }
     }
     private var wasOnPage = false
     /// A pop has landed and the page has been told to go home; the next
@@ -470,19 +485,28 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         defer { wasOnPage = onPage }
 
         if awaitingHome, !model.isOnPage {
-            // The page has reported the home view. Its content fills in over
-            // the next few frames; put it back where the snapshot shows it as
-            // soon as it is tall enough, then lift the cover.
+            // The page has reported the home view. Once it says it has
+            // painted it (or after a beat, for a page that never says), put
+            // it back where the snapshot shows it and lift the cover.
             awaitingHome = false
             let target = homeOffset
             homeOffset = nil
-            if let target, let page = web as? PageSnapshotting {
-                restoreThenLift(page: page, offset: target, attempts: 24)
-            } else {
-                // A flat cover (the app opened straight onto the room): there
-                // is no picture to match, so it goes at once.
-                liftCover(immediately: cover is UIImageView == false)
+            let flat = !(cover is UIImageView)
+            let lift: () -> Void = { [weak self, weak web] in
+                guard let self else { return }
+                if let target, let page = web as? PageSnapshotting {
+                    self.restoreThenLift(page: page, offset: target, attempts: 24)
+                } else {
+                    // A flat cover (the app opened straight onto the room):
+                    // there is no picture to match, so it goes at once.
+                    self.liftCover(immediately: flat)
+                }
             }
+            pendingLift = lift
+            pendingLiftFallback?.cancel()
+            let fallback = DispatchWorkItem { [weak self] in self?.pagePainted() }
+            pendingLiftFallback = fallback
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: fallback)
         }
 
         if onPage, !wasOnPage, ghost == nil, nav.viewControllers == [web] {
@@ -654,6 +678,9 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         // However the page answers, the cover does not outstay it.
         let timeout = DispatchWorkItem { [weak self] in
             self?.awaitingHome = false
+            self?.pendingLift = nil
+            self?.pendingLiftFallback?.cancel()
+            self?.pendingLiftFallback = nil
             self?.liftCover()
         }
         coverTimeout?.cancel()
@@ -1336,12 +1363,16 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         let eyebrow: CGFloat = headingIsPage ? WebHostingLayout.eyebrowHeight : 0
         largeEyebrowLabel.isHidden = !headingIsPage
         largeEyebrowLabel.frame = CGRect(x: leading, y: 2, width: maxTextWidth, height: eyebrow)
-        // 34pt bold sits on a 41pt line; with a status line under it the pair
-        // is packed a little tighter so it still fits the band.
+        // 34pt bold sits on a 41pt line, centred in the band. The status line
+        // under it does not move the name: it used to lift the name 7pt to
+        // make room, and the name jumped every time "Updating…" came and went
+        // — which is on every navigation. The line tucks under the name's
+        // descenders instead and runs a few points into the gap below the
+        // band, which is clear.
         let titleHeight: CGFloat = 41
-        let titleY: CGFloat = eyebrow + (hasSubtitle ? -2 : (WebHostingLayout.largeTitleHeight - titleHeight) / 2)
+        let titleY: CGFloat = eyebrow + (WebHostingLayout.largeTitleHeight - titleHeight) / 2
         largeTitleLabel.frame = CGRect(x: leading, y: titleY, width: width, height: titleHeight)
-        largeSubtitleButton.frame = CGRect(x: leading, y: titleY + titleHeight - 6, width: maxTextWidth, height: 18)
+        largeSubtitleButton.frame = CGRect(x: leading, y: titleY + titleHeight - 8, width: maxTextWidth, height: 18)
         largeSubtitleButton.isHidden = !hasSubtitle
 
         let chevronSize: CGFloat = 22
