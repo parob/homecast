@@ -26,6 +26,24 @@ final class CameraCaptureService: NSObject {
 
     init(homeKitManager: HomeKitManager) {
         self.homeKitManager = homeKitManager
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.snapshotStore = CameraSnapshotStore(root: support.appendingPathComponent("Homecast/CameraSnapshots", isDirectory: true))
+    }
+
+    private let snapshotStore: CameraSnapshotStore
+    private var cacheSession = CameraCacheSession(account: nil, staging: false, generation: 0)
+
+    func updateSession(token: String?, staging: Bool) {
+        let account = CameraCacheSession.accountID(token: token)
+        guard cacheSession.account != account || cacheSession.staging != staging || token == nil else { return }
+        cacheSession = CameraCacheSession(account: account, staging: staging, generation: cacheSession.generation + 1)
+        snapshotInFlight.values.forEach { $0.cancel() }
+        snapshotInFlight.removeAll()
+        snapshotCache.removeAll()
+        lastPhysicalSnapshot.removeAll()
+        _ = stopLive(accessoryId: nil)
+        let session = cacheSession
+        Task { await snapshotStore.updateSession(session) }
     }
 
     // MARK: - Limits
@@ -91,6 +109,7 @@ final class CameraCaptureService: NSObject {
             "screenRecording": available ? "granted" : "denied",
             "maxStreamsPerHome": Self.maxStreamsPerHome,
             "activeStreams": liveSessions.count,
+            "persistentSnapshots": true,
             "fps": Self.defaultFps,
         ]
     }
@@ -112,21 +131,31 @@ final class CameraCaptureService: NSObject {
 
     // MARK: - Snapshot
 
-    private struct CachedSnapshot {
-        let jpeg: Data
-        let capturedAt: Date
-        let width: Int
-        let height: Int
-        let source: String
-        let requestedWidth: Int
-    }
+    private typealias CachedSnapshot = RelayCameraSnapshot
     private var snapshotCache: [String: CachedSnapshot] = [:]
     private var snapshotInFlight: [String: Task<CachedSnapshot, Error>] = [:]
     private var lastPhysicalSnapshot: [String: Date] = [:]
     /// A still temporarily owns a stream, but never publishes live frames.
     private var snapshotStreams: Set<String> = []
 
-    func snapshot(accessoryId: String, maxWidth: Int?, maxAgeSec: Double?) async throws -> [String: Any] {
+    func snapshot(accessoryId: String, maxWidth: Int?, maxAgeSec: Double?, allowStaleOnError: Bool = false) async throws -> [String: Any] {
+        let session = cacheSession
+        guard session.account != nil else { throw CameraError.accessDenied }
+        // Re-check current HomeKit membership BEFORE reading even a cache hit.
+        // Cloud authorization independently gates each client/home request.
+        let accessory = try homeKitManager.hmAccessory(id: accessoryId)
+        guard accessory.cameraProfiles?.first != nil,
+              let home = homeKitManager.homes.first(where: { $0.accessories.contains(where: { $0.uniqueIdentifier == accessory.uniqueIdentifier }) }) else {
+            throw CameraError.notSupported
+        }
+        let accessoryId = accessory.uniqueIdentifier.uuidString
+        if snapshotCache[accessoryId] == nil {
+            let stored = await snapshotStore.load(home: home.uniqueIdentifier, accessory: accessory.uniqueIdentifier, session: session)
+            guard session == cacheSession else { throw CancellationError() }
+            // Another capture may have completed while disk IO was pending.
+            if snapshotCache[accessoryId] == nil { snapshotCache[accessoryId] = stored }
+        }
+        _ = try homeKitManager.hmAccessory(id: accessoryId)
         let width = CameraSnapshotPolicy.requestedWidth(maxWidth)
         let maxAge = maxAgeSec ?? 10
         if let cached = snapshotCache[accessoryId],
@@ -134,17 +163,34 @@ final class CameraCaptureService: NSObject {
                                          requestedWidth: width, maxAge: maxAge) {
             return Self.snapshotPayload(accessoryId: accessoryId, cached, fromCache: true)
         }
-        if let inFlight = snapshotInFlight[accessoryId] {
-            return Self.snapshotPayload(accessoryId: accessoryId, try await inFlight.value, fromCache: true)
+        do {
+            let existing = snapshotInFlight[accessoryId]
+            let task = existing ?? Task<CachedSnapshot, Error> { @MainActor in
+                try await self.captureSnapshot(accessoryId: accessoryId, width: width)
+            }
+            if existing == nil { snapshotInFlight[accessoryId] = task }
+            defer { if existing == nil && session == cacheSession { snapshotInFlight[accessoryId] = nil } }
+            let result = try await task.value
+            try Task.checkCancellation()
+            guard session == cacheSession else { throw CancellationError() }
+            _ = try homeKitManager.hmAccessory(id: accessoryId)
+            snapshotCache[accessoryId] = result
+            await snapshotStore.save(result, home: home.uniqueIdentifier, accessory: accessory.uniqueIdentifier, session: session)
+            guard session == cacheSession else { throw CancellationError() }
+            return Self.snapshotPayload(accessoryId: accessoryId, result, fromCache: existing != nil)
+        } catch {
+            // A caller must explicitly opt in. Never turn a failed fresh read
+            // into an apparently fresh success, or serve after an auth change.
+            guard session == cacheSession, !Task.isCancelled, allowStaleOnError,
+                  let failure = error as? CameraError,
+                  CameraSnapshotPolicy.canServeStale(after: failure.code),
+                  let stored = snapshotCache[accessoryId] else { throw error }
+            _ = try homeKitManager.hmAccessory(id: accessoryId)
+            var payload = Self.snapshotPayload(accessoryId: accessoryId, stored, fromCache: true)
+            payload["stale"] = true
+            payload["refreshError"] = ["code": failure.code, "message": failure.localizedDescription]
+            return payload
         }
-        let task = Task<CachedSnapshot, Error> { @MainActor in
-            try await self.captureSnapshot(accessoryId: accessoryId, width: width)
-        }
-        snapshotInFlight[accessoryId] = task
-        defer { snapshotInFlight[accessoryId] = nil }
-        let result = try await task.value
-        snapshotCache[accessoryId] = result
-        return Self.snapshotPayload(accessoryId: accessoryId, result, fromCache: false)
     }
 
     private static func snapshotPayload(accessoryId: String, _ s: CachedSnapshot, fromCache: Bool) -> [String: Any] {
@@ -212,6 +258,7 @@ final class CameraCaptureService: NSObject {
         case .started: break
         case .timeout: throw CameraError.snapshotTimeout
         case .failed(let error):
+            if Self.isAuthorizationFailure(error) { throw CameraError.accessDenied }
             if (error as NSError).domain == HMErrorDomain,
                (error as NSError).code == HMError.accessoryIsBusy.rawValue { throw CameraError.busy }
             throw CameraError.streamFailed(error.localizedDescription)
@@ -237,7 +284,9 @@ final class CameraCaptureService: NSObject {
             stream.updateAudioStreamSetting(.muted) { error in
                 Task { @MainActor in
                     guard let cont = settle.claim() else { return }
-                    if let error {
+                    if Self.isAuthorizationFailure(error) {
+                        cont.resume(throwing: CameraError.accessDenied)
+                    } else if let error {
                         cont.resume(throwing: CameraError.streamFailed("Could not mute camera audio: \(error.localizedDescription)"))
                     } else {
                         cont.resume()
@@ -289,6 +338,13 @@ final class CameraCaptureService: NSObject {
     }
 
     private var snapshotSettles: [ObjectIdentifier: SnapshotSettle] = [:]
+
+    private static func isAuthorizationFailure(_ error: Error?) -> Bool {
+        guard let error = error as NSError?, error.domain == HMErrorDomain else { return false }
+        return [HMError.accessDenied.rawValue, HMError.insufficientPrivileges.rawValue,
+                HMError.homeAccessNotAuthorized.rawValue, HMError.invalidOrMissingAuthorizationData.rawValue,
+                HMError.notAuthorizedForMicrophoneAccess.rawValue].contains(error.code)
+    }
 
     private func takeSnapshot(_ control: HMCameraSnapshotControl) async throws -> HMCameraSnapshot {
         let key = ObjectIdentifier(control)
@@ -610,7 +666,8 @@ extension CameraCaptureService: HMCameraSnapshotControlDelegate {
     nonisolated func cameraSnapshotControl(_ control: HMCameraSnapshotControl, didTake snapshot: HMCameraSnapshot?, error: Error?) {
         Task { @MainActor in
             guard let cont = self.snapshotSettles[ObjectIdentifier(control)]?.claim() else { return }
-            if let snapshot = snapshot { cont.resume(returning: snapshot) }
+            if Self.isAuthorizationFailure(error) { cont.resume(throwing: CameraError.accessDenied) }
+            else if let snapshot = snapshot { cont.resume(returning: snapshot) }
             else { cont.resume(throwing: CameraError.snapshotFailed(error?.localizedDescription ?? "no snapshot")) }
         }
     }
@@ -635,6 +692,7 @@ extension CameraCaptureService: HMCameraStreamControlDelegate {
 // MARK: - Errors
 
 enum CameraError: LocalizedError {
+    case accessDenied
     case notSupported
     case engineUnavailable
     case captureUnavailable
@@ -647,6 +705,7 @@ enum CameraError: LocalizedError {
 
     var code: String {
         switch self {
+        case .accessDenied: return "PERMISSION_DENIED"
         case .notSupported: return "CAMERA_NOT_SUPPORTED"
         case .engineUnavailable: return "CAMERA_UNAVAILABLE"
         case .captureUnavailable: return "CAMERA_CAPTURE_UNAVAILABLE"
@@ -661,6 +720,7 @@ enum CameraError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .accessDenied: return "Camera access was not authorized"
         case .notSupported: return "This accessory has no camera"
         case .engineUnavailable: return "The camera engine window is not available on this relay"
         case .captureUnavailable: return "The camera engine window could not be captured; restart Homecast on the relay Mac"

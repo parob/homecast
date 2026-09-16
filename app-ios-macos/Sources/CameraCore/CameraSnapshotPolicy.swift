@@ -26,6 +26,11 @@ enum CameraSnapshotPolicy {
         // A clock adjustment must not turn a three-second floor into minutes.
         return min(minimumInterval, max(0, minimumInterval - now.timeIntervalSince(lastAttempt)))
     }
+
+    static func canServeStale(after code: String) -> Bool {
+        ["CAMERA_BUSY", "CAMERA_CAPTURE_UNAVAILABLE", "CAMERA_UNAVAILABLE", "SNAPSHOT_TIMEOUT",
+         "SNAPSHOT_FAILED", "SNAPSHOT_EMPTY", "STREAM_TIMEOUT", "STREAM_FAILED"].contains(code)
+    }
 }
 
 /// Logging is metadata-only even for images small enough to fit a log limit.
@@ -34,7 +39,7 @@ enum CameraLogPolicy {
         "homeId", "accessoryId", "capturedAt", "mimeType", "width", "height", "cached", "source",
         "maxWidth", "maxAgeSec", "seq", "state", "reason", "started", "activeStreams", "fps", "quality",
         "supported", "engineWindow", "captureAvailable", "screenRecordingAuthorization", "screenRecording",
-        "maxStreamsPerHome",
+        "maxStreamsPerHome", "persistentSnapshots", "allowStaleOnError", "stale",
     ])
 
     static func metadata(method: String, value: Any) -> Any {

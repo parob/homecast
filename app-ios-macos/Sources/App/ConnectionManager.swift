@@ -11,7 +11,10 @@ class ConnectionManager: ObservableObject {
     @Published private(set) var isAuthenticated: Bool = false
     @Published private(set) var serverURL: String = ""
     @Published private(set) var savedEmail: String = ""
-    @Published private(set) var authToken: String?
+    @Published private(set) var authToken: String? {
+        didSet { authTokenDidChange?(authToken) }
+    }
+    var authTokenDidChange: ((String?) -> Void)?
 
     // MARK: - Keychain Keys
 

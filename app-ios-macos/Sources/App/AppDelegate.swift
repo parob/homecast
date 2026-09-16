@@ -48,6 +48,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
         // Initialize connection manager (handles auth credentials)
         connectionManager = ConnectionManager()
+        connectionManager.authTokenDidChange = { [weak self] token in
+            self?.homeKitBridge.updateCameraSession(token: token)
+        }
+        homeKitBridge.updateCameraSession(token: connectionManager.authToken)
 
         // Start local HTTP server if Community mode is enabled.
         //
