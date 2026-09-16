@@ -2731,6 +2731,15 @@ struct WebViewContainer: UIViewRepresentable {
                 // The Mac has no native bar, so the `#if` above compiles to
                 // nothing there — and a case needs a statement.
                 break
+            case "header.painted":
+                // The page has drawn the view whose heading it just sent;
+                // the navigator's slide waits for this.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                Task { @MainActor in NativeHeaderModel.shared.painted?() }
+                #endif
+                // The Mac has no native bar, so the `#if` above compiles to
+                // nothing there — and a case needs a statement.
+                break
             case "header.ready":
                 // The page's bridge has just mounted and wants the current
                 // state again — `didFinish` ran before React did, so the

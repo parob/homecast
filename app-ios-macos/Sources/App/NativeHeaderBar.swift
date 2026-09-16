@@ -250,6 +250,9 @@ final class NativeHeaderModel: ObservableObject {
     /// Called synchronously, from the message that moves the page onto a
     /// room, group or collection, before the new heading is stored.
     var pageWillAppear: (() -> Void)?
+    /// The page has painted the view whose heading it last sent (an older
+    /// page never says so; whoever waits on this needs a fallback).
+    var painted: (() -> Void)?
 
     // MARK: - Back into the page
 
@@ -395,6 +398,21 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     private var homeOffset: CGFloat?
     private var cover: UIView?
     private var coverTimeout: DispatchWorkItem?
+    /// The push, waiting for the page to say the room is painted (or for
+    /// the fallback timer — an older page never says). A closure and a
+    /// separate timer, not one work item: a cancelled DispatchWorkItem's
+    /// `perform` is a no-op, so cancelling the timer and then performing it
+    /// started nothing, and the home's cover stayed on screen for good.
+    private var pendingPushStart: (() -> Void)?
+    private var pendingPushFallback: DispatchWorkItem?
+
+    private func pagePainted() {
+        guard let start = pendingPushStart else { return }
+        pendingPushStart = nil
+        pendingPushFallback?.cancel()
+        pendingPushFallback = nil
+        start()
+    }
     private var wasOnPage = false
     /// A pop has landed and the page has been told to go home; the next
     /// report of the home heading lifts the cover.
@@ -407,6 +425,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         super.init()
         nav.delegate = self
         model.pageWillAppear = { [weak self] in self?.capture() }
+        model.painted = { [weak self] in self?.pagePainted() }
         cancellable = model.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -530,11 +549,17 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         home.addSubview(veil)
         nav.view.insertSubview(home, belowSubview: nav.navigationBar)
         cover = home
-        // Two frames for WebKit to present the room under the cover, then
-        // snapshot it and animate the pair. `afterScreenUpdates: true` so the
-        // snapshot is of the room, not the frame before it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.017) { [weak self, weak web, weak nav] in
+        // Until the page says it has painted the room (two frames after it
+        // sent the heading), or a beat has passed for a page that never says,
+        // the home snapshot covers the screen. Then the room is snapshotted
+        // and the pair animate. `afterScreenUpdates: true` so the picture is
+        // of the room as drawn, not the frame before it. A picture taken on a
+        // fixed short delay slid in blank on a slow page, and the room then
+        // "appeared" after the slide.
+        let start: () -> Void = { [weak self, weak web, weak nav] in
             guard let self, let web, let nav else { return }
+            self.pendingPushStart = nil
+            self.pendingPushFallback = nil
             guard self.cover === home else {
                 if nav.viewControllers != stack { nav.setViewControllers(stack, animated: false) }
                 (web as? PageSnapshotting)?.setPushing(false)
@@ -576,6 +601,11 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 (web as? PageSnapshotting)?.setPushing(false)
             })
         }
+        pendingPushFallback?.cancel()
+        pendingPushStart = start
+        let fallback = DispatchWorkItem { [weak self] in self?.pagePainted() }
+        pendingPushFallback = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: fallback)
     }
 
     // MARK: UINavigationControllerDelegate
