@@ -382,6 +382,11 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// slide away for the push, one for the ghost to stand behind the pop.
     private var pendingSnapshot: UIView?
     private var pendingPushCover: UIView?
+    /// Where the home was scrolled to when the snapshot was taken, so the
+    /// live home comes back under the cover in the same place and nothing
+    /// jumps when the cover lifts. nil when there was no snapshot.
+    private var pendingHomeOffset: CGFloat?
+    private var homeOffset: CGFloat?
     private var cover: UIView?
     private var coverTimeout: DispatchWorkItem?
     private var wasOnPage = false
@@ -411,9 +416,10 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// re-parented into it after the push came up blank grey.
     private func capture() {
         guard let web, web.isViewLoaded, ghost == nil, cover == nil else { return }
-        guard let image = (web as? PageSnapshotting)?.snapshotImage() else { return }
+        guard let page = web as? PageSnapshotting, let image = page.snapshotImage() else { return }
         pendingSnapshot = Self.still(image)
         pendingPushCover = Self.still(image)
+        pendingHomeOffset = page.pageOffset
     }
 
     private static func still(_ image: UIImage) -> UIView {
@@ -429,8 +435,13 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         defer { wasOnPage = onPage }
 
         if awaitingHome, !model.isOnPage {
-            // The page has drawn the home view under the cover.
+            // The page has drawn the home view under the cover. Put it back
+            // where the snapshot shows it before the cover lifts.
             awaitingHome = false
+            if let homeOffset, let page = web as? PageSnapshotting {
+                page.restorePageOffset(homeOffset)
+            }
+            homeOffset = nil
             liftCover()
         }
 
@@ -443,6 +454,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
             })
             pendingSnapshot = nil
+            homeOffset = pendingHomeOffset
+            pendingHomeOffset = nil
             // A bare chevron, like the page's own crumbs: the compact title
             // already names the home under the room.
             ghost.navigationItem.backButtonDisplayMode = .minimal
@@ -478,9 +491,12 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             ghost = nil
             pendingSnapshot = nil
             pendingPushCover = nil
+            pendingHomeOffset = nil
+            homeOffset = nil
         } else if !onPage {
             pendingSnapshot = nil
             pendingPushCover = nil
+            pendingHomeOffset = nil
         }
     }
 
@@ -508,7 +524,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         // Two frames for WebKit to present the room under the cover, then
         // snapshot it and animate the pair. `afterScreenUpdates: true` so the
         // snapshot is of the room, not the frame before it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak web, weak nav] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.017) { [weak self, weak web, weak nav] in
             guard let self, let web, let nav else { return }
             guard self.cover === home else {
                 if nav.viewControllers != stack { nav.setViewControllers(stack, animated: false) }
@@ -534,7 +550,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             room.layer.shadowRadius = 8
             room.layer.shadowOffset = CGSize(width: -3, height: 0)
             nav.view.insertSubview(room, aboveSubview: home)
-            UIView.animate(withDuration: 0.38, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {
+            // UIKit's own push: about a third of a second, critically damped.
+            UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0.6, options: [.allowUserInteraction], animations: {
                 // Inside the block, so the bar's own changes — the back
                 // button arriving — ease in with the slide rather than
                 // landing a beat before it.
@@ -588,11 +605,13 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         coverTimeout = nil
         guard let cover else { return }
         self.cover = nil
-        // One frame for WebKit to present the home view, then a short fade so
-        // a stale detail or two (a light that changed) dissolves rather than
-        // pops.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            UIView.animate(withDuration: 0.16, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
+        // A few frames for WebKit to present the home view — including the
+        // page taking back the 18pt the room page pads for its eyebrow, which
+        // it does a message round-trip after the heading changes — then a
+        // short fade so a stale detail or two (a light that changed)
+        // dissolves rather than pops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            UIView.animate(withDuration: 0.18, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
         }
     }
 
@@ -740,6 +759,10 @@ protocol PageSnapshotting: AnyObject {
     /// a bar that changed first read as a jump. Ending it applies whatever
     /// arrived meanwhile.
     func setPushing(_ pushing: Bool)
+    /// The page's scroll offset, so a pop can put the home back where the
+    /// snapshot shows it.
+    var pageOffset: CGFloat { get }
+    func restorePageOffset(_ offset: CGFloat)
 }
 
 final class WebHostingController<Content: View>: UIHostingController<Content>, PageSnapshotting {
@@ -767,6 +790,26 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     private var pushing = false
     private weak var boundModel: NativeHeaderModel?
 
+    var pageOffset: CGFloat {
+        guard let scroll = webScrollView else { return 0 }
+        return scroll.contentOffset.y + scroll.adjustedContentInset.top
+    }
+
+    /// Back to `offset` (as `pageOffset` reports it), clamped to what the
+    /// page can now scroll to, without animation.
+    func restorePageOffset(_ offset: CGFloat) {
+        guard let scroll = webScrollView else { return }
+        let top = -scroll.adjustedContentInset.top
+        let maxY = max(top, scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height)
+        let y = min(max(top, offset + top), maxY)
+        guard abs(scroll.contentOffset.y - y) > 0.5 else { return }
+        UIView.performWithoutAnimation {
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false)
+        }
+        mirrorOffset()
+        updateTitleTransition()
+    }
+
     func setPushing(_ pushing: Bool) {
         guard self.pushing != pushing else { return }
         self.pushing = pushing
@@ -774,7 +817,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             // Out over the slide, from wherever the scroll had left it. The
             // new page starts at its top, where the inline title is hidden,
             // so this is also where the offset would take it.
-            UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
                 self.inlineTitle.alpha = 0
             }
         } else if let model = boundModel {

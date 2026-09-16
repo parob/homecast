@@ -2651,9 +2651,18 @@ struct WebViewContainer: UIViewRepresentable {
             // beneath it.
             webView.scrollView.contentInsetAdjustmentBehavior = .never
             webView.scrollView.bounces = enabled
+            // `bar` is the whole band above the content — compact bar plus the
+            // large title, plus the eyebrow line on a room page. `base` is the
+            // same without the eyebrow: a page that knows it reads `base` and
+            // adds the eyebrow itself the moment IT changes page, instead of
+            // waiting a round trip for this to say so (during which the home
+            // view sat 18pt low after a pop, then jumped). An older page reads
+            // `bar` as before.
             let tell: (CGFloat, CGFloat) -> Void = { [weak webView] bar, status in
+                let eyebrow = WebHostingLayout.eyebrowHeight
+                let base = bar - (NativeHeaderModel.shared.isOnPage && bar > status ? eyebrow : 0)
                 webView?.evaluateJavaScript(
-                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())));",
+                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())), \(Int(base.rounded())), \(Int(eyebrow.rounded())));",
                     completionHandler: nil
                 )
             }
