@@ -454,6 +454,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         self.model = model
         super.init()
         nav.delegate = self
+        (nav.navigationBar as? PassthroughNavigationBar)?.showTitle((web as? NativeHeaderTitleProviding)?.compactHeaderTitle)
         model.pageWillAppear = { [weak self] in self?.capture() }
         model.painted = { [weak self] in self?.pagePainted() }
         cancellable = model.objectWillChange
@@ -556,7 +557,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             // vanished when it landed read as a flash.
             ghost.navigationItem.title = nil
             if pendingHomeInlineTitle, let page = web as? PageSnapshotting {
-                ghost.navigationItem.titleView = page.compactTitleLookalike(model.title)
+                ghost.compactHeaderTitle = page.compactTitleLookalike(model.title)
             }
             pendingHomeInlineTitle = false
             // The same trailing buttons the web controller shows, as
@@ -570,6 +571,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             ghost.navigationItem.rightBarButtonItems = (web.navigationItem.rightBarButtonItems ?? []).map { item in
                 let twin = UIBarButtonItem(image: item.image, style: .plain, target: nil, action: nil)
                 twin.accessibilityLabel = item.accessibilityLabel
+                twin.tintColor = item.tintColor ?? nav.navigationBar.tintColor
                 return twin
             }
             self.ghost = ghost
@@ -688,6 +690,15 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
 
 
     func navigationController(_ navigationController: UINavigationController, willShow viewController: UIViewController, animated: Bool) {
+        let bar = navigationController.navigationBar as? PassthroughNavigationBar
+        bar?.showTitle((viewController as? NativeHeaderTitleProviding)?.compactHeaderTitle, animated: animated)
+        if let coordinator = navigationController.transitionCoordinator, coordinator.isInteractive {
+            coordinator.notifyWhenInteractionChanges { [weak self, weak bar] context in
+                if context.isCancelled {
+                    bar?.showTitle((self?.web as? NativeHeaderTitleProviding)?.compactHeaderTitle, animated: true)
+                }
+            }
+        }
         guard let ghost, viewController === ghost, animated else { return }
         // A pop towards the ghost has begun. Send the page home as soon as
         // the pop is certain to land: now for a tap on the back button, or
@@ -735,6 +746,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     }
 
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
+        (navigationController.navigationBar as? PassthroughNavigationBar)?.showTitle((viewController as? NativeHeaderTitleProviding)?.compactHeaderTitle)
         guard let ghost, viewController === ghost, let web, let nav else { return }
         // The pop has landed: the ghost is all that is on the stack.
         self.ghost = nil
@@ -824,7 +836,8 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
 
     /// Stands in for the home view under the web controller: a snapshot of
     /// it, or the page's backdrop colour.
-    final class GhostController: UIViewController {
+    final class GhostController: UIViewController, NativeHeaderTitleProviding {
+        var compactHeaderTitle: UIView?
         private var snapshot: UIView?
         private let fallback: () -> UIColor
 
@@ -875,6 +888,47 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
 /// floats over must stay tappable.
 final class PassthroughNavigationBar: UINavigationBar {
     var passesThrough = false
+    private let titleContainer = UIView()
+    private weak var centeredTitle: UIView?
+
+    // Own the title's placement. iOS 26's titleView layout differs between a
+    // fresh root item and an item returned from a room; an invisible leading
+    // bar item balances it but gets morphed into a box by the back animation.
+    // The title has no glass of its own, so keep it outside those item groups.
+    func showTitle(_ title: UIView?, animated: Bool = false) {
+        if titleContainer.superview == nil { addSubview(titleContainer) }
+        guard centeredTitle !== title else { setNeedsLayout(); return }
+        let replace = {
+            self.centeredTitle?.removeFromSuperview()
+            self.centeredTitle = title
+            if let title { self.titleContainer.addSubview(title) }
+            self.layoutCenteredTitle()
+        }
+        if animated {
+            UIView.transition(with: titleContainer, duration: 0.2,
+                              options: [.transitionCrossDissolve, .allowUserInteraction, .beginFromCurrentState],
+                              animations: replace)
+        } else {
+            UIView.performWithoutAnimation(replace)
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutCenteredTitle()
+        if titleContainer.superview === self { bringSubviewToFront(titleContainer) }
+    }
+
+    private func layoutCenteredTitle() {
+        guard let title = centeredTitle else { titleContainer.frame = .zero; return }
+        let size = title.intrinsicContentSize
+        titleContainer.frame = CGRect(x: (bounds.width - size.width) / 2,
+                                      y: (min(bounds.height, 44) - size.height) / 2,
+                                      width: size.width, height: size.height)
+        title.frame = titleContainer.bounds
+        title.setNeedsLayout()
+        title.layoutIfNeeded()
+    }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
@@ -943,7 +997,11 @@ enum WebHostingLayout {
 /// What the navigator needs of the page's controller for its transitions:
 /// a picture of the page as it is on screen, and a way to hold the bar's
 /// title still while a push is drawn.
-protocol PageSnapshotting: AnyObject {
+protocol NativeHeaderTitleProviding: AnyObject {
+    var compactHeaderTitle: UIView? { get }
+}
+
+protocol PageSnapshotting: NativeHeaderTitleProviding {
     func snapshotImage() -> UIImage?
     /// The page as WebKit would paint it now, asked of WebKit itself. For a
     /// view that has only just been laid out: UIKit's snapshot of a web view
@@ -1006,6 +1064,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     private weak var boundModel: NativeHeaderModel?
 
     var inlineTitleAlpha: CGFloat { inlineTitle.alpha }
+    var compactHeaderTitle: UIView? { largeTitleEnabled ? inlineTitleHost : nil }
 
     var pageOffset: CGFloat {
         guard let scroll = webScrollView else { return 0 }
@@ -1079,7 +1138,6 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         proxy.onAdjustedInsetChange = { [weak self] in self?.mirrorOffset() }
         view.insertSubview(proxy, at: 0)
 
-        navigationItem.titleView = inlineTitleHost
         buildLargeTitle()
     }
 
@@ -1145,7 +1203,14 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             largeTitleArea.superview?.bringSubviewToFront(largeTitleArea)
         }
         layoutLargeTitle()
+        syncCompactTitle()
         reportInsetsIfChanged()
+    }
+
+    private func syncCompactTitle() {
+        guard let nav = navigationController, nav.topViewController === self,
+              nav.transitionCoordinator == nil else { return }
+        (nav.navigationBar as? PassthroughNavigationBar)?.showTitle(compactHeaderTitle)
     }
 
     /// A rotation changes the status bar and the bar's own height; the page
@@ -1290,12 +1355,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         return label
     }()
 
-    /// Holds the inline title as the bar's title view.
-    ///
-    /// It has to say how big it is: the bar sizes a title view from its
-    /// intrinsic size, and a plain view has none, so the bar squeezed it to
-    /// a sliver and the texts inside hyphenated over three lines ("Bed-
-    /// rooms"). Measured on an iPhone 16 Pro Max.
+    /// Gives the bar an explicit size for the title and keeps its button
+    /// centred as a two-line room title changes to a one-line home title.
     private final class InlineTitleHost: UIView {
         private let button: UIButton
 
@@ -1317,7 +1378,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            // UIKit owns this host's frame, including while it changes from
+            // The bar owns this host's frame, including while it changes from
             // a two-line room title to the one-line home title during a pop.
             // Centre in the bounds it actually assigned, not the size we
             // requested before the navigation bar has laid out again.
@@ -1331,14 +1392,9 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// between its trailing buttons and their mirror on the left — beyond
     /// that the texts truncate.
     private func layoutInlineTitles() {
-        let grew = Self.layoutInlineTitle(inlineTitle, in: inlineTitleHost, available: max(80, view.bounds.width - 2 * 120))
-        // The bar measures a title view when it is attached and not again:
-        // a host attached empty and filled later stayed a sliver ("Bedr…",
-        // "Clither…"). Re-attaching it is what makes the bar look again.
-        if grew, navigationItem.titleView === inlineTitleHost {
-            navigationItem.titleView = nil
-            navigationItem.titleView = inlineTitleHost
-        }
+        Self.layoutInlineTitle(inlineTitle, in: inlineTitleHost, available: max(80, view.bounds.width - 2 * 120))
+        syncCompactTitle()
+        navigationController?.navigationBar.setNeedsLayout()
     }
 
     /// Sizes the button to its text and the host to the button, and says
@@ -1623,7 +1679,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
                 return "\(type(of: v)) frame=\(v.frame) alpha=\(v.alpha) bg=\(v.backgroundColor.map { String(describing: $0) } ?? "nil") ui=\(v.isUserInteractionEnabled) subs=\(v.subviews.count) grs=\(v.gestureRecognizers?.map { String(describing: type(of: $0)) } ?? []) chain=\(chain.joined(separator: " < "))"
             }
             log.append("   HIT mid: \(describe(hitWin))")
-            let tv = self.navigationItem.titleView
+            let tv = self.compactHeaderTitle
             log.append("   TITLE host=\(self.inlineTitleHost.frame) bounds=\(self.inlineTitleHost.bounds) pref=\(self.inlineTitleHost.preferredSize) win=\(self.inlineTitleHost.superview.map { $0.convert(self.inlineTitleHost.frame, to: nil) } ?? .zero) super=\(tv?.superview.map { String(describing: type(of: $0)) } ?? "nil") superFrame=\(tv?.superview?.frame ?? .zero) isHost=\(tv === self.inlineTitleHost) btn=\(self.inlineTitle.frame) btnAlpha=\(self.inlineTitle.alpha) lbl=\(self.inlineTitle.titleLabel?.frame ?? .zero) lblText=\(self.inlineTitle.titleLabel?.text ?? "") sub=\(self.inlineTitle.subtitleLabel?.frame ?? .zero) eyebrow=\(self.largeEyebrowLabel.frame) eyebrowHidden=\(self.largeEyebrowLabel.isHidden) viewW=\(self.view.bounds.width) constraints=\(self.inlineTitleHost.constraints.count) tam=\(self.inlineTitleHost.translatesAutoresizingMaskIntoConstraints)")
             log.append("   TREE self.view: \(self.view.subviews.map { "\(type(of: $0))\($0.frame)" }) nav: \(self.navigationController?.view.subviews.map { "\(type(of: $0))\($0.frame)" } ?? [])")
             if let w = webView { log.append("   WEB subs: \(w.subviews.map { "\(type(of: $0))\($0.frame) ui=\($0.isUserInteractionEnabled)" }) scrollSubs: \(scroll.subviews.map { "\(type(of: $0))\($0.frame)" })") }
@@ -1815,6 +1871,10 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         navigationController?.overrideUserInterfaceStyle = style
         let ink: UIColor? = style == .dark ? .white : style == .light ? .black : nil
         navigationController?.navigationBar.tintColor = ink
+        // Keep the icon ink explicit on both the live and captured headers.
+        // Inherited tint lets iOS glass switch contrast during a pop.
+        moreItem.tintColor = ink
+        searchItem.tintColor = ink
         refreshControl.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeEyebrowLabel.textColor = ink?.withAlphaComponent(0.75) ?? .secondaryLabel
@@ -1838,7 +1898,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             // In the sidebar layout the sidebar already names and switches
             // homes, so the bar carries no title at all — just its buttons,
             // floating: no scroll-edge band, and taps beside them fall through.
-            navigationItem.titleView = largeTitleEnabled ? inlineTitleHost : UIView()
+            syncCompactTitle()
             setContentScrollView(largeTitleEnabled ? proxy : nil, for: .top)
             applyEdgeEffects()
             if let bar = navigationController?.navigationBar as? PassthroughNavigationBar {
