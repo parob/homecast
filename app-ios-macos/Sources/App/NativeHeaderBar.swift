@@ -1240,9 +1240,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         button.configuration?.baseForegroundColor = navigationController?.navigationBar.tintColor ?? .label
         button.alpha = 1
         button.isUserInteractionEnabled = false
-        let host = InlineTitleHost()
-        host.clipsToBounds = false
-        host.addSubview(button)
+        let host = InlineTitleHost(button: button)
         Self.layoutInlineTitle(button, in: host, available: max(80, view.bounds.width - 2 * 120))
         return host
     }
@@ -1299,20 +1297,35 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// a sliver and the texts inside hyphenated over three lines ("Bed-
     /// rooms"). Measured on an iPhone 16 Pro Max.
     private final class InlineTitleHost: UIView {
+        private let button: UIButton
+
+        init(button: UIButton) {
+            self.button = button
+            super.init(frame: .zero)
+            clipsToBounds = false
+            addSubview(button)
+            setContentCompressionResistancePriority(.required, for: .horizontal)
+            setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
         var preferredSize = CGSize.zero {
             didSet { if preferredSize != oldValue { invalidateIntrinsicContentSize() } }
         }
         override var intrinsicContentSize: CGSize { preferredSize }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            // UIKit owns this host's frame, including while it changes from
+            // a two-line room title to the one-line home title during a pop.
+            // Centre in the bounds it actually assigned, not the size we
+            // requested before the navigation bar has laid out again.
+            button.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        }
     }
 
-    private lazy var inlineTitleHost: InlineTitleHost = {
-        let host = InlineTitleHost()
-        host.clipsToBounds = false
-        host.addSubview(inlineTitle)
-        host.setContentCompressionResistancePriority(.required, for: .horizontal)
-        host.setContentCompressionResistancePriority(.required, for: .vertical)
-        return host
-    }()
+    private lazy var inlineTitleHost = InlineTitleHost(button: inlineTitle)
 
     /// Size the host to its title, never wider than the room the bar leaves
     /// between its trailing buttons and their mirror on the left — beyond
@@ -1351,8 +1364,12 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         let size = CGSize(width: width, height: height)
         let grew = size != host.preferredSize
         host.preferredSize = size
-        host.frame = CGRect(origin: .zero, size: size)
-        button.center = CGPoint(x: width / 2, y: height / 2)
+        // Seed an unattached title so the bar can measure it. Once attached,
+        // changing its frame here fights the bar's layout: returning from a
+        // room briefly moved the home title right and up on each model update.
+        if host.superview == nil { host.bounds.size = size }
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
         return grew
     }
 
