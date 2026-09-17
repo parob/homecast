@@ -131,7 +131,11 @@ enum AppConfig {
               !raw.isEmpty,
               let url = URL(string: raw), url.scheme != nil, url.host != nil
         else { return nil }
-        return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        let origin = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        // Launch arguments live only for that process. Keep a valid Debug
+        // override so tapping the app icon reopens the same local preview.
+        UserDefaults.standard.set(origin, forKey: "com.homecast.devWebOrigin")
+        return origin
         #else
         return nil
         #endif
@@ -1635,7 +1639,6 @@ struct WebViewContainer: UIViewRepresentable {
         // build sets neither, so the web app reads both as absent and behaves
         // exactly as it does today.
         window.homecastNativeHeaderAvailable = true;
-        window.homecastNativeHomeSwipeAvailable = true;
         window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
         console.log('[Homecast] iOS app detected - HomeKit local capable');

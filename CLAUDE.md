@@ -288,51 +288,56 @@ Messages use this JSON format:
 | `app-web/src/lib/home-cards.ts` | Pure ordering for the merged grid — prefixed keys, unknown keys skipped (unit-tested) |
 | `app-web/src/lib/summary-sections.ts` | Pure catalog + visibility for the summary row and both scene kinds (unit-tested) |
 
-### The summary row
+### Room scenes, status, and Automations
 
-The whole-home view carries three pills — **Scenes**, **Automations**, **Status** — each
-expanding to a card grid, only one open at a time.
+The dashboard places scenes directly in the device grids. A scene targeting one
+known room appears in that room; multi-room scenes, roomless targets, and incomplete
+or unknown targets appear in the home’s **Scenes** section. Derived Homecast actions also stay in
+that section because their controls affect the entire home.
 
-Scenes holds two kinds of card in one grid:
+`app-web/src/lib/scene-rooms.ts` resolves the targets (arrays from Community,
+JSON from Cloud) and matches UUIDs case-insensitively. A scene's **Show in** selector
+writes `HomeLayoutData.sceneRooms`: absent means automatic, `null` means the home’s Scenes section,
+and a room ID overrides placement. This changes presentation only. A deleted room
+falls back to the home’s Scenes section, keeping its scenes reachable.
 
-- **Homecast scenes** — derived by `deriveHomeActions()` from the home's accessories (All
-  lights, Lock up, Everything off). Nothing to author; they appear and disappear with what
-  the home contains. Called Actions internally, and in every stored id.
-- **Apple Home scenes** — the home's own, from `GET_SCENES`.
+`useSceneCards` in `ScenesSection.tsx` supplies the cards, execution state, and dialogs.
+Dashboard uses it above its own LayoutEditProvider, so it passes `layoutEditState`
+explicitly; hidden cards are revealed only after a lift ends. The existing
+ScenesSection wrapper remains for standalone consumers.
 
-They were two pills until they merged. Cards intermix and are dragged into any order,
-persisted as `HomeLayoutData.sceneCardOrder` — a flat list of prefixed keys
-(`action:lights`, `scene:<uuid>`), because the two kinds share no id space. A key that no
-longer resolves is skipped rather than pruned.
+Whole-home and ungrouped orders live in `HomeLayoutData.dashboardItemOrder`,
+keeping them separate for each home. `SceneGridSizing` measures natural content
+to give visible scene cards one shared height while keeping their full names.
 
-Visibility is stored as *hidden* lists in the home layout blob, so absent means shown and
-no migration was ever needed:
+Room `itemOrder` now mixes accessory IDs, `group-<id>`, `action:<id>`, and
+`scene:<uuid>`. The old home `sceneCardOrder` remains the fallback order for scenes
+that have not been arranged in their room. Visible reorders retain absent IDs so
+hidden or offline cards keep their places. Dragging a scene between rooms points
+to its Show in selector; it never rewrites HomeKit targets.
+
+Status is a wrapping row of readings beneath the heading, with tap/hover details
+and the existing Analytics gate. Automations is reached through the top-right
+menu and opens a dialog with both engines, ordering, and hide/unhide controls.
+The tutorial points at that menu rather than expanding an automation grid.
+
+Visibility remains stored as hidden lists, so missing means shown:
 
 | Flag | Hides |
 |------|-------|
-| `visibility.hiddenSummarySections: ['scenes']` | the Apple Home half |
-| `visibility.hiddenSummarySections: ['actions']` | the Homecast half |
-| both | the Scenes pill itself |
-| `visibility.hiddenActions: [...]` | individual Homecast scenes |
-| `visibility.hiddenScenes: [...]` | individual Apple Home scenes, by id |
+| `hiddenSummarySections: ['scenes']` | Apple Home scene cards |
+| `hiddenSummarySections: ['actions']` | Derived Homecast scene cards |
+| `hiddenSummarySections: ['status']` | Whole-home status readings |
+| `hiddenActions` / `hiddenScenes` | Individual cards |
+| `hiddenAutomations` | Individual automation cards |
 
-`actions` is a **content flag, not a pill**, and must stay in `SUMMARY_SECTION_ORDER` —
-every write is normalised through that array, so removing it would silently un-hide the
-Homecast scenes of anyone who had already turned them off. `SUMMARY_PILL_ORDER` is what
-the row renders.
-
-`hiddenScenes` deliberately does **not** normalise through a canonical order the way the
-other two do (`withSceneVisibility`, not `toggleIn`): a home's scenes come from the relay,
-so the list is empty while it is offline, and filtering through it would drop every hidden
-scene the moment anything was toggled. Sorted on write instead, for stable JSON.
-
-Hiding an Apple Home scene only hides the card — the scene stays in Apple Home. A hidden
-card has nothing to right-click, so it has to be revealed before it can be brought back:
-touch enters Edit Layout, a desktop uses **Show Hidden Items**, and the revealed card
-carries the Unhide badge or menu item. `ScenesSection` takes a `showHidden` prop and
-computes one `reveal` for the whole grid — both kinds obey it, because it is one grid and
-revealing half of it would be a puzzle. Settings → Home Screen still carries the two
-half-switches, which hide each *kind* wholesale and are a different control.
+Keep `actions` and the legacy `automations` value in `SUMMARY_SECTION_ORDER`:
+normalising a write must not silently discard old settings. The old Automations
+section switch no longer controls access to its menu. Settings → Home Screen
+controls the two scene kinds and status. Individual cards are revealed through
+Edit Layout on touch or Show Hidden Items on desktop, then unhidden on the card.
+`hiddenScenes` must not be normalised against the currently fetched scene list:
+that list can be empty while the relay is offline.
 
 ## Analytics on a share link
 
