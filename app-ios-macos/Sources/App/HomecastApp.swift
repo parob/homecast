@@ -1638,6 +1638,7 @@ struct WebViewContainer: UIViewRepresentable {
         // build sets neither, so the web app reads both as absent and behaves
         // exactly as it does today.
         window.homecastNativeHeaderAvailable = true;
+        window.homecastNativeHomeSwipeAvailable = true;
         window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
         console.log('[Homecast] iOS app detected - HomeKit local capable');
@@ -2651,9 +2652,18 @@ struct WebViewContainer: UIViewRepresentable {
             // beneath it.
             webView.scrollView.contentInsetAdjustmentBehavior = .never
             webView.scrollView.bounces = enabled
+            // `bar` is the whole band above the content — compact bar plus the
+            // large title, plus the eyebrow line on a room page. `base` is the
+            // same without the eyebrow: a page that knows it reads `base` and
+            // adds the eyebrow itself the moment IT changes page, instead of
+            // waiting a round trip for this to say so (during which the home
+            // view sat 18pt low after a pop, then jumped). An older page reads
+            // `bar` as before.
             let tell: (CGFloat, CGFloat) -> Void = { [weak webView] bar, status in
+                let eyebrow = WebHostingLayout.eyebrowHeight
+                let base = bar - (NativeHeaderModel.shared.isOnPage && bar > status ? eyebrow : 0)
                 webView?.evaluateJavaScript(
-                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())));",
+                    "window.__homecastNativeHeader && window.__homecastNativeHeader.setEnabled(\(enabled), \(Int(bar.rounded())), \(Int(status.rounded())), \(Int(base.rounded())), \(Int(eyebrow.rounded())));",
                     completionHandler: nil
                 )
             }
@@ -2718,6 +2728,15 @@ struct WebViewContainer: UIViewRepresentable {
             case "header.refreshDone":
                 #if os(iOS) && !targetEnvironment(macCatalyst)
                 Task { @MainActor in NativeHeaderModel.shared.refreshDone?() }
+                #endif
+                // The Mac has no native bar, so the `#if` above compiles to
+                // nothing there — and a case needs a statement.
+                break
+            case "header.painted":
+                // The page has drawn the view whose heading it just sent;
+                // the navigator's slide waits for this.
+                #if os(iOS) && !targetEnvironment(macCatalyst)
+                Task { @MainActor in NativeHeaderModel.shared.painted?() }
                 #endif
                 // The Mac has no native bar, so the `#if` above compiles to
                 // nothing there — and a case needs a statement.
