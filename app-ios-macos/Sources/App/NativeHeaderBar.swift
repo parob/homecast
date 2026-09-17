@@ -399,6 +399,9 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
         return pan
     }()
     private var homeInteraction: UIPercentDrivenInteractiveTransition?
+    private var homePanDirection: CGFloat = 1
+    private var homePanStartX: CGFloat = 0
+    private let homeEdgeWidth: CGFloat = 48
     private let homePictures: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 4
@@ -664,11 +667,11 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
         if !onPage { prepareHomeSwipe() }
     }
 
-    private var previousHome: NativeHeaderModel.Home? {
+    private func adjacentHome(direction: CGFloat) -> NativeHeaderModel.Home? {
         guard model.enabled, model.largeTitle, model.showMenu, !model.isOnPage,
               let current = model.currentHomeId, model.homes.count > 1,
               let index = model.homes.firstIndex(where: { $0.id == current }) else { return nil }
-        return model.homes[(index + model.homes.count - 1) % model.homes.count]
+        return model.homes[(index + model.homes.count + (direction > 0 ? -1 : 1)) % model.homes.count]
     }
 
     private func pictureKey(_ id: String) -> NSString {
@@ -685,7 +688,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
         guard let nav, let web, homeSwipe == nil, cover == nil,
               !awaitingHome, roomOverlay == nil, nav.transitionCoordinator == nil,
               nav.topViewController === web, ghost == nil || ghost?.homeID != nil else { return }
-        guard let previous = previousHome else {
+        guard let previous = adjacentHome(direction: 1) else {
             homePan.isEnabled = false
             if ghost?.homeID != nil {
                 ghost = nil
@@ -694,50 +697,62 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             web.navigationItem.hidesBackButton = false
             return
         }
-        web.navigationItem.hidesBackButton = true
-        if ghost?.homeID != previous.id {
-            let image = homePictures.object(forKey: pictureKey(previous.id))
-            let destination = GhostController(snapshot: image.map(Self.still), fallback: { [weak web] in
-                web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
-            })
-            destination.homeID = previous.id
-            destination.navigationItem.hidesBackButton = true
-            destination.navigationItem.rightBarButtonItems = (web.navigationItem.rightBarButtonItems ?? []).map { item in
-                let ink = item.tintColor ?? nav.navigationBar.tintColor ?? .label
-                let image = item.image?.withTintColor(ink, renderingMode: .alwaysOriginal)
-                let twin = UIBarButtonItem(image: image, style: .plain, target: nil, action: nil)
-                twin.accessibilityLabel = item.accessibilityLabel
-                twin.tintColor = ink
-                return twin
-            }
-            ghost = destination
-            nav.setViewControllers([destination, web], animated: false)
-        }
+        installHomeDestination(previous)
         homePan.isEnabled = true
     }
 
+    private func installHomeDestination(_ home: NativeHeaderModel.Home) {
+        guard let nav, let web else { return }
+        web.navigationItem.hidesBackButton = true
+        guard ghost?.homeID != home.id else { return }
+        let image = homePictures.object(forKey: pictureKey(home.id))
+        let placeholder = HomeLoadingView(name: home.name, dark: model.appearance == "dark",
+                                          topInset: nav.navigationBar.frame.maxY)
+        let destination = GhostController(snapshot: image.map(Self.still) ?? placeholder, fallback: { [weak web] in
+            web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
+        })
+        destination.homeID = home.id
+        destination.navigationItem.hidesBackButton = true
+        destination.navigationItem.rightBarButtonItems = (web.navigationItem.rightBarButtonItems ?? []).map { item in
+            let ink = item.tintColor ?? nav.navigationBar.tintColor ?? .label
+            let image = item.image?.withTintColor(ink, renderingMode: .alwaysOriginal)
+            let twin = UIBarButtonItem(image: image, style: .plain, target: nil, action: nil)
+            twin.accessibilityLabel = item.accessibilityLabel
+            twin.tintColor = ink
+            return twin
+        }
+        ghost = destination
+        nav.setViewControllers([destination, web], animated: false)
+    }
+
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === homePan, let nav, previousHome != nil,
+        guard gestureRecognizer === homePan, let nav, adjacentHome(direction: 1) != nil,
               !model.covered, !model.dimmed, homeSwipe == nil, cover == nil,
               nav.transitionCoordinator == nil, nav.viewControllers.count == 2 else { return false }
         let velocity = homePan.velocity(in: nav.view)
-        return velocity.x > 0 && abs(velocity.x) > abs(velocity.y)
+        guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
+        homePanDirection = velocity.x > 0 ? 1 : -1
+        return homePanDirection > 0 ? homePanStartX <= homeEdgeWidth
+            : homePanStartX >= nav.view.bounds.width - homeEdgeWidth
     }
 
     @objc private func panHome(_ pan: UIPanGestureRecognizer) {
         guard let nav else { return }
         let width = max(1, nav.view.bounds.width)
-        let progress = min(1, max(0, pan.translation(in: nav.view).x / width))
+        let progress = min(1, max(0, homePanDirection * pan.translation(in: nav.view).x / width))
         switch pan.state {
         case .began:
+            guard let home = adjacentHome(direction: homePanDirection) else { return }
+            installHomeDestination(home)
             let interaction = UIPercentDrivenInteractiveTransition()
             interaction.completionCurve = .easeOut
+            interaction.timingCurve = UISpringTimingParameters(dampingRatio: 0.86)
             homeInteraction = interaction
             nav.popViewController(animated: true)
         case .changed:
             homeInteraction?.update(progress)
         case .ended:
-            let projected = progress + pan.velocity(in: nav.view).x / width * 0.2
+            let projected = progress + homePanDirection * pan.velocity(in: nav.view).x / width * 0.2
             if projected > 0.5 { homeInteraction?.finish() }
             else { homeInteraction?.cancel() }
         case .cancelled, .failed:
@@ -747,27 +762,37 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        let x = touch.location(in: nav?.view).x
-        return gestureRecognizer === homePan && x >= 0 && x <= 24
+        guard gestureRecognizer === homePan, let nav else { return false }
+        homePanStartX = touch.location(in: nav.view).x
+        return homePanStartX >= 0 && homePanStartX <= nav.view.bounds.width
+            && (homePanStartX <= homeEdgeWidth || homePanStartX >= nav.view.bounds.width - homeEdgeWidth)
     }
 
     /// UIKit owns progress, completion and cancellation. The content uses
     /// the same pop geometry as room Back: foreground moves one screen,
     /// destination moves a third, with the same leading shadow and dimming.
     private final class HomePopAnimator: NSObject, UIViewControllerAnimatedTransitioning {
-        func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval { 0.35 }
+        let direction: CGFloat
+        private var animator: UIViewPropertyAnimator?
+        init(direction: CGFloat) { self.direction = direction }
+        func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval { 0.4 }
 
         func animateTransition(using context: UIViewControllerContextTransitioning) {
+            interruptibleAnimator(using: context).startAnimation()
+        }
+
+        func interruptibleAnimator(using context: UIViewControllerContextTransitioning) -> UIViewImplicitlyAnimating {
+            if let animator { return animator }
             guard let from = context.view(forKey: .from), let to = context.view(forKey: .to),
                   let destination = context.viewController(forKey: .to) else {
                 context.completeTransition(false)
-                return
+                return UIViewPropertyAnimator(duration: 0, curve: .linear)
             }
             let container = context.containerView
             let width = container.bounds.width
             to.frame = context.finalFrame(for: destination)
             container.insertSubview(to, belowSubview: from)
-            to.transform = CGAffineTransform(translationX: -width / 3, y: 0)
+            to.transform = CGAffineTransform(translationX: -direction * width / 3, y: 0)
             let veil = UIView(frame: to.bounds)
             veil.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             veil.backgroundColor = .black
@@ -778,27 +803,32 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             shadow.layer.shadowColor = UIColor.black.cgColor
             shadow.layer.shadowOpacity = 0.12
             shadow.layer.shadowRadius = 8
-            shadow.layer.shadowOffset = CGSize(width: -3, height: 0)
+            shadow.layer.shadowOffset = CGSize(width: -direction * 3, height: 0)
             container.insertSubview(shadow, belowSubview: from)
-            UIView.animate(withDuration: transitionDuration(using: context), delay: 0, options: [.curveLinear], animations: {
-                from.transform = CGAffineTransform(translationX: width, y: 0)
+            let animator = UIViewPropertyAnimator(duration: transitionDuration(using: context), dampingRatio: 0.86) {
+                from.transform = CGAffineTransform(translationX: self.direction * width, y: 0)
                 shadow.transform = from.transform
                 to.transform = .identity
                 veil.alpha = 0
-            }, completion: { _ in
+            }
+            animator.scrubsLinearly = true
+            animator.addCompletion { _ in
                 let completed = !context.transitionWasCancelled
                 veil.removeFromSuperview()
                 shadow.removeFromSuperview()
                 from.transform = .identity
                 to.transform = .identity
                 context.completeTransition(completed)
-            })
+                self.animator = nil
+            }
+            self.animator = animator
+            return animator
         }
     }
 
     func navigationController(_ navigationController: UINavigationController, animationControllerFor operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
         guard operation == .pop, homeInteraction != nil, (toVC as? GhostController)?.homeID != nil else { return nil }
-        return HomePopAnimator()
+        return HomePopAnimator(direction: homePanDirection)
     }
 
     func navigationController(_ navigationController: UINavigationController, interactionControllerFor animationController: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
@@ -1149,6 +1179,70 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             if let color = web.scrollView.backgroundColor ?? web.backgroundColor { return color }
         }
         return .systemBackground
+    }
+
+    /// A never-visited home has no cached picture. Give it an identity and
+    /// a quiet tile skeleton immediately, before the web process can respond.
+    private final class HomeLoadingView: UIView {
+        private let title = UILabel()
+        private let status = UILabel()
+        private let spinner = UIActivityIndicatorView(style: .medium)
+        private var tiles: [UIView] = []
+        private let topInset: CGFloat
+
+        init(name: String, dark: Bool, topInset: CGFloat) {
+            self.topInset = topInset
+            super.init(frame: .zero)
+            let ink: UIColor = dark ? .white : .label
+            title.text = name
+            title.font = .systemFont(ofSize: 34, weight: .bold)
+            title.textColor = ink
+            title.numberOfLines = 2
+            status.text = "Loading home…"
+            status.font = .systemFont(ofSize: 13, weight: .medium)
+            status.textColor = ink.withAlphaComponent(0.6)
+            spinner.color = status.textColor
+            spinner.startAnimating()
+            [title, status, spinner].forEach(addSubview)
+            for _ in 0..<6 {
+                let tile = UIView()
+                tile.backgroundColor = ink.withAlphaComponent(0.08)
+                tile.layer.cornerRadius = 16
+                let icon = UIView()
+                icon.backgroundColor = ink.withAlphaComponent(0.12)
+                icon.layer.cornerRadius = 16
+                icon.frame = CGRect(x: 12, y: 12, width: 32, height: 32)
+                let label = UIView()
+                label.backgroundColor = ink.withAlphaComponent(0.1)
+                label.layer.cornerRadius = 3
+                label.frame = CGRect(x: 12, y: 57, width: 72, height: 8)
+                tile.addSubview(icon)
+                tile.addSubview(label)
+                addSubview(tile)
+                tiles.append(tile)
+            }
+            isAccessibilityElement = true
+            accessibilityLabel = "\(name), loading home"
+            accessibilityIdentifier = "home-swipe-placeholder"
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let inset = max(topInset, safeAreaInsets.top)
+            let width = max(0, bounds.width - 32)
+            let titleHeight = title.sizeThatFits(CGSize(width: width, height: 90)).height
+            title.frame = CGRect(x: 16, y: inset + 6, width: width, height: titleHeight)
+            spinner.frame = CGRect(x: 16, y: title.frame.maxY + 9, width: 20, height: 20)
+            status.frame = CGRect(x: 43, y: spinner.frame.minY, width: width - 27, height: 20)
+            let tileWidth = (bounds.width - 32 - 8) / 2
+            for (index, tile) in tiles.enumerated() {
+                tile.frame = CGRect(x: 16 + CGFloat(index % 2) * (tileWidth + 8),
+                                    y: status.frame.maxY + 18 + CGFloat(index / 2) * 108,
+                                    width: tileWidth, height: 100)
+            }
+        }
     }
 
     /// Stands in for the home view under the web controller: a snapshot of
