@@ -521,6 +521,10 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
     /// it stays in a window, and both a copy kept aside for the ghost and one
     /// re-parented into it after the push came up blank grey.
     private func capture() {
+        // The sidebar already provides navigation in the wide layout. Leave
+        // its selections to the web page's existing transition; only the
+        // compact, large-title layout pushes a room over the whole home.
+        guard model.enabled, model.largeTitle else { return }
         // A home has its previous neighbour underneath it solely for the
         // edge gesture. A room needs the current home underneath instead.
         if ghost?.homeID != nil, homeSwipe == nil, let nav, let web {
@@ -557,7 +561,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
     private func apply() {
         guard let nav, let web else { return }
         guard homeSwipe == nil else { return }
-        let onPage = model.enabled && model.isOnPage
+        let onPage = model.enabled && model.largeTitle && model.isOnPage
         defer { wasOnPage = onPage }
 
         if awaitingHome, !model.isOnPage {
