@@ -1638,6 +1638,7 @@ struct WebViewContainer: UIViewRepresentable {
         // build sets neither, so the web app reads both as absent and behaves
         // exactly as it does today.
         window.homecastNativeHeaderAvailable = true;
+        window.homecastNativeHomeSwipeAvailable = true;
         window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
         console.log('[Homecast] iOS app detected - HomeKit local capable');

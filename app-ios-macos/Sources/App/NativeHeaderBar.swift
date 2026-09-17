@@ -381,12 +381,53 @@ struct NativeHeaderHost<Content: View>: UIViewControllerRepresentable {
 ///
 /// Going home any other way — the title menu, the page's own controls —
 /// takes the ghost out without animation: there is nothing to slide.
-final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
+final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIGestureRecognizerDelegate {
     private weak var nav: UINavigationController?
     private weak var web: UIViewController?
     private let model: NativeHeaderModel
     private var cancellable: AnyCancellable?
     private var ghost: GhostController?
+    // A bounded pan also works over WKWebView: its touch-action recognizers
+    // can reject a UIScreenEdgePanGestureRecognizer before it begins. UIKit
+    // still owns the interactive navigation transition.
+    private lazy var homePan: UIPanGestureRecognizer = {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panHome(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = self
+        return pan
+    }()
+    private var homeInteraction: UIPercentDrivenInteractiveTransition?
+    private let homePictures: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 4
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
+
+    /// A UIKit interactive pop like room Back, with the outgoing home held in a
+    /// picture while the single web view renders the home being revealed.
+    private final class HomeSwipe {
+        let fromID: String
+        let toID: String
+        let offset: CGFloat
+        let overlay: UIView
+        let destination: GhostController
+        var cancelled = false
+        var landed = false
+        var readyID: String?
+        var renderingID: String?
+        var timeout: DispatchWorkItem?
+        var expectedID: String { cancelled ? fromID : toID }
+
+        init(fromID: String, toID: String, offset: CGFloat, overlay: UIView, destination: GhostController) {
+            self.fromID = fromID
+            self.toID = toID
+            self.offset = offset
+            self.overlay = overlay
+            self.destination = destination
+        }
+    }
+    private var homeSwipe: HomeSwipe?
     /// The home view, captured as the page left it for a room: one copy to
     /// slide away for the push, one for the ghost to stand behind the pop.
     private var pendingSnapshot: UIView?
@@ -420,6 +461,10 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     private var pendingLiftFallback: DispatchWorkItem?
 
     private func pagePainted() {
+        if homeSwipe != nil {
+            renderHomeSwipe()
+            return
+        }
         if let start = pendingPushStart {
             pendingPushStart = nil
             pendingPushFallback?.cancel()
@@ -454,6 +499,11 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         self.model = model
         super.init()
         nav.delegate = self
+        nav.view.addGestureRecognizer(homePan)
+        nav.interactivePopGestureRecognizer?.require(toFail: homePan)
+        if #available(iOS 26.0, *) {
+            nav.interactiveContentPopGestureRecognizer?.require(toFail: homePan)
+        }
         (nav.navigationBar as? PassthroughNavigationBar)?.showTitle((web as? NativeHeaderTitleProviding)?.compactHeaderTitle)
         model.pageWillAppear = { [weak self] in self?.capture() }
         model.painted = { [weak self] in self?.pagePainted() }
@@ -471,6 +521,14 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// it stays in a window, and both a copy kept aside for the ghost and one
     /// re-parented into it after the push came up blank grey.
     private func capture() {
+        // A home has its previous neighbour underneath it solely for the
+        // edge gesture. A room needs the current home underneath instead.
+        if ghost?.homeID != nil, homeSwipe == nil, let nav, let web {
+            ghost = nil
+            homePan.isEnabled = false
+            web.navigationItem.hidesBackButton = false
+            nav.setViewControllers([web], animated: false)
+        }
         guard let web, web.isViewLoaded, ghost == nil, cover == nil else { return }
         guard let page = web as? PageSnapshotting, let image = page.snapshotImage() else { return }
         pendingSnapshot = Self.still(image)
@@ -498,6 +556,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
 
     private func apply() {
         guard let nav, let web else { return }
+        guard homeSwipe == nil else { return }
         let onPage = model.enabled && model.isOnPage
         defer { wasOnPage = onPage }
 
@@ -582,7 +641,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 nav.setViewControllers([ghost, web], animated: false)
                 (web as? PageSnapshotting)?.setPushing(false)
             }
-        } else if !onPage, ghost != nil, !awaitingHome, nav.viewControllers.count == 2 {
+        } else if !onPage, ghost != nil, ghost?.homeID == nil, !awaitingHome, nav.viewControllers.count == 2 {
             // Home by some other road: no pop to animate.
             nav.setViewControllers([web], animated: false)
             ghost = nil
@@ -596,6 +655,220 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             pendingPushCover = nil
             pendingHomeOffset = nil
         }
+        if !onPage { prepareHomeSwipe() }
+    }
+
+    private var previousHome: NativeHeaderModel.Home? {
+        guard model.enabled, model.largeTitle, model.showMenu, !model.isOnPage,
+              let current = model.currentHomeId, model.homes.count > 1,
+              let index = model.homes.firstIndex(where: { $0.id == current }) else { return nil }
+        return model.homes[(index + model.homes.count - 1) % model.homes.count]
+    }
+
+    private func pictureKey(_ id: String) -> NSString {
+        let size = nav?.view.bounds.size ?? .zero
+        return "\(id):\(Int(size.width))x\(Int(size.height))" as NSString
+    }
+
+    private func cacheHomePicture(_ image: UIImage, id: String) {
+        homePictures.setObject(image, forKey: pictureKey(id),
+                               cost: (image.cgImage?.bytesPerRow ?? 0) * (image.cgImage?.height ?? 0))
+    }
+
+    private func prepareHomeSwipe() {
+        guard let nav, let web, homeSwipe == nil, cover == nil,
+              !awaitingHome, roomOverlay == nil, nav.transitionCoordinator == nil,
+              nav.topViewController === web, ghost == nil || ghost?.homeID != nil else { return }
+        guard let previous = previousHome else {
+            homePan.isEnabled = false
+            if ghost?.homeID != nil {
+                ghost = nil
+                nav.setViewControllers([web], animated: false)
+            }
+            web.navigationItem.hidesBackButton = false
+            return
+        }
+        web.navigationItem.hidesBackButton = true
+        if ghost?.homeID != previous.id {
+            let image = homePictures.object(forKey: pictureKey(previous.id))
+            let destination = GhostController(snapshot: image.map(Self.still), fallback: { [weak web] in
+                web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
+            })
+            destination.homeID = previous.id
+            destination.navigationItem.hidesBackButton = true
+            destination.navigationItem.rightBarButtonItems = (web.navigationItem.rightBarButtonItems ?? []).map { item in
+                let ink = item.tintColor ?? nav.navigationBar.tintColor ?? .label
+                let image = item.image?.withTintColor(ink, renderingMode: .alwaysOriginal)
+                let twin = UIBarButtonItem(image: image, style: .plain, target: nil, action: nil)
+                twin.accessibilityLabel = item.accessibilityLabel
+                twin.tintColor = ink
+                return twin
+            }
+            ghost = destination
+            nav.setViewControllers([destination, web], animated: false)
+        }
+        homePan.isEnabled = true
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === homePan, let nav, previousHome != nil,
+              !model.covered, !model.dimmed, homeSwipe == nil, cover == nil,
+              nav.transitionCoordinator == nil, nav.viewControllers.count == 2 else { return false }
+        let velocity = homePan.velocity(in: nav.view)
+        return velocity.x > 0 && abs(velocity.x) > abs(velocity.y)
+    }
+
+    @objc private func panHome(_ pan: UIPanGestureRecognizer) {
+        guard let nav else { return }
+        let width = max(1, nav.view.bounds.width)
+        let progress = min(1, max(0, pan.translation(in: nav.view).x / width))
+        switch pan.state {
+        case .began:
+            let interaction = UIPercentDrivenInteractiveTransition()
+            interaction.completionCurve = .easeOut
+            homeInteraction = interaction
+            nav.popViewController(animated: true)
+        case .changed:
+            homeInteraction?.update(progress)
+        case .ended:
+            let projected = progress + pan.velocity(in: nav.view).x / width * 0.2
+            if projected > 0.5 { homeInteraction?.finish() }
+            else { homeInteraction?.cancel() }
+        case .cancelled, .failed:
+            homeInteraction?.cancel()
+        default: break
+        }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        let x = touch.location(in: nav?.view).x
+        return gestureRecognizer === homePan && x >= 0 && x <= 24
+    }
+
+    /// UIKit owns progress, completion and cancellation. The content uses
+    /// the same pop geometry as room Back: foreground moves one screen,
+    /// destination moves a third, with the same leading shadow and dimming.
+    private final class HomePopAnimator: NSObject, UIViewControllerAnimatedTransitioning {
+        func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval { 0.35 }
+
+        func animateTransition(using context: UIViewControllerContextTransitioning) {
+            guard let from = context.view(forKey: .from), let to = context.view(forKey: .to),
+                  let destination = context.viewController(forKey: .to) else {
+                context.completeTransition(false)
+                return
+            }
+            let container = context.containerView
+            let width = container.bounds.width
+            to.frame = context.finalFrame(for: destination)
+            container.insertSubview(to, belowSubview: from)
+            to.transform = CGAffineTransform(translationX: -width / 3, y: 0)
+            let veil = UIView(frame: to.bounds)
+            veil.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            veil.backgroundColor = .black
+            veil.alpha = 0.12
+            to.addSubview(veil)
+            let shadow = UIView(frame: from.frame)
+            shadow.backgroundColor = .black
+            shadow.layer.shadowColor = UIColor.black.cgColor
+            shadow.layer.shadowOpacity = 0.12
+            shadow.layer.shadowRadius = 8
+            shadow.layer.shadowOffset = CGSize(width: -3, height: 0)
+            container.insertSubview(shadow, belowSubview: from)
+            UIView.animate(withDuration: transitionDuration(using: context), delay: 0, options: [.curveLinear], animations: {
+                from.transform = CGAffineTransform(translationX: width, y: 0)
+                shadow.transform = from.transform
+                to.transform = .identity
+                veil.alpha = 0
+            }, completion: { _ in
+                let completed = !context.transitionWasCancelled
+                veil.removeFromSuperview()
+                shadow.removeFromSuperview()
+                from.transform = .identity
+                to.transform = .identity
+                context.completeTransition(completed)
+            })
+        }
+    }
+
+    func navigationController(_ navigationController: UINavigationController, animationControllerFor operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        guard operation == .pop, homeInteraction != nil, (toVC as? GhostController)?.homeID != nil else { return nil }
+        return HomePopAnimator()
+    }
+
+    func navigationController(_ navigationController: UINavigationController, interactionControllerFor animationController: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
+        animationController is HomePopAnimator ? homeInteraction : nil
+    }
+
+    private func beginHomeSwipe(to destination: GhostController) {
+        guard homeSwipe == nil, let web, let page = web as? PageSnapshotting,
+              let fromID = model.currentHomeId, let toID = destination.homeID,
+              let image = page.snapshotImage() else { return }
+        // Home cycling starts at the top. Never reuse a scrolled picture as
+        // that destination, or it would jump when the live page replaces it.
+        if abs(page.pageOffset) < 0.5 { cacheHomePicture(image, id: fromID) }
+        let overlay = Self.still(image)
+        overlay.frame = web.view.bounds
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        web.view.addSubview(overlay)
+        let swipe = HomeSwipe(fromID: fromID, toID: toID, offset: page.pageOffset, overlay: overlay, destination: destination)
+        homeSwipe = swipe
+        page.setPushing(true)
+        page.restorePageOffset(0)
+        model.selectHome(toID)
+        scheduleHomePaintFallback(swipe)
+    }
+
+    private func scheduleHomePaintFallback(_ swipe: HomeSwipe) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self, weak swipe] in
+            guard let self, let swipe, self.homeSwipe === swipe else { return }
+            self.renderHomeSwipe()
+        }
+    }
+
+    private func renderHomeSwipe() {
+        guard let swipe = homeSwipe, let page = web as? PageSnapshotting,
+              model.currentHomeId == swipe.expectedID, !model.isOnPage,
+              swipe.readyID != swipe.expectedID, swipe.renderingID != swipe.expectedID else { return }
+        let expected = swipe.expectedID
+        swipe.renderingID = expected
+        page.restorePageOffset(swipe.cancelled ? swipe.offset : 0)
+        page.renderedSnapshotImage { [weak self, weak swipe] image in
+            guard let self, let swipe, self.homeSwipe === swipe else { return }
+            swipe.renderingID = nil
+            guard swipe.expectedID == expected, self.model.currentHomeId == expected else { return }
+            if !swipe.cancelled, let image {
+                self.cacheHomePicture(image, id: expected)
+                swipe.destination.replaceSnapshot(Self.still(image))
+            }
+            swipe.readyID = expected
+            self.finishHomeSwipeIfReady()
+        }
+    }
+
+    private func finishHomeSwipeIfReady(force: Bool = false) {
+        guard let swipe = homeSwipe, swipe.landed,
+              force || swipe.readyID == swipe.expectedID, let nav, let web else { return }
+        swipe.timeout?.cancel()
+        // Hold the destination over the stack reset, as on a room pop. The
+        // outgoing picture stays attached to the moving controller until
+        // the gesture finishes, including throughout a cancelled swipe.
+        if !swipe.cancelled {
+            let destination = swipe.destination.takeSnapshot()
+            destination.frame = nav.view.bounds
+            destination.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            nav.view.insertSubview(destination, belowSubview: nav.navigationBar)
+            cover = destination
+        }
+        homeSwipe = nil
+        ghost = nil
+        UIView.performWithoutAnimation {
+            swipe.overlay.removeFromSuperview()
+            nav.setViewControllers([web], animated: false)
+            (web as? PageSnapshotting)?.setPushing(false)
+            nav.navigationBar.layoutIfNeeded()
+        }
+        liftCover()
+        DispatchQueue.main.async { [weak self] in self?.apply() }
     }
 
     /// The push, drawn by hand: UIKit will not animate a stack change that
@@ -699,6 +972,21 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
                 }
             }
         }
+        if let destination = viewController as? GhostController, destination.homeID != nil, animated {
+            beginHomeSwipe(to: destination)
+            if let swipe = homeSwipe, let coordinator = navigationController.transitionCoordinator {
+                coordinator.notifyWhenInteractionChanges { [weak self, weak swipe] context in
+                    guard let self, let swipe, self.homeSwipe === swipe else { return }
+                    if context.isCancelled {
+                        swipe.cancelled = true
+                        swipe.readyID = nil
+                        self.model.selectHome(swipe.fromID)
+                        self.scheduleHomePaintFallback(swipe)
+                    }
+                }
+            }
+            return
+        }
         guard let ghost, viewController === ghost, animated else { return }
         // A pop towards the ghost has begun. Send the page home as soon as
         // the pop is certain to land: now for a tap on the back button, or
@@ -747,6 +1035,21 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
 
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
         (navigationController.navigationBar as? PassthroughNavigationBar)?.showTitle((viewController as? NativeHeaderTitleProviding)?.compactHeaderTitle)
+        if let swipe = homeSwipe {
+            homeInteraction = nil
+            swipe.landed = true
+            swipe.cancelled = viewController === web
+            let timeout = DispatchWorkItem { [weak self, weak swipe] in
+                guard let self, let swipe, self.homeSwipe === swipe else { return }
+                self.finishHomeSwipeIfReady(force: true)
+            }
+            swipe.timeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+            finishHomeSwipeIfReady()
+            return
+        }
+        // An idle home also has a ghost underneath. It is not a room Back.
+        if ghost?.homeID != nil { return }
         guard let ghost, viewController === ghost, let web, let nav else { return }
         // The pop has landed: the ghost is all that is on the stack.
         self.ghost = nil
@@ -759,6 +1062,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
             }
             roomOverlay?.removeFromSuperview()
             roomOverlay = nil
+            DispatchQueue.main.async { [weak self] in self?.apply() }
             return
         }
         let snapshot = ghost.takeSnapshot()
@@ -801,10 +1105,14 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         coverTimeout = nil
         roomOverlay?.removeFromSuperview()
         roomOverlay = nil
-        guard let cover else { return }
+        guard let cover else {
+            DispatchQueue.main.async { [weak self] in self?.prepareHomeSwipe() }
+            return
+        }
         self.cover = nil
         if immediately {
             cover.removeFromSuperview()
+            DispatchQueue.main.async { [weak self] in self?.prepareHomeSwipe() }
             return
         }
         // A frame for WebKit to present the home view (the page pads for the
@@ -813,7 +1121,10 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         // rather than pops. Short: until the cover is gone the page under it
         // reads as not yet scrollable.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
-            UIView.animate(withDuration: 0.12, animations: { cover.alpha = 0 }) { _ in cover.removeFromSuperview() }
+            UIView.animate(withDuration: 0.12, animations: { cover.alpha = 0 }) { [weak self] _ in
+                cover.removeFromSuperview()
+                self?.prepareHomeSwipe()
+            }
         }
     }
 
@@ -837,6 +1148,7 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
     /// Stands in for the home view under the web controller: a snapshot of
     /// it, or the page's backdrop colour.
     final class GhostController: UIViewController, NativeHeaderTitleProviding {
+        var homeID: String?
         var compactHeaderTitle: UIView?
         private var snapshot: UIView?
         private let fallback: () -> UIColor
@@ -865,6 +1177,16 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate {
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
             view.backgroundColor = fallback()
+        }
+
+        func replaceSnapshot(_ replacement: UIView) {
+            snapshot?.removeFromSuperview()
+            snapshot = replacement
+            if isViewLoaded {
+                replacement.frame = view.bounds
+                replacement.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                view.insertSubview(replacement, at: 0)
+            }
         }
 
         /// Hands the snapshot over (to become the cover), leaving the flat
@@ -1868,13 +2190,15 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         case "light": style = .light
         default: style = .unspecified
         }
-        navigationController?.overrideUserInterfaceStyle = style
         let ink: UIColor? = style == .dark ? .white : style == .light ? .black : nil
-        navigationController?.navigationBar.tintColor = ink
-        // Keep the icon ink explicit on both the live and captured headers.
-        // Inherited tint lets iOS glass switch contrast during a pop.
-        moreItem.tintColor = ink
-        searchItem.tintColor = ink
+        // A newly selected home can report its appearance before its wallpaper
+        // is ready. Keep the bar's existing ink until the slide has finished.
+        if !pushing {
+            navigationController?.overrideUserInterfaceStyle = style
+            navigationController?.navigationBar.tintColor = ink
+            moreItem.tintColor = ink
+            searchItem.tintColor = ink
+        }
         refreshControl.tintColor = ink
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeEyebrowLabel.textColor = ink?.withAlphaComponent(0.75) ?? .secondaryLabel
