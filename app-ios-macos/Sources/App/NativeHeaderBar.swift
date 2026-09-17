@@ -80,10 +80,12 @@ final class NativeHeaderModel: ObservableObject {
     /// "dark" when the page is drawing light-on-dark, "light" otherwise, nil
     /// until the page has said. The bar follows the page, not the system.
     @Published var appearance: String?
-    /// A web overlay (drawer, dialog, popover) is open. The bar hides for it:
+    /// No page header has mounted yet, or a web overlay is open. The bar hides:
     /// it sits above every web layer, and a drawer sliding in under a bar
     /// that stays put is not how a presented sheet behaves.
-    @Published var covered = false
+    /// AppHeader's cover observer reveals it once the page owns the controls.
+    /// Login and setup have no AppHeader, so they never reveal dashboard chrome.
+    @Published var covered = true
     /// A widget is expanded over the page. The bar stays — the page's own
     /// header stays reachable over a widget, and activating it dismisses the
     /// widget — but dimmed: it floats above the page's scrim, and undimmed it
