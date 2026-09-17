@@ -667,8 +667,15 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
         if !onPage { prepareHomeSwipe() }
     }
 
+    /// Parked 2026-09-17: no swipe switches homes for now. Everything below —
+    /// the pan, the neighbouring home's ghost, the previews, the spring —
+    /// keys off this one lookup, so with it answering nil the whole gesture
+    /// is inert and the home keeps its ordinary stack. Flip to bring it back.
+    private static let homeSwipeEnabled = false
+
     private func adjacentHome(direction: CGFloat) -> NativeHeaderModel.Home? {
-        guard model.enabled, model.largeTitle, model.showMenu, !model.isOnPage,
+        guard Self.homeSwipeEnabled,
+              model.enabled, model.largeTitle, model.showMenu, !model.isOnPage,
               let current = model.currentHomeId, model.homes.count > 1,
               let index = model.homes.firstIndex(where: { $0.id == current }) else { return nil }
         return model.homes[(index + model.homes.count + (direction > 0 ? -1 : 1)) % model.homes.count]
