@@ -3016,6 +3016,11 @@ struct WebViewContainer: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            // A new document has no header owner until AppHeader mounts.
+            // Do not carry the dashboard's controls onto sign-in or an error page.
+            NativeHeaderModel.shared.covered = true
+            #endif
             // Pairs with didFinish and the two failure delegates below. Without
             // it, a navigation that starts and never ends — which is what a
             // blank screen actually is — leaves no trace whatsoever.
