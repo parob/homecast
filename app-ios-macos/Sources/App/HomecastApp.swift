@@ -89,20 +89,17 @@ enum AppConfig {
         UserDefaults.standard.bool(forKey: "com.homecast.stagingMode")
     }
 
-    /// Whether the native top-chrome preview is on. iOS only; see
-    /// `NativeHeaderBar`.
-    ///
-    /// **Defaults to `false`, and that is the point.** Native chrome reaches a
-    /// device through App Review rather than a deploy, so a preview that shipped
-    /// on by default could not be taken back by pushing again — it would be
-    /// weeks before an installed build stopped showing it. Off by default means
-    /// this can land while the decision is still open, and be judged by whoever
-    /// flips it rather than by everyone.
-    ///
-    /// Written by the web app through the `settings.setNativeHeaderPreview`
-    /// bridge action, from Settings → Account → Developer Mode.
+    /// The native header is the default on iOS. Keep the existing preference
+    /// and bridge names so an explicit opt-out still works across upgrades.
+    /// Settings → Account → Developer Mode can switch back to the web header.
     static var nativeHeaderPreview: Bool {
-        get { UserDefaults.standard.bool(forKey: "com.homecast.nativeHeaderPreview") }
+        get {
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            return UserDefaults.standard.object(forKey: "com.homecast.nativeHeaderPreview") as? Bool ?? true
+            #else
+            return false
+            #endif
+        }
         set { UserDefaults.standard.set(newValue, forKey: "com.homecast.nativeHeaderPreview") }
     }
 
