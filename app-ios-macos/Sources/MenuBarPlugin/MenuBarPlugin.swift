@@ -2095,6 +2095,20 @@ public class MenuBarPlugin: NSObject, NSMenuDelegate, MenuBarController {
         print("[MenuBarPlugin] engine window configured: level=\(window.level.rawValue) visible=\(window.isVisible)")
     }
 
+    /// Take the engine window off screen: this Mac is not a cloud-managed
+    /// relay. Ordered out rather than closed — closing a Catalyst scene's
+    /// window from AppKit is what "close" on the UI window does, and that only
+    /// hides it too, with less certainty about what UIKit thinks happened.
+    /// `configureEngineWindow` orders it back if the verdict changes.
+    @objc public func closeEngineWindow() {
+        guard let window = NSApp.windows.first(where: isEngineWindow) else {
+            print("[MenuBarPlugin] closeEngineWindow: no engine window")
+            return
+        }
+        window.orderOut(nil)
+        print("[MenuBarPlugin] engine window ordered out: visible=\(window.isVisible)")
+    }
+
     @objc public func showInDock() {
         DispatchQueue.main.async {
             NSApp.setActivationPolicy(.regular)
