@@ -86,6 +86,11 @@ final class NativeHeaderModel: ObservableObject {
     /// AppHeader's cover observer reveals it once the page owns the controls.
     /// Login and setup have no AppHeader, so they never reveal dashboard chrome.
     @Published var covered = true
+    /// What the status bar sits over while covered: "light" for a full-height
+    /// cover painted light (the automation editor over a dark wallpaper was
+    /// a white clock on white), "dark" for the scrim or a dark cover. nil
+    /// until the page says; the page's own appearance stands in.
+    @Published var coverAppearance: String?
     /// A widget is expanded over the page. The bar stays — the page's own
     /// header stays reachable over a widget, and activating it dismisses the
     /// widget — but dimmed: it floats above the page's scrim, and undimmed it
@@ -210,6 +215,7 @@ final class NativeHeaderModel: ObservableObject {
         }
         if let value = payload["appearance"] as? String { appearance = value }
         if let value = payload["covered"] as? Bool { covered = value }
+        if let value = payload["coverAppearance"] as? String { coverAppearance = value }
         if let value = payload["dimmed"] as? Bool { dimmed = value }
         if let raw = payload["navigation"] as? [[String: Any]] {
             navigation = raw.compactMap { section in
@@ -1887,6 +1893,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         }
     }
 
+    /// Shown beside the large title from the moment a pull-to-refresh fires
+    /// until the page says it is done (0.6s at least, so it is seen). This is
+    /// where "working" lives instead of UIRefreshControl's own spinner: that
+    /// one holds a ~60pt content inset open while it turns, WebKit moves its
+    /// layout viewport by the same, and every `position: fixed` layer — the
+    /// wallpaper first — dropped by a status bar's height, with a band of
+    /// flat canvas colour above it. A pull only ever starts from the top, so
+    /// the large title is on screen whenever this has something to say.
+    private let refreshIndicator: UIActivityIndicatorView = {
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.hidesWhenStopped = true
+        spinner.isUserInteractionEnabled = false
+        return spinner
+    }()
+
     private let largeStatusButton: UIButton = {
         let button = StatusDotButton(type: .custom)
         let halo = UIView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
@@ -1946,6 +1967,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         largeTitleButton.addSubview(largeChevron)
         // A sibling of the title button so its tap is its own.
         largeTitleArea.addSubview(largeStatusButton)
+        largeTitleArea.addSubview(refreshIndicator)
     }
 
     /// Lay the large title out for the current text; `updateTitleTransition`
@@ -2001,6 +2023,8 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         let chevronVisible = !largeChevron.isHidden
         let dotX = leading + width + (chevronVisible ? 8 + chevronSize + 6 : 8)
         largeStatusButton.frame = CGRect(x: dotX, y: largeChevron.frame.midY - 15, width: 30, height: 30)
+        let spinnerX = largeStatusButton.isHidden ? dotX : dotX + 30 + 2
+        refreshIndicator.frame = CGRect(x: spinnerX, y: largeChevron.frame.midY - 10, width: 20, height: 20)
 
         updateTitleTransition()
     }
@@ -2171,24 +2195,35 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     private func fireRefresh() {
         refreshArmed = false
         refreshStarted = Date()
-        NativeHeaderModel.shared.refresh(deepestPull < -WebHostingLayout.hardPull ? "hard" : "soft")
+        let kind = deepestPull < -WebHostingLayout.hardPull ? "hard" : "soft"
         deepestPull = 0
+        // Let the control go at once, before UIKit opens its inset (see
+        // `refreshIndicator`); the pull's own arrow has already been seen.
+        refreshControl.endRefreshing()
+        refreshIndicator.startAnimating()
+        largeTitleArea.bringSubviewToFront(refreshIndicator)
+        NativeHeaderModel.shared.refresh(kind)
     }
 
-    /// Stop the spinner, but not before it has been seen: a refresh the page
-    /// answers instantly would otherwise flick.
+    /// Stop the indicator, but not before it has been seen: a refresh the
+    /// page answers instantly would otherwise flick.
     private func endRefreshing() {
         let shown = refreshStarted.map { Date().timeIntervalSince($0) } ?? 1
         refreshStarted = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, 0.6 - shown)) { [weak self] in
-            self?.refreshControl.endRefreshing()
+            guard let self, self.refreshStarted == nil else { return }
+            self.refreshIndicator.stopAnimating()
         }
     }
 
     @objc private func webPanChanged(_ pan: UIPanGestureRecognizer) {
         wake()
         if pan.state == .began { deepestPull = 0 }
-        if pan.state == .changed, let scroll = webScrollView { deepestPull = min(deepestPull, scroll.contentOffset.y) }
+        // From rest, not from zero: the scroll view rests at
+        // `-adjustedContentInset.top` (status bar and bar, ~100pt), so the raw
+        // offset started every pull a status bar's depth into the hard zone
+        // and an ordinary tug read as the hard reload.
+        if pan.state == .changed, let scroll = webScrollView { deepestPull = min(deepestPull, scroll.contentOffset.y + scroll.adjustedContentInset.top) }
         if (pan.state == .ended || pan.state == .cancelled), refreshArmed { fireRefresh() }
         guard pan.state == .ended || pan.state == .cancelled, let scroll = webScrollView else { return }
         if scroll.isDecelerating {
@@ -2291,8 +2326,11 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         // controller so our own labels resolve the same way; the page does not
         // read `prefers-color-scheme` (its dark look is a class), so nothing
         // in the web view changes.
+        // The bar is hidden behind a cover but the status bar is not, and its
+        // ink follows this style: while covered, take it from what the cover
+        // paints under the status bar rather than from the page beneath.
         let style: UIUserInterfaceStyle
-        switch model.appearance {
+        switch model.covered ? (model.coverAppearance ?? model.appearance) : model.appearance {
         case "dark": style = .dark
         case "light": style = .light
         default: style = .unspecified
@@ -2307,6 +2345,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             searchItem.tintColor = ink
         }
         refreshControl.tintColor = ink
+        refreshIndicator.color = ink ?? .secondaryLabel
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
         largeEyebrowLabel.textColor = ink?.withAlphaComponent(0.75) ?? .secondaryLabel
         largeTitleLabel.textColor = ink ?? .label
