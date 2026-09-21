@@ -299,13 +299,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             }
         }
 
-        // Listen for HomeKit ready notification to preload menu bar data
+        // The camera engine window is AppKit's to pin and to hide; the
+        // canvas and CameraEngine.setEnabled post these.
         NotificationCenter.default.addObserver(
             forName: .configureEngineWindow, object: nil, queue: .main
         ) { [weak self] _ in
             self?.configureEngineWindow()
         }
+        NotificationCenter.default.addObserver(
+            forName: .closeEngineWindow, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.closeEngineWindow()
+        }
 
+        // Listen for HomeKit ready notification to preload menu bar data
         NotificationCenter.default.addObserver(
             forName: .homeKitDidBecomeReady,
             object: nil,
@@ -368,11 +375,24 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
 
     /// Hand the engine window to the AppKit plugin to hide and pin. Called by
     /// the engine canvas once its window exists; harmless if called again.
+    /// Not while the engine is off: the canvas's delayed posts must not order
+    /// back a window the web app has just had hidden.
     func configureEngineWindow() {
         #if targetEnvironment(macCatalyst)
+        guard AppConfig.cameraEngineEnabled else { return }
         guard let plugin = menuBarPlugin else { print("[Homecast] configureEngineWindow: no plugin"); return }
         let selector = NSSelectorFromString("configureEngineWindow")
         if plugin.responds(to: selector) { _ = plugin.perform(selector) } else { print("[Homecast] plugin lacks configureEngineWindow") }
+        #endif
+    }
+
+    /// Order the engine window out. This Mac is not (or no longer) a
+    /// cloud-managed relay — see CameraEngine.setEnabled.
+    func closeEngineWindow() {
+        #if targetEnvironment(macCatalyst)
+        guard let plugin = menuBarPlugin else { print("[Homecast] closeEngineWindow: no plugin"); return }
+        let selector = NSSelectorFromString("closeEngineWindow")
+        if plugin.responds(to: selector) { _ = plugin.perform(selector) } else { print("[Homecast] plugin lacks closeEngineWindow") }
         #endif
     }
 

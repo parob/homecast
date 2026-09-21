@@ -679,6 +679,33 @@ cloud storage is keyed by hc_id. `reconcileLocalTopology` (GraphQL) →
 stale** — it reuses `reconcile_kind`'s extracted `load_match_context()`/`pick_match()` and
 implements no writing at all.
 
+## Cameras are a managed-relay feature
+
+Camera stills and live view come from the relay's **engine window** (`CameraEngine.swift`):
+a second, always-ordered-in Mac window that the `HMCameraView`s render into and that the
+relay captures through the window server. It exists **only on a cloud-managed relay** — a
+Mac Homecast operates. A customer's own Mac never opens it, whether it is a self-hosted
+primary, a standby, or Community, and refuses every `camera.*` bridge method with
+`CAMERA_UNAVAILABLE`.
+
+The Swift side cannot tell the two apart: the only difference is the account signed in.
+So the web app decides and tells it — `hooks/useCameraEngine.ts` calls
+`camera.engine.set {enabled}` once the user is known, `enabled` iff
+`accountType === 'managed'`. The Mac keeps the answer in UserDefaults
+(`AppConfig.cameraEngineEnabled`) so the next launch opens the window before the page has
+loaded, and clears it on the web's `logout` message. An off **orders the window out**
+through the AppKit plugin (`closeEngineWindow`), the same route that pins it —
+`requestSceneSessionDestruction` is a silent no-op on Catalyst, measured 2026-09-18. A
+hidden window is still a window, so the bridge's refusal while the flag is off is what keeps
+it from ever being captured.
+
+The per-home gate is `isCloudManagedHome(home, accountType)` (`lib/camera-snapshot.ts`):
+`home.isCloudManaged` — which the cloud sets **only on membership rows**, so the managed
+relay's own account (which *owns* those homes) is recognised by its `accountType` instead.
+A `cloud` plan is deliberately not enough: a plan holder can run a self-hosted relay beside
+the managed one. The Cameras settings page is offered for these homes and no others; the
+cloud refuses camera requests and the `camerasEnabled` toggle for every other home.
+
 ## Cloud Features (`@homecast/cloud`)
 
 Cloud-specific UI components (admin panel, billing, cloud relay management) live in the `homecast-cloud` repo's `app-web/` package. The Vite alias `@homecast/cloud` resolves to `src/cloud/index.ts` if present (copied in by CI during cloud builds), otherwise falls back to `src/cloud-stub.ts` which exports `CLOUD_AVAILABLE = false`.

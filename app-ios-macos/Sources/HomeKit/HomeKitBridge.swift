@@ -470,11 +470,29 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
         case "observe.reset":
             return resetObservationTimeout()
 
-        // MARK: Cameras (cloud relay only)
+        // MARK: Cameras (cloud-managed relay only)
+        case "camera.engine.set":
+            // The web app's verdict on this Mac — see AppConfig.cameraEngineEnabled.
+            // Callable whatever the current answer is; everything below is not.
+            #if targetEnvironment(macCatalyst)
+            guard !AppConfig.isCommunity else { throw CameraError.managedOnly }
+            let enabled = payload["enabled"] as? Bool ?? false
+            if !enabled, AppConfig.cameraEngineEnabled {
+                // Viewers on a Mac that is no longer the managed relay.
+                _ = cameras.stopLive(accessoryId: nil, viewerId: nil)
+            }
+            CameraEngine.shared.setEnabled(enabled)
+            return ["enabled": enabled, "engineWindow": CameraEngine.shared.isAvailable]
+            #else
+            throw CameraError.managedOnly
+            #endif
         case "camera.capabilities", "camera.snapshot", "camera.live.start", "camera.live.keepalive",
              "camera.live.stop", "camera.requestScreenRecording":
             #if targetEnvironment(macCatalyst)
-            guard !AppConfig.isCommunity else { throw CameraError.engineUnavailable }
+            // A self-hosted relay has no engine window and answers as one
+            // that could never capture — the cloud refuses these before they
+            // reach a relay, so this is the backstop, not the gate.
+            guard AppConfig.cameraEngineEnabled else { throw CameraError.managedOnly }
             switch method {
             case "camera.capabilities":
                 return cameras.capabilities()
@@ -501,7 +519,7 @@ class HomeKitBridge: NSObject, ObservableObject, HomeKitManagerDelegate {
                 return cameras.stopLive(accessoryId: payload["accessoryId"] as? String, viewerId: payload["viewerId"] as? String)
             }
             #else
-            throw CameraError.engineUnavailable
+            throw CameraError.managedOnly
             #endif
 
         // Debug operations

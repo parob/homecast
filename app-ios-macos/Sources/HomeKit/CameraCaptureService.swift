@@ -832,6 +832,10 @@ enum CameraError: LocalizedError {
     case accessDenied
     case viewerLimit
     case notSupported
+    /// This Mac is not a cloud-managed relay. Same wire code as
+    /// `engineUnavailable`: the web policy already treats it as permanent
+    /// and describes it as needing the cloud relay.
+    case managedOnly
     case engineUnavailable
     case captureUnavailable
     case busy
@@ -846,7 +850,7 @@ enum CameraError: LocalizedError {
         case .accessDenied: return "PERMISSION_DENIED"
         case .viewerLimit: return "CAMERA_VIEWER_LIMIT"
         case .notSupported: return "CAMERA_NOT_SUPPORTED"
-        case .engineUnavailable: return "CAMERA_UNAVAILABLE"
+        case .managedOnly, .engineUnavailable: return "CAMERA_UNAVAILABLE"
         case .captureUnavailable: return "CAMERA_CAPTURE_UNAVAILABLE"
         case .busy: return "CAMERA_BUSY"
         case .snapshotTimeout: return "SNAPSHOT_TIMEOUT"
@@ -862,6 +866,7 @@ enum CameraError: LocalizedError {
         case .accessDenied: return "Camera access was not authorized"
         case .viewerLimit: return "Too many camera viewers are waiting; close another live view and try again"
         case .notSupported: return "This accessory has no camera"
+        case .managedOnly: return "Camera images are only available from a cloud-managed relay"
         case .engineUnavailable: return "The camera engine window is not available on this relay"
         case .captureUnavailable: return "The camera engine window could not be captured; restart Homecast on the relay Mac"
         case .busy: return "The camera is busy — HomeKit allows two live streams per home"

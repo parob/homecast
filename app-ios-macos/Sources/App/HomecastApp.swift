@@ -146,6 +146,25 @@ enum AppConfig {
         UserDefaults.standard.bool(forKey: "com.homecast.communityMode")
     }
 
+    /// Whether this Mac is a cloud-managed relay, and so runs the camera
+    /// engine window (`CameraEngine.swift`).
+    ///
+    /// Cameras are a managed-relay feature: the engine window, the capture
+    /// loop and every `camera.*` bridge method exist only on a Mac that
+    /// Homecast operates. A customer's own Mac — self-hosted relay, standby,
+    /// or Community — never opens the window and refuses the methods.
+    ///
+    /// The Swift side cannot tell the two apart on its own: the account is
+    /// the web app's. It reports through `camera.engine.set` once it knows
+    /// who is signed in (`accountType == "managed"`), and the answer is kept
+    /// here so the next launch opens the engine before the page has loaded,
+    /// as it always did on the managed relay. Cleared on sign-out, and never
+    /// read in Community mode.
+    static var cameraEngineEnabled: Bool {
+        get { !isCommunity && UserDefaults.standard.bool(forKey: "com.homecast.cameraEngine") }
+        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.cameraEngine") }
+    }
+
     /// Whether the user has selected a mode (Community or Cloud).
     static var modeSelected: Bool {
         UserDefaults.standard.bool(forKey: "com.homecast.modeSelected")
@@ -320,21 +339,20 @@ struct RootView: View {
         ContentView()
             .ignoresSafeArea()
             .onAppear {
-                // One engine window per process. Opened from here because the
-                // UI window is what launch shows; the engine outlives it.
-                if !AppConfig.isCommunity, !CameraEngine.shared.isAvailable, !RootView.engineRequested {
-                    RootView.engineRequested = true
-                    openWindow(id: CameraEngine.windowGroupID)
-                }
+                // One engine window per process, and only on a cloud-managed
+                // relay. Opened from here because the UI window is what launch
+                // shows; the engine outlives it.
+                CameraEngine.shared.openIfWanted { openWindow(id: CameraEngine.windowGroupID) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openCameraEngine)) { _ in
+                // The web app has just told us this Mac is the managed relay.
+                CameraEngine.shared.openIfWanted { openWindow(id: CameraEngine.windowGroupID) }
             }
         #else
         ContentView()
             .ignoresSafeArea()
         #endif
     }
-    #if targetEnvironment(macCatalyst)
-    private static var engineRequested = false
-    #endif
 }
 
 // MARK: - Content View
@@ -1576,9 +1594,10 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastDeviceModel = "\(deviceModel)";
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "macos";
-        // This build has the camera engine window (cloud relay only). Whether
-        // it can capture is asked live via camera.capabilities.
-        window.homecastCameraEngine = \(AppConfig.isCommunity ? "false" : "true");
+        // This Mac runs the camera engine window (cloud-managed relay only —
+        // see AppConfig.cameraEngineEnabled). Whether it can capture is asked
+        // live via camera.capabilities.
+        window.homecastCameraEngine = \(AppConfig.cameraEngineEnabled ? "true" : "false");
 
         console.log('[Homecast] Mac app detected - HomeKit relay capable');
 
@@ -2711,6 +2730,10 @@ struct WebViewContainer: UIViewRepresentable {
                 // Show "Change install type" button on login page
                 Task { @MainActor in
                     connectionManager.signOut()
+                    #if targetEnvironment(macCatalyst)
+                    // Whoever signs in next may not be the managed relay.
+                    CameraEngine.shared.setEnabled(false)
+                    #endif
                 }
             case "authSuccess":
                 print("[WebView] User authenticated")
