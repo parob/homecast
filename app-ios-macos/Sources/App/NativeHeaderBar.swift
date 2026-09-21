@@ -91,6 +91,21 @@ final class NativeHeaderModel: ObservableObject {
     /// a white clock on white), "dark" for the scrim or a dark cover. nil
     /// until the page says; the page's own appearance stands in.
     @Published var coverAppearance: String?
+    /// What is actually painted under the status bar right now: the cover's
+    /// own appearance while one is up, the page's underneath otherwise.
+    ///
+    /// One property because there are **two** levers that turn an appearance
+    /// into a style — the navigation controller's `overrideUserInterfaceStyle`
+    /// and `NativeHeaderColorScheme`'s `preferredColorScheme` — and only the
+    /// second reaches the status bar. #68 taught the first about covers and
+    /// left the second on `appearance` alone, so over the automation editor
+    /// (full-screen white, over a dark wallpaper) the clock, signal and
+    /// battery stayed white on white: parob/homecast-cloud#155, reported
+    /// again as #166 after the web-side half of #155 shipped. Both levers
+    /// read this now, so neither can be taught something the other misses.
+    var topAppearance: String? {
+        covered ? (coverAppearance ?? appearance) : appearance
+    }
     /// A widget is expanded over the page. The bar stays — the page's own
     /// header stays reachable over a widget, and activating it dismisses the
     /// widget — but dimmed: it floats above the page's scrim, and undimmed it
@@ -330,7 +345,10 @@ struct NativeHeaderColorScheme: ViewModifier {
 
     private var scheme: ColorScheme? {
         guard model.enabled else { return nil }
-        switch model.appearance {
+        // `topAppearance`, not `appearance`: this is the lever the comment
+        // above says is the only one that reaches the status bar, so it is
+        // the one that has to know a cover is up.
+        switch model.topAppearance {
         case "dark": return .dark
         case "light": return .light
         default: return nil
@@ -2330,7 +2348,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         // ink follows this style: while covered, take it from what the cover
         // paints under the status bar rather than from the page beneath.
         let style: UIUserInterfaceStyle
-        switch model.covered ? (model.coverAppearance ?? model.appearance) : model.appearance {
+        switch model.topAppearance {
         case "dark": style = .dark
         case "light": style = .light
         default: style = .unspecified
