@@ -89,18 +89,15 @@ enum AppConfig {
         UserDefaults.standard.bool(forKey: "com.homecast.stagingMode")
     }
 
-    /// The native header is the default on iOS. Keep the existing preference
-    /// and bridge names so an explicit opt-out still works across upgrades.
-    /// Settings → Account → Developer Mode can switch back to the web header.
+    /// The native header is the standard iOS experience — parob/homecast-cloud#202
+    /// removed the Settings opt-out that used to live here. No UserDefaults key
+    /// and no setter: iOS always draws it, Catalyst never does.
     static var nativeHeaderPreview: Bool {
-        get {
-            #if os(iOS) && !targetEnvironment(macCatalyst)
-            return UserDefaults.standard.object(forKey: "com.homecast.nativeHeaderPreview") as? Bool ?? true
-            #else
-            return false
-            #endif
-        }
-        set { UserDefaults.standard.set(newValue, forKey: "com.homecast.nativeHeaderPreview") }
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        return true
+        #else
+        return false
+        #endif
     }
 
     /// A local web origin to load the cloud UI from, instead of homecast.cloud.
@@ -396,8 +393,8 @@ struct ContentView: View {
     /// Community mode keeps /login — that page doubles as the first-run relay
     /// setup flow, which has nothing to do with holding a token.
     /// The web view, inside the native header's navigation controller on iOS
-    /// (parob/homecast-cloud#120). The bar is hidden unless the preview flag is
-    /// on, and then the layout is exactly what it was before this existed.
+    /// (parob/homecast-cloud#120, made standard by #202). Catalyst never draws
+    /// the bar, and the layout there is exactly what it was before this existed.
     @ViewBuilder
     private var webViewHost: some View {
         #if targetEnvironment(macCatalyst)
@@ -1652,11 +1649,12 @@ struct WebViewContainer: UIViewRepresentable {
         window.homecastDeviceModel = "\(deviceModel)";
         window.homecastHostName = "\(hostName)";
         window.homecastPlatform = "ios";
-        // Native top chrome (preview). `Available` says this build can draw it
-        // at all — the web app needs that to decide whether to offer the switch
-        // — and `Enabled` says whether it is drawing it right now. An older
-        // build sets neither, so the web app reads both as absent and behaves
-        // exactly as it does today.
+        // Native top chrome. `Available` says this build can draw it at all —
+        // the web app needs that to know whether to trust `Enabled` and hide
+        // its own header row — and `Enabled` says whether it is drawing it
+        // right now (always true on this build; there is no opt-out). An
+        // older build sets neither, so the web app reads both as absent and
+        // keeps its own header.
         window.homecastNativeHeaderAvailable = true;
         window.homecastNativeHeaderEnabled = \(AppConfig.nativeHeaderPreview ? "true" : "false");
 
@@ -1992,8 +1990,8 @@ struct WebViewContainer: UIViewRepresentable {
         let iOSVersion = UIDevice.current.systemVersion
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS \(iOSVersion.replacingOccurrences(of: ".", with: "_")) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(iOSVersion) Mobile/15E148 Safari/604.1"
         // Disable automatic content inset adjustment — CSS env(safe-area-inset-*) handles safe areas.
-        // With the native header preview on, the opposite: the navigation bar
-        // insets the content and the page scrolls under it (see syncNativeHeader).
+        // With the native header, the opposite: the navigation bar insets the
+        // content and the page scrolls under it (see syncNativeHeader).
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = AppConfig.nativeHeaderPreview
         // Disable pinch-to-zoom
@@ -2740,10 +2738,9 @@ struct WebViewContainer: UIViewRepresentable {
 
             case "header.setState":
                 // The page publishing what the native bar should draw. Silently
-                // ignored on Mac and on a build with the preview off — the web
-                // app sends this unconditionally so that flipping the flag needs
-                // no reload, and a message with no bar to draw into is normal,
-                // not an error.
+                // ignored on Mac, which has no bar — the web app sends this
+                // unconditionally, and a message with no bar to draw into is
+                // normal, not an error.
                 #if os(iOS) && !targetEnvironment(macCatalyst)
                 NativeHeaderModel.shared.merge(body)
                 #endif
@@ -2769,17 +2766,6 @@ struct WebViewContainer: UIViewRepresentable {
                 // state again — `didFinish` ran before React did, so the
                 // insets it was told then went nowhere.
                 #if os(iOS) && !targetEnvironment(macCatalyst)
-                if let webView = self.webView {
-                    syncNativeHeader(on: webView)
-                }
-                #endif
-
-            case "settings.setNativeHeaderPreview":
-                // Settings → Account → Developer Mode → Native header (preview).
-                #if os(iOS) && !targetEnvironment(macCatalyst)
-                let enabled = body["enabled"] as? Bool ?? false
-                print("[WebView] Native header preview: \(enabled)")
-                AppConfig.nativeHeaderPreview = enabled
                 if let webView = self.webView {
                     syncNativeHeader(on: webView)
                 }
