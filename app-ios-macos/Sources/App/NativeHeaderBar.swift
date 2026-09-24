@@ -5,7 +5,8 @@ import WebKit
 
 #if os(iOS) && !targetEnvironment(macCatalyst)
 
-/// The top chrome, drawn natively — a **preview**, off by default.
+/// The top chrome, drawn natively — the standard iOS header, no opt-out
+/// (parob/homecast-cloud#202; started as a preview on #120).
 ///
 /// Asked for on parob/homecast-cloud#120, and then narrowed further: "how does
 /// the header work in the normal Apple Home app? we want to mirror that setup".
@@ -29,8 +30,8 @@ import WebKit
 /// Nothing here reads HomeKit or knows what a home is. `NativeHeaderModel` is a
 /// bag of published values the page keeps up to date through `header.setState`
 /// (a partial merge — see `merge(_:)`), and every control calls straight back
-/// into the page. That is what keeps it cheap to delete if the preview is
-/// rejected.
+/// into the page. That is what keeps it cheap to delete if the bar is ever
+/// dropped.
 ///
 /// ## Why the bar must never be shown without the scroll view registered
 ///
@@ -1559,7 +1560,7 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             updateTitleTransition()
         }
     }
-    /// The bar is hidden (preview off, or a web overlay is up).
+    /// The bar is hidden while a web overlay is up.
     private var barHidden = false
     /// What the page was last told, so a rotation that changes the bar's
     /// heights tells it again and nothing else does.
