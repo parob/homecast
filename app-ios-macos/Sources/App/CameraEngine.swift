@@ -104,6 +104,41 @@ final class CameraEngine {
 final class CameraEngineCanvas: UIView {
     static let size = CGSize(width: 1280, height: 720)
 
+    /// What the window says while no camera is on it, instead of a bare black
+    /// rectangle. It must never be visible under a camera view: a capture
+    /// crops the window to the slot and takes the first crop that looks like
+    /// a picture, so anything drawn beneath would be sent as the camera's
+    /// image. Hidden the moment a slot is added — synchronously, well before
+    /// the first capture 50ms later — and shown only once the last one goes.
+    private let idleLabel: UILabel = {
+        let label = UILabel()
+        label.text = "\(CameraEngine.windowTitle) · idle"
+        label.font = .systemFont(ofSize: 15)
+        label.textColor = UIColor(white: 1, alpha: 0.4)
+        label.textAlignment = .center
+        label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        return label
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        idleLabel.frame = bounds
+        addSubview(idleLabel)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        if subview !== idleLabel { idleLabel.isHidden = true }
+    }
+
+    override func willRemoveSubview(_ subview: UIView) {
+        super.willRemoveSubview(subview)
+        // Still in `subviews` at this point, so leave it out of the count.
+        idleLabel.isHidden = subviews.contains { $0 !== idleLabel && $0 !== subview }
+    }
+
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
