@@ -679,6 +679,34 @@ cloud storage is keyed by hc_id. `reconcileLocalTopology` (GraphQL) →
 stale** — it reuses `reconcile_kind`'s extracted `load_match_context()`/`pick_match()` and
 implements no writing at all.
 
+## Cloud plan capacity: one home, and a chosen relay
+
+HomeKit caps an Apple ID at 10 homes, so managed capacity is 10 × relay Apple IDs
+and it is scarce. Two rules follow, both enforced on the server (homecast-cloud):
+
+- **Homes per customer.** `CLOUD_MANAGED_MAX_HOMES_PER_USER` (1) unless an admin set
+  the customer's own `users.cloud_home_limit` (Admin → user → *Cloud homes*). An
+  enrollment in `awaiting_relay`, `pending`, `invite_sent`, `needs_home_id` or `active`
+  counts. Customers already over the limit keep their homes; they just can't add more.
+- **Which relay.** The add-home dialog preselects the relay the server recommends and
+  offers **Change** to pick another (`availableCloudRelays`: region label, soft
+  availability, online). Omitting `relayId` gets the same relay, because auto-pick and
+  the recommendation are one ranking (`homecast/utils/relay_choice.py`). A chosen relay
+  is row-locked and recounted, so two customers can't take its last slot.
+
+**One slot count:** `CloudManagedRepository.relay_loads` — homes on the relay's Apple ID
+plus outstanding invitations (`pending`, `invite_sent`). Every capacity number (picker,
+auto-pick, relay-connect assignment, admin, signup pause) reads it; don't count again.
+
+Paying no longer creates an enrollment. The customer adds the home afterwards (Stripe
+returns to the add dialog; an in-app purchase opens it). The signup pause
+(`CLOUD_SIGNUP_MIN_SLOTS`) gates **buying** the plan only; a paid customer takes a free
+slot or queues.
+
+The web half degrades on an older server: the relay list, the allowance and the
+`relayId` mutation are separate documents, so a missing field fails only them and the
+dialog falls back to its region dropdown.
+
 ## Cameras are a managed-relay feature
 
 Camera stills and live view come from the relay's **engine window** (`CameraEngine.swift`):
