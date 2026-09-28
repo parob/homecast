@@ -638,7 +638,7 @@
 				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -661,7 +661,7 @@
 				INFOPLIST_FILE = Sources/NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -813,7 +813,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -857,7 +857,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -882,7 +882,7 @@
 				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -908,7 +908,7 @@
 				INFOPLIST_FILE = Sources/MenuBarPlugin/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.2.5;
+				MARKETING_VERSION = 1.2.6;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu11 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.MenuBarPlugin;
 				PRODUCT_NAME = "$(TARGET_NAME)";
