@@ -125,7 +125,7 @@ MQTT browser renders home-level rows above the rooms.
 
 ### Community Mode
 
-Mac app connects as MQTT client to user-configured broker(s). Per-home, stored in UserDefaults. Settings at: Settings → Homes → [Home] → MQTT (requires Developer Mode).
+Mac app connects as MQTT client to user-configured broker(s). Per-home, stored in UserDefaults. Settings at: Settings → Homes → [Home], MQTT section (requires Developer Mode).
 
 ### Cloud Mode
 
@@ -275,9 +275,9 @@ Messages use this JSON format:
 | `app-web/src/pages/mqtt-browser/topic-tree.ts` | Pure home/room/group tree builder + slug→topic resolution (unit-tested) |
 | `app-web/src/pages/mqtt-browser/TreePane.tsx` | MQTT browser tree pane (home/room/group sections, `TreeRow.tsx` rows) |
 | `app-web/src/pages/mqtt-browser/InspectorPanel.tsx` | Selected-topic inspector (widget + publish editor; pane/sheet variants) |
-| `app-web/src/components/settings/HomeDetailView.tsx` | One home's settings: live-home poll + router over its sub-sections |
-| `app-web/src/components/settings/home/` | The per-home sub-pages (overview, notifications, MQTT, mobile row list) |
-| `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate for a home's sub-sections (unit-tested) |
+| `app-web/src/components/settings/HomeDetailView.tsx` | One home's settings, on **one page**: live-home poll, the overview (its Connection card carries Reliability), every section stacked, Remove from Cloud Relay last |
+| `app-web/src/components/settings/home/` | The per-home sections (overview, notifications, cameras, MQTT, cloud-relay removal) |
+| `app-web/src/lib/home-settings-sections.ts` | Pure catalog + gate + order for a home's sections (unit-tested) |
 | `app-web/src/lib/marketing-routes.ts` | Which paths are the website, not the app — pure, unit-tested (collapsed to the dashboard inside the native shell) |
 | `app-web/src/lib/swipe.ts` | Left-menu swipe decisions — axis lock, travel/flick thresholds, what yields to a scroller (pure, unit-tested) |
 | `app-web/src/hooks/useDrawerSwipe.ts` | The listeners: `useEdgeSwipeOpen` (edge → open, scoped to its dialog) and `useSwipeToClose` (wired into every `side="left"` sheet) |
@@ -317,7 +317,9 @@ hidden or offline cards keep their places. Dragging a scene between rooms points
 to its Show in selector; it never rewrites HomeKit targets.
 
 Status is a wrapping row of readings beneath the heading, with tap/hover details
-and the existing Analytics gate. Automations is reached through the top-right
+and the existing Analytics gate. Whether it shows is an **app-wide** Display
+setting (`showHomeStatus`, per device like the other display prefs), not a
+per-home one. Automations is reached through the top-right
 menu and opens a dialog with both engines, ordering, and hide/unhide controls.
 The tutorial points at that menu rather than expanding an automation grid.
 
@@ -325,16 +327,18 @@ Visibility remains stored as hidden lists, so missing means shown:
 
 | Flag | Hides |
 |------|-------|
-| `hiddenSummarySections: ['scenes']` | Apple Home scene cards |
 | `hiddenSummarySections: ['actions']` | Derived Homecast scene cards |
-| `hiddenSummarySections: ['status']` | Whole-home status readings |
 | `hiddenActions` / `hiddenScenes` | Individual cards |
 | `hiddenAutomations` | Individual automation cards |
 
-Keep `actions` and the legacy `automations` value in `SUMMARY_SECTION_ORDER`:
-normalising a write must not silently discard old settings. The old Automations
-section switch no longer controls access to its menu. Settings → Home Screen
-controls the two scene kinds and status. Individual cards are revealed through
+Apple Home scenes have **no** section switch — the user made them, so they show
+unless hidden one by one. Old `scenes` and `status` entries in
+`hiddenSummarySections` are left in the blob and no longer read.
+
+Keep `actions` and the legacy `scenes`, `status` and `automations` values in
+`SUMMARY_SECTION_ORDER`: normalising a write must not silently discard old
+settings. The old Automations section switch no longer controls access to its
+menu. A home's Home Screen section controls only the Homecast scenes. Individual cards are revealed through
 Edit Layout on touch or Show Hidden Items on desktop, then unhidden on the card.
 `hiddenScenes` must not be normalised against the currently fetched scene list:
 that list can be empty while the relay is offline.
@@ -342,7 +346,7 @@ that list can be empty while the relay is offline.
 ## Analytics on a share link
 
 A public share (`/s/{hash}`) can show Analytics for what it shares, but only if the
-home's owner says so. **Settings → Homes → *home* → Analytics** carries a second switch,
+home's owner says so. The **Analytics** section of **Settings → Homes → *home*** carries a second switch,
 **Analytics on shared links**, nested under the recording toggle and **off by default**.
 
 The two flags are separate and **ANDed at read time** (`history_enabled AND
