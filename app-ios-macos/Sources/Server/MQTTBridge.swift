@@ -586,10 +586,56 @@ class MQTTBridge: NSObject, WKScriptMessageHandler {
            let data = try? JSONSerialization.data(withJSONObject: state),
            let json = String(data: data, encoding: .utf8) {
             client.publish(topic: "\(config.topicPrefix)/\(path)", string: json, retain: true)
+            if let info = Self.deviceInfo(accessory),
+               let infoData = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]),
+               let infoJson = String(data: infoData, encoding: .utf8) {
+                client.publish(topic: "\(config.topicPrefix)/\(path)/info", string: infoJson, retain: true)
+            }
         }
 
         client.publish(topic: "\(config.topicPrefix)/\(path)/availability",
                        string: isReachable ? "online" : "offline", retain: true)
+    }
+
+    /// The retained `/info` payload: what an accessory is, as opposed to its state.
+    ///
+    /// The state topic carries values only — enough to drive a device, not to draw
+    /// one the way the app does. The app reads which service a characteristic
+    /// belongs to (an AC is a heater_cooler with a speed, not a fan), its bounds and
+    /// valid values, and the manufacturer (whether a blind's 0 means open or
+    /// closed). Mirrors `_device_info` in the cloud bridge, key for key.
+    static func deviceInfo(_ accessory: [String: Any]) -> [String: Any]? {
+        var info: [String: Any] = [:]
+        var keys: [String: Any] = [:]
+        for service in accessory["services"] as? [[String: Any]] ?? [] {
+            let serviceType = service["serviceType"] as? String ?? ""
+            for char in service["characteristics"] as? [[String: Any]] ?? [] {
+                guard let charType = char["characteristicType"] as? String else { continue }
+                if serviceType == "accessory_information" {
+                    if charType == "manufacturer" || charType == "model",
+                       let value = char["value"] as? String, !value.isEmpty {
+                        info[charType] = value
+                    }
+                    continue
+                }
+                guard let simpleName = CharacteristicMapper.simpleNameForType(charType),
+                      keys[simpleName] == nil else { continue }
+                var meta: [String: Any] = [
+                    "service": serviceType,
+                    "writable": char["isWritable"] as? Bool ?? false,
+                ]
+                for (src, dst) in [("minValue", "min"), ("maxValue", "max"), ("stepValue", "step"), ("validValues", "valid")] {
+                    if let v = char[src], !(v is NSNull) { meta[dst] = v }
+                }
+                keys[simpleName] = meta
+            }
+        }
+        guard !keys.isEmpty else { return nil }
+        if let category = accessory["category"] as? String, !category.isEmpty {
+            info["category"] = category
+        }
+        info["keys"] = keys
+        return info
     }
 
     // MARK: - HA Discovery (per home, per client)

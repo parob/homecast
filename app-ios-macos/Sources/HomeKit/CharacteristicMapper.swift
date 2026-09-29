@@ -286,6 +286,12 @@ enum CharacteristicMapper {
         "active": HMCharacteristicTypeActive,
         "hvac_mode": "000000B2-0000-1000-8000-0026BB765291",  // Target heater/cooler state
         "hvac_state": "000000B1-0000-1000-8000-0026BB765291", // Current heater/cooler state
+        "swing_mode": "000000B6-0000-1000-8000-0026BB765291",
+        // A real thermostat — a different service, with its own mode numbering
+        "target_temp": HMCharacteristicTypeTargetTemperature,
+        "thermostat_mode": HMCharacteristicTypeTargetHeatingCooling,
+        "thermostat_state": HMCharacteristicTypeCurrentHeatingCooling,
+        "relative_humidity": HMCharacteristicTypeCurrentRelativeHumidity,
 
         // Lock
         "locked": HMCharacteristicTypeCurrentLockMechanismState,
@@ -302,6 +308,8 @@ enum CharacteristicMapper {
         // Position (blinds, etc)
         "position": HMCharacteristicTypeCurrentPosition,
         "target": HMCharacteristicTypeTargetPosition,
+        "position_state": HMCharacteristicTypePositionState,
+        "obstruction": HMCharacteristicTypeObstructionDetected,
 
         // Fan
         "speed": HMCharacteristicTypeRotationSpeed,
@@ -312,6 +320,7 @@ enum CharacteristicMapper {
 
         // Battery
         "battery": HMCharacteristicTypeBatteryLevel,
+        "low_battery": HMCharacteristicTypeStatusLowBattery,
 
         // Virtual (engine-owned) accessories. These are not HomeKit types —
         // HomeKit has no enum, no countdown and no free text — so they map to
