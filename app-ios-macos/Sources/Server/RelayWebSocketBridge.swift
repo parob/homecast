@@ -46,6 +46,13 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
 
     private var sockets: [String: SocketState] = [:]
     private let socketsLock = NSLock()
+    // Set by shutdown(), under socketsLock. The session is invalidated then,
+    // and asking an invalidated URLSession for a task throws an Objective-C
+    // exception Swift cannot catch — the app aborts. A dismantled WebView's
+    // page goes on running and stays registered as a `relayWs` sender, so a
+    // "connect" can still arrive here afterwards (build 80, 2026-10-05:
+    // switching Community → Cloud crashed seven seconds later).
+    private var isShutDown = false
 
     // App Nap exemption. A relay Mac is a server: when App Nap kicks in
     // (window not focused, no user input) it throttles our timers and network
@@ -159,10 +166,24 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         var req = URLRequest(url: url)
         req.timeoutInterval = 30
 
+        // Checked and acted on under one lock, so a shutdown() on another
+        // thread cannot invalidate the session between the check and the task.
+        socketsLock.lock()
+        if isShutDown {
+            socketsLock.unlock()
+            Log.warning("connect after shutdown ignored",
+                        category: "relay-ws",
+                        metadata: ["socketId": socketId])
+            emitClose(socketId: socketId, code: 1006,
+                      reason: "bridge shut down", wasClean: false)
+            return
+        }
         let task = session.webSocketTask(with: req)
         task.taskDescription = socketId
         let state = SocketState(socketId: socketId, task: task, urlString: urlString)
-        putSocket(state)
+        sockets[socketId] = state
+        syncNapAssertionLocked()
+        socketsLock.unlock()
 
         Log.info(
             "connecting host=\(url.host ?? "?")",
@@ -413,12 +434,6 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         return sockets[id]
     }
 
-    private func putSocket(_ state: SocketState) {
-        socketsLock.lock(); defer { socketsLock.unlock() }
-        sockets[state.socketId] = state
-        syncNapAssertionLocked()
-    }
-
     private func takeSocket(_ id: String) -> SocketState? {
         socketsLock.lock(); defer { socketsLock.unlock() }
         let removed = sockets.removeValue(forKey: id)
@@ -468,6 +483,7 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         pathMonitor.cancel()
 
         socketsLock.lock()
+        isShutDown = true
         let live = Array(sockets.values)
         sockets.removeAll()
         // Releases the App Nap assertion now that the table is empty — a
