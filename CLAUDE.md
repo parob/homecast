@@ -91,7 +91,7 @@ Your Mac                         LAN / Tunnel          External
 | `DELETE /rest/scenes/:id` | Delete a scene by ID |
 | `POST /rest/scene` | Execute a scene by name (`{home, name}`) |
 | `GET /rest/rooms` | List rooms (`?home=X`) |
-| `POST /mcp` | MCP endpoint (17 tools). Devices/scenes: `get_state`, `set_state`, `run_scene`, `create_scene`, `update_scene`, `delete_scene`. **HomeKit** automations: `get_automations`, `create_automation`, `update_automation`, `delete_automation`. **Homecast engine** automations: `get_hc_automations`, `create_hc_automation`, `update_hc_automation`, `delete_hc_automation`, `create_virtual_accessory`, `update_virtual_accessory`, `delete_virtual_accessory` |
+| `POST /mcp` | MCP endpoint (19 tools). Devices/scenes: `get_state`, `set_state`, history: `get_history`, `query_history`, `run_scene`, `create_scene`, `update_scene`, `delete_scene`. **HomeKit** automations: `get_automations`, `create_automation`, `update_automation`, `delete_automation`. **Homecast engine** automations: `get_hc_automations`, `create_hc_automation`, `update_hc_automation`, `delete_hc_automation`, `create_virtual_accessory`, `update_virtual_accessory`, `delete_virtual_accessory` |
 | `WebSocket :5657` | Real-time updates |
 
 `/rest/*` and `/mcp` are handled by JS (`local-rest.ts`, `local-mcp.ts`) via the Swift→JS bridge. `/health` and `/config.json` are served directly by `LocalHTTPServer.swift` (they respond before the web app is loaded) and return `{mode, version, port, wsPort, mqtt}`.
@@ -342,6 +342,20 @@ menu. A home's Home Screen section controls only the Homecast scenes. Individual
 Edit Layout on touch or Show Hidden Items on desktop, then unhidden on the card.
 `hiddenScenes` must not be normalised against the currently fetched scene list:
 that list can be empty while the relay is offline.
+
+## The blog
+
+`homecast.cloud/blog/` lives in the web app: posts are markdown in
+`app-web/content/blog/`, images in `app-web/public/blog/<slug>/`. The build
+prerenders each post to `dist/blog/<slug>/index.html` (title, Open Graph,
+article body), plus `sitemap.xml` and `blog/feed.xml` — see
+`src/lib/blog/prerender.ts`. Firebase answers a directory's `index.html` only
+at the slashed URL, so `/blog/<slug>/` is canonical everywhere.
+
+A guide's code is tested from the published text: every
+`<!-- snippet: name -->` block runs in `src/lib/blog/__tests__/snippets.test.ts`
+against recorded API responses. App screenshots come from the mock home
+(`screenshots/blog.spec.ts`), never a real one.
 
 ## Analytics on a share link
 
