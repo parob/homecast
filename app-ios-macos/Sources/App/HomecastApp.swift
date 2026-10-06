@@ -2065,6 +2065,13 @@ struct WebViewContainer: UIViewRepresentable {
         Log.info("WebView container dismantled",
                  category: "webview",
                  metadata: ["url": uiView.url?.absoluteString ?? "-"])
+        // Dismantled is not dead: the page goes on running — it was seen
+        // navigating after this — and every native bridge it was handed still
+        // answers it. Cut it off before tearing the bridges down, so it can
+        // neither reach a shut-down bridge nor drive HomeKit beside its
+        // replacement.
+        uiView.stopLoading()
+        uiView.configuration.userContentController.removeAllScriptMessageHandlers()
         coordinator.tearDown()
     }
 
