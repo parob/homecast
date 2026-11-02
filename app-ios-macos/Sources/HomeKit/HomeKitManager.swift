@@ -1503,8 +1503,7 @@ class HomeKitManager: NSObject, ObservableObject {
     }
 
     /// Add characteristic-write actions to an action set (shared by scene
-    /// create/update; automation create has its own inline copy with
-    /// automation-specific error wrapping).
+    /// create/update; automations use addWrites, with their own error wrapping).
     private func addWriteActions(_ actionsParams: [[String: Any]], to actionSet: HMActionSet) async throws {
         for actionParam in actionsParams {
             guard let accessoryId = actionParam["accessoryId"] as? String,
@@ -1601,6 +1600,10 @@ class HomeKitManager: NSObject, ObservableObject {
         guard let actionsParams = params["actions"] as? [[String: Any]], !actionsParams.isEmpty else {
             throw HomeKitError.invalidRequest("At least one action is required")
         }
+        let writes = try resolveWrites(actionsParams)
+        guard !writes.isEmpty else {
+            throw HomeKitError.invalidRequest("At least one action is required")
+        }
 
         // 1. Create the trigger first
         let trigger: HMTrigger
@@ -1635,17 +1638,10 @@ class HomeKitManager: NSObject, ObservableObject {
                 actionSet = existingActionSet
             } else {
                 // No action set yet — create one via home and attach to trigger
-                let newActionSet: HMActionSet = try await withCheckedThrowingContinuation { continuation in
-                    home.addActionSet(withName: name) { actionSet, error in
-                        if let error = error {
-                            continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
-                        } else if let actionSet = actionSet {
-                            continuation.resume(returning: actionSet)
-                        } else {
-                            continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
-                        }
-                    }
-                }
+                let newActionSet = try await addActionSet(
+                    named: actionSetName(for: name, in: home), in: home,
+                    wrap: { HomeKitError.automationCreationFailed($0) }
+                )
                 createdActionSet = newActionSet
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     trigger.addActionSet(newActionSet) { error in
@@ -1660,25 +1656,7 @@ class HomeKitManager: NSObject, ObservableObject {
             }
 
             // 4. Add characteristic write actions
-            for actionParam in actionsParams {
-                guard let accessoryId = actionParam["accessoryId"] as? String,
-                      let characteristicType = actionParam["characteristicType"] as? String,
-                      let targetValue = actionParam["targetValue"] else {
-                    continue
-                }
-                let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
-                let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
-                let writeAction = HMCharacteristicWriteAction(characteristic: characteristic, targetValue: convertedValue as! NSCopying)
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    actionSet.addAction(writeAction) { error in
-                        if let error = error {
-                            continuation.resume(throwing: HomeKitError.automationCreationFailed(error))
-                        } else {
-                            continuation.resume()
-                        }
-                    }
-                }
-            }
+            try await addWrites(writes, to: actionSet, wrap: { HomeKitError.automationCreationFailed($0) })
 
             // 5. Enable the trigger
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -1723,7 +1701,7 @@ class HomeKitManager: NSObject, ObservableObject {
     private func removeOrphanedActionSets(_ actionSets: [HMActionSet], named name: String, in home: HMHome) async {
         for actionSet in actionSets {
             guard actionSet.actionSetType == HMActionSetTypeUserDefined else { continue }
-            guard actionSet.name == name else { continue }
+            guard isNamed(actionSet, for: name) else { continue }
             let stillReferenced = home.triggers.contains { other in
                 other.actionSets.contains { $0.uniqueIdentifier == actionSet.uniqueIdentifier }
             }
@@ -1875,6 +1853,35 @@ class HomeKitManager: NSObject, ObservableObject {
         return result.isEmpty ? nil : result
     }
 
+    /// Build the trigger predicate from conditions (characteristic equality, ANDed).
+    private func buildPredicate(from conditionsParams: [[String: Any]]?) throws -> NSPredicate? {
+        var predicates: [NSPredicate] = []
+        for condParam in conditionsParams ?? [] {
+            guard let condType = condParam["type"] as? String else { continue }
+            if condType == "characteristic" {
+                guard let accessoryId = condParam["accessoryId"] as? String,
+                      let characteristicType = condParam["characteristicType"] as? String,
+                      let value = condParam["value"] else { continue }
+                let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
+                let convertedValue = try CharacteristicMapper.convertValue(value, for: characteristic)
+                let predicate = HMEventTrigger.predicateForEvaluatingTrigger(
+                    characteristic,
+                    relatedBy: .equalTo,
+                    toValue: convertedValue
+                )
+                predicates.append(predicate)
+            }
+        }
+
+        if predicates.isEmpty {
+            return nil
+        } else if predicates.count == 1 {
+            return predicates[0]
+        } else {
+            return NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        }
+    }
+
     private func createEventTrigger(name: String, params: [String: Any], home: HMHome) async throws -> HMEventTrigger {
         guard let eventsParams = params["events"] as? [[String: Any]], !eventsParams.isEmpty else {
             throw HomeKitError.invalidRequest("Event trigger requires at least one event")
@@ -1891,35 +1898,7 @@ class HomeKitManager: NSObject, ObservableObject {
         // Parse recurrences
         let recurrences = parseRecurrences(from: params)
 
-        // Build predicate from conditions if provided
-        var predicates: [NSPredicate] = []
-        if let conditionsParams = params["conditions"] as? [[String: Any]] {
-            for condParam in conditionsParams {
-                guard let condType = condParam["type"] as? String else { continue }
-                if condType == "characteristic" {
-                    guard let accessoryId = condParam["accessoryId"] as? String,
-                          let characteristicType = condParam["characteristicType"] as? String,
-                          let value = condParam["value"] else { continue }
-                    let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
-                    let convertedValue = try CharacteristicMapper.convertValue(value, for: characteristic)
-                    let predicate = HMEventTrigger.predicateForEvaluatingTrigger(
-                        characteristic,
-                        relatedBy: .equalTo,
-                        toValue: convertedValue
-                    )
-                    predicates.append(predicate)
-                }
-            }
-        }
-
-        let predicate: NSPredicate?
-        if predicates.isEmpty {
-            predicate = nil
-        } else if predicates.count == 1 {
-            predicate = predicates[0]
-        } else {
-            predicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
-        }
+        let predicate = try buildPredicate(from: params["conditions"] as? [[String: Any]])
 
         // Use the extended init with endEvents and recurrences (iOS 11+)
         let trigger = HMEventTrigger(
@@ -1964,145 +1943,485 @@ class HomeKitManager: NSObject, ObservableObject {
             throw HomeKitError.automationNotFound(automationId)
         }
 
-        // Update name if provided
-        if let newName = params["name"] as? String, newName != trigger.name {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                trigger.updateName(newName) { error in
-                    if let error = error {
-                        continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                    } else {
-                        continuation.resume()
-                    }
+        // Nothing changes until the whole request has been checked: accessories
+        // resolved, values converted, the trigger parsed. Each part is then compared
+        // with what HomeKit holds and edited in place only where it differs, so the
+        // automation keeps its id, its scenes and its place in the grid, and a request
+        // that restates the current automation changes nothing. This used to delete the
+        // automation and build a new one; any failure in between lost it for good.
+        //
+        // A HomeKit failure part-way leaves an automation that still exists with some
+        // parts updated, and because every part is compared first, retrying the same
+        // request finishes the rest.
+        let newName = (params["name"] as? String).flatMap { $0 == trigger.name ? nil : $0 }
+        let finalName = newName ?? trigger.name
+        let enabled = (params["enabled"] as? Bool).flatMap { $0 == trigger.isEnabled ? nil : $0 }
+        let owned = ownedActionSets(of: trigger, in: home)
+
+        var writes: [AutomationWrite]? = nil
+        if let rawActions = params["actions"] {
+            guard let actionsParams = rawActions as? [[String: Any]] else {
+                throw HomeKitError.invalidRequest("actions must be an array")
+            }
+            let resolved = try resolveWrites(actionsParams)
+            guard !resolved.isEmpty else {
+                throw HomeKitError.invalidRequest("At least one action is required (disable or delete the automation instead)")
+            }
+            if writesKey(resolved) != actionsKey(of: trigger) {
+                if trigger.actionSets.contains(where: { $0.actionSetType == HMActionSetTypeTriggerOwned }) {
+                    throw HomeKitError.invalidRequest(Self.appleHomeActionsMessage)
                 }
+                writes = resolved
             }
         }
 
-        // Update enabled state if provided
-        if let enabled = params["enabled"] as? Bool, enabled != trigger.isEnabled {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                trigger.enable(enabled) { error in
-                    if let error = error {
-                        continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                    } else {
-                        continuation.resume()
-                    }
-                }
+        var triggerEdits: [() async throws -> Void] = []
+        if let rawTrigger = params["trigger"] {
+            guard let triggerParams = rawTrigger as? [String: Any],
+                  let triggerType = triggerParams["type"] as? String else {
+                throw HomeKitError.invalidRequest("Missing trigger configuration")
+            }
+            switch (triggerType, trigger) {
+            case ("event", let current as HMEventTrigger):
+                triggerEdits = try eventTriggerEdits(current, params: triggerParams)
+            case ("timer", let current as HMTimerTrigger)
+                where (triggerParams["timeZone"] as? String).map({ $0 == current.timeZone?.identifier }) ?? true:
+                triggerEdits = try await timerTriggerEdits(current, params: triggerParams)
+            case ("event", _), ("timer", _):
+                // Timer <-> event, or a new time zone: the edits HomeKit can't make in place.
+                return try await rebuildAutomation(
+                    trigger, in: home, triggerParams: triggerParams, writes: writes,
+                    name: finalName, enabled: params["enabled"] as? Bool ?? trigger.isEnabled, owned: owned
+                )
+            default:
+                throw HomeKitError.invalidRequest("Unknown trigger type: \(triggerType)")
             }
         }
 
-        // Update actions if provided
-        if let actionsParams = params["actions"] as? [[String: Any]] {
-            // Remove existing action sets and their actions
-            for actionSet in trigger.actionSets {
-                for action in actionSet.actions {
-                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                        actionSet.removeAction(action) { error in
-                            if let error = error {
-                                continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                            } else {
-                                continuation.resume()
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If there are existing action sets, add new actions to the first one
-            // Otherwise create a new action set
-            let actionSet: HMActionSet
-            if let existing = trigger.actionSets.first {
-                actionSet = existing
-            } else {
-                let newActionSet: HMActionSet = try await withCheckedThrowingContinuation { continuation in
-                    home.addActionSet(withName: "Homecast: \(trigger.name)") { as_, error in
-                        if let error = error {
-                            continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                        } else if let as_ = as_ {
-                            continuation.resume(returning: as_)
-                        } else {
-                            continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
-                        }
-                    }
-                }
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    trigger.addActionSet(newActionSet) { error in
-                        if let error = error {
-                            continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                        } else {
-                            continuation.resume()
-                        }
-                    }
-                }
-                actionSet = newActionSet
-            }
-
-            // Add new actions
-            for actionParam in actionsParams {
-                guard let accessoryId = actionParam["accessoryId"] as? String,
-                      let characteristicType = actionParam["characteristicType"] as? String,
-                      let targetValue = actionParam["targetValue"] else { continue }
-                let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
-                let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
-                let writeAction = HMCharacteristicWriteAction(characteristic: characteristic, targetValue: convertedValue as! NSCopying)
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    actionSet.addAction(writeAction) { error in
-                        if let error = error {
-                            continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                        } else {
-                            continuation.resume()
-                        }
-                    }
-                }
-            }
+        // Switching off goes first and switching on goes last, so a half-applied
+        // edit is never the one that fires.
+        if enabled == false {
+            try await homeKitCall { trigger.enable(false, completionHandler: $0) }
         }
-
-        // If trigger params changed (fire date, events, etc.), we need to delete and recreate
-        if params["trigger"] != nil {
-            let homeId = home.uniqueIdentifier.uuidString
-            // Save current action sets (also used for orphaned-scene cleanup —
-            // the recreate makes a fresh action set, stranding the old one)
-            let currentActionSets = trigger.actionSets
-            let oldTriggerName = trigger.name
-
-            // Delete old trigger
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                home.removeTrigger(trigger) { error in
-                    if let error = error {
-                        continuation.resume(throwing: HomeKitError.automationUpdateFailed(error))
-                    } else {
-                        continuation.resume()
-                    }
-                }
-            }
-
-            // Recreate with merged params (keep existing values where not overridden)
-            var createParams = params
-            if createParams["name"] == nil { createParams["name"] = trigger.name }
-            if createParams["actions"] == nil {
-                // Reconstruct actions from saved action sets
-                var actionsArr: [[String: Any]] = []
-                for actionSet in currentActionSets {
-                    for action in actionSet.actions {
-                        if let writeAction = action as? HMCharacteristicWriteAction<NSCopying> {
-                            let char = writeAction.characteristic
-                            actionsArr.append([
-                                "accessoryId": char.service?.accessory?.uniqueIdentifier.uuidString ?? "",
-                                "characteristicType": CharacteristicMapper.fromHomeKitType(char.characteristicType),
-                                "targetValue": writeAction.targetValue
-                            ])
-                        }
-                    }
-                }
-                createParams["actions"] = actionsArr
-            }
-            let recreated = try await createAutomation(homeId: homeId, params: createParams)
-            // The recreate built a fresh action set; clean up the old trigger's
-            // now-unreferenced one so it doesn't linger as an orphaned scene.
-            await removeOrphanedActionSets(currentActionSets, named: oldTriggerName, in: home)
-            return recreated
+        if let newName = newName {
+            try await homeKitCall { trigger.updateName(newName, completionHandler: $0) }
+        }
+        for edit in triggerEdits {
+            try await edit()
+        }
+        if let writes = writes {
+            try await replaceActions(of: trigger, in: home, with: writes, name: finalName, owned: owned)
+        } else if newName != nil, let set = owned.first {
+            // Keep Homecast's own action set named after its automation: later edits
+            // and deleting the automation find it by that name.
+            let setName = actionSetName(for: finalName, in: home)
+            await homeKitCallLogged("Rename action set '\(set.name)'") { set.updateName(setName, completionHandler: $0) }
+        }
+        if enabled == true {
+            try await homeKitCall { trigger.enable(true, completionHandler: $0) }
         }
 
         return AutomationModel(from: trigger, homeId: home.uniqueIdentifier.uuidString)
+    }
+
+    static let appleHomeActionsMessage =
+        "This automation was made in the Apple Home app, so its actions can only be changed there. " +
+        "Homecast can still rename it or turn it on and off."
+
+    /// The in-place edits that make an event trigger match `params`, one per part
+    /// that differs. Everything is parsed here, before any edit runs.
+    private func eventTriggerEdits(_ trigger: HMEventTrigger, params: [String: Any]) throws -> [() async throws -> Void] {
+        guard let eventsParams = params["events"] as? [[String: Any]], !eventsParams.isEmpty else {
+            throw HomeKitError.invalidRequest("Event trigger requires at least one event")
+        }
+        let events = try parseEvents(from: eventsParams)
+        let endEvents = try parseEvents(from: params["endEvents"] as? [[String: Any]] ?? [])
+        let predicate = try buildPredicate(from: params["conditions"] as? [[String: Any]])
+        let recurrences = parseRecurrences(from: params)
+        let executeOnce = params["executeOnce"] as? Bool ?? false
+
+        var edits: [() async throws -> Void] = []
+        if eventsKey(events) != eventsKey(trigger.events) {
+            edits.append { try await self.homeKitCall { trigger.updateEvents(events, completionHandler: $0) } }
+        }
+        if eventsKey(endEvents) != eventsKey(trigger.endEvents) {
+            edits.append { try await self.homeKitCall { trigger.updateEndEvents(endEvents, completionHandler: $0) } }
+        }
+        if conditionsKey(predicate) != conditionsKey(trigger.predicate) {
+            edits.append { try await self.homeKitCall { trigger.updatePredicate(predicate, completionHandler: $0) } }
+        }
+        if recurrencesKey(recurrences) != recurrencesKey(trigger.recurrences) {
+            edits.append { try await self.homeKitCall { trigger.updateRecurrences(recurrences, completionHandler: $0) } }
+        }
+        if executeOnce != trigger.executeOnce {
+            edits.append { try await self.homeKitCall { trigger.updateExecuteOnce(executeOnce, completionHandler: $0) } }
+        }
+        return edits
+    }
+
+    /// The same for a timer trigger, judged against the trigger create would build.
+    private func timerTriggerEdits(_ trigger: HMTimerTrigger, params: [String: Any]) async throws -> [() async throws -> Void] {
+        let proposed = try await createTimerTrigger(name: trigger.name, params: params)
+
+        let sameFireDate: Bool
+        if params["fireDate"] == nil {
+            // hour/minute name a time of day; the stored date is just its first occurrence.
+            let calendar = Calendar.current
+            sameFireDate = calendar.dateComponents([.hour, .minute], from: proposed.fireDate)
+                == calendar.dateComponents([.hour, .minute], from: trigger.fireDate)
+        } else {
+            sameFireDate = abs(proposed.fireDate.timeIntervalSince(trigger.fireDate)) < 1
+        }
+
+        var edits: [() async throws -> Void] = []
+        if !sameFireDate {
+            let fireDate = proposed.fireDate
+            edits.append { try await self.homeKitCall { trigger.updateFireDate(fireDate, completionHandler: $0) } }
+        }
+        let fields: [Calendar.Component] = [.weekOfYear, .month, .day, .weekday, .hour, .minute]
+        if componentsKey(proposed.recurrence, fields) != componentsKey(trigger.recurrence, fields) {
+            let recurrence = proposed.recurrence
+            edits.append { try await self.homeKitCall { trigger.updateRecurrence(recurrence, completionHandler: $0) } }
+        }
+        return edits
+    }
+
+    /// Give the automation exactly `writes`. Homecast's own action set for it is
+    /// edited in place, so its scene keeps its id; failing that, a new set is built
+    /// and attached before anything is let go. Any other set — a scene the user
+    /// made, a built-in one — stops being run by this automation and is otherwise
+    /// left exactly as it was. (This used to empty every attached set, the user's
+    /// own scenes included, which then did nothing wherever else they were used.)
+    private func replaceActions(of trigger: HMTrigger, in home: HMHome, with writes: [AutomationWrite], name: String, owned: [HMActionSet]) async throws {
+        let target: HMActionSet
+        if let set = owned.first {
+            try await setWrites(of: set, to: writes)
+            target = set
+        } else {
+            let set = try await addActionSet(named: actionSetName(for: name, in: home), in: home)
+            do {
+                try await addWrites(writes, to: set)
+                try await homeKitCall { trigger.addActionSet(set, completionHandler: $0) }
+            } catch {
+                await homeKitCallLogged("Remove unused action set '\(set.name)'") { home.removeActionSet(set, completionHandler: $0) }
+                throw error
+            }
+            target = set
+        }
+        for set in trigger.actionSets where set.uniqueIdentifier != target.uniqueIdentifier {
+            try await homeKitCall { trigger.removeActionSet(set, completionHandler: $0) }
+        }
+        await removeUnreferenced(owned.filter { $0.uniqueIdentifier != target.uniqueIdentifier }, in: home)
+    }
+
+    /// Make `actionSet` hold exactly `writes`, touching only the actions that differ.
+    /// HomeKit keeps one write per characteristic in a set, so the last one wins.
+    private func setWrites(of actionSet: HMActionSet, to writes: [AutomationWrite]) async throws {
+        var wanted: [UUID: AutomationWrite] = [:]
+        for write in writes {
+            wanted[write.characteristic.uniqueIdentifier] = write
+        }
+        for action in actionSet.actions {
+            guard let existing = action as? HMCharacteristicWriteAction<NSCopying>,
+                  let write = wanted.removeValue(forKey: existing.characteristic.uniqueIdentifier) else {
+                try await homeKitCall { actionSet.removeAction(action, completionHandler: $0) }
+                continue
+            }
+            if valueKey(existing.targetValue) != valueKey(write.value) {
+                try await homeKitCall { existing.updateTargetValue(write.value, completionHandler: $0) }
+            }
+        }
+        try await addWrites(Array(wanted.values), to: actionSet)
+    }
+
+    /// Change an automation's trigger type (or a timer's time zone), the one edit
+    /// HomeKit can't make in place. The replacement is built switched off and
+    /// complete before the original is removed; if anything fails before then, the
+    /// replacement goes and the original is untouched. The automation gets a new id.
+    private func rebuildAutomation(
+        _ old: HMTrigger, in home: HMHome, triggerParams: [String: Any], writes: [AutomationWrite]?,
+        name: String, enabled: Bool, owned: [HMActionSet]
+    ) async throws -> AutomationModel {
+        // What the replacement runs: the new actions, or the original's. Scenes are
+        // attached as they are; Apple Home's trigger-owned set can't move to another
+        // trigger, so its writes are copied, and anything else in it is refused
+        // rather than dropped.
+        var newWrites = writes
+        var reused: [HMActionSet] = []
+        if writes == nil {
+            var copied: [AutomationWrite] = []
+            for set in old.actionSets {
+                guard set.actionSetType == HMActionSetTypeTriggerOwned else {
+                    reused.append(set)
+                    continue
+                }
+                for action in set.actions {
+                    guard let write = action as? HMCharacteristicWriteAction<NSCopying> else {
+                        throw HomeKitError.invalidRequest(Self.appleHomeActionsMessage)
+                    }
+                    copied.append(AutomationWrite(characteristic: write.characteristic, value: write.targetValue))
+                }
+            }
+            if !copied.isEmpty { newWrites = copied }
+        }
+
+        let replacement: HMTrigger
+        let temporaryName = availableName(name, taken: home.triggers.map(\.name))
+        if triggerParams["type"] as? String == "timer" {
+            replacement = try await createTimerTrigger(name: temporaryName, params: triggerParams)
+        } else {
+            replacement = try await createEventTrigger(name: temporaryName, params: triggerParams, home: home)
+        }
+        try await homeKitCall { home.addTrigger(replacement, completionHandler: $0) }
+
+        var newSet: HMActionSet? = nil
+        do {
+            if let newWrites = newWrites {
+                let set = try await addActionSet(named: actionSetName(for: name, in: home), in: home)
+                newSet = set
+                try await addWrites(newWrites, to: set)
+                try await homeKitCall { replacement.addActionSet(set, completionHandler: $0) }
+            }
+            for set in reused {
+                try await homeKitCall { replacement.addActionSet(set, completionHandler: $0) }
+            }
+            try await homeKitCall { home.removeTrigger(old, completionHandler: $0) }
+        } catch {
+            if let set = newSet {
+                await homeKitCallLogged("Rollback: remove action set '\(set.name)'") { home.removeActionSet(set, completionHandler: $0) }
+            }
+            await homeKitCallLogged("Rollback: remove trigger '\(replacement.name)'") { home.removeTrigger(replacement, completionHandler: $0) }
+            throw error
+        }
+
+        // The original is gone. From here a failure is reported, but the automation exists.
+        await removeUnreferenced(owned, in: home)
+        // Homecast's own set came across as it was. Rename it first: an automation
+        // can't be renamed to a scene's name, and older relays named the set exactly
+        // like the automation.
+        let expected = "Homecast: \(name)"
+        for set in owned where replacement.actionSets.contains(where: { $0.uniqueIdentifier == set.uniqueIdentifier }) && set.name != expected {
+            let setName = actionSetName(for: name, in: home)
+            await homeKitCallLogged("Rename action set '\(set.name)'") { set.updateName(setName, completionHandler: $0) }
+        }
+        if replacement.name != name {
+            await homeKitCallLogged("Rename trigger '\(replacement.name)'") { replacement.updateName(name, completionHandler: $0) }
+        }
+        if enabled {
+            try await homeKitCall { replacement.enable(true, completionHandler: $0) }
+        }
+        return AutomationModel(from: replacement, homeId: home.uniqueIdentifier.uuidString)
+    }
+
+    // MARK: Automation helpers
+
+    /// A characteristic write resolved against the home, before anything changes.
+    private struct AutomationWrite {
+        let characteristic: HMCharacteristic
+        let value: NSCopying
+    }
+
+    /// Resolve every action up front, so an unknown accessory, characteristic or
+    /// value fails with nothing created or removed.
+    private func resolveWrites(_ actionsParams: [[String: Any]]) throws -> [AutomationWrite] {
+        try actionsParams.compactMap { actionParam in
+            guard let accessoryId = actionParam["accessoryId"] as? String,
+                  let characteristicType = actionParam["characteristicType"] as? String,
+                  let targetValue = actionParam["targetValue"] else {
+                return nil
+            }
+            let (_, characteristic) = try findCharacteristic(accessoryId: accessoryId, type: characteristicType)
+            let convertedValue = try CharacteristicMapper.convertValue(targetValue, for: characteristic)
+            return AutomationWrite(characteristic: characteristic, value: convertedValue as! NSCopying)
+        }
+    }
+
+    private func addWrites(
+        _ writes: [AutomationWrite], to actionSet: HMActionSet,
+        wrap: @escaping @Sendable (Error) -> HomeKitError = { HomeKitError.automationUpdateFailed($0) }
+    ) async throws {
+        for write in writes {
+            let action = HMCharacteristicWriteAction(characteristic: write.characteristic, targetValue: write.value)
+            try await homeKitCall(wrap) { actionSet.addAction(action, completionHandler: $0) }
+        }
+    }
+
+    private func addActionSet(
+        named name: String, in home: HMHome,
+        wrap: @escaping @Sendable (Error) -> HomeKitError = { HomeKitError.automationUpdateFailed($0) }
+    ) async throws -> HMActionSet {
+        try await withCheckedThrowingContinuation { continuation in
+            home.addActionSet(withName: name) { actionSet, error in
+                if let error = error {
+                    continuation.resume(throwing: wrap(error))
+                } else if let actionSet = actionSet {
+                    continuation.resume(returning: actionSet)
+                } else {
+                    continuation.resume(throwing: HomeKitError.invalidRequest("Failed to create action set"))
+                }
+            }
+        }
+    }
+
+    /// Await one HomeKit completion-handler call, wrapping its error.
+    private func homeKitCall(
+        _ wrap: @escaping @Sendable (Error) -> HomeKitError = { HomeKitError.automationUpdateFailed($0) },
+        _ call: (@escaping @Sendable (Error?) -> Void) -> Void
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            call { error in
+                if let error = error {
+                    continuation.resume(throwing: wrap(error))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    /// The same, for cleanup that must not fail the change it follows.
+    private func homeKitCallLogged(_ label: String, _ call: (@escaping @Sendable (Error?) -> Void) -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            call { error in
+                if let error = error {
+                    print("[HomeKit] \(label) failed: \(error.localizedDescription)")
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Whether Homecast made `actionSet` for the automation called `name`:
+    /// "Homecast: <name>" (numbered if that was taken), or just "<name>" from
+    /// relays before the prefix.
+    private func isNamed(_ actionSet: HMActionSet, for name: String) -> Bool {
+        let prefixed = "Homecast: \(name)"
+        if actionSet.name == name || actionSet.name == prefixed { return true }
+        guard actionSet.name.hasPrefix(prefixed + " ") else { return false }
+        return Int(actionSet.name.dropFirst(prefixed.count + 1)) != nil
+    }
+
+    /// The action sets Homecast made for this automation and nothing else runs.
+    /// Everything else attached belongs to the user.
+    private func ownedActionSets(of trigger: HMTrigger, in home: HMHome) -> [HMActionSet] {
+        trigger.actionSets.filter { set in
+            set.actionSetType == HMActionSetTypeUserDefined
+                && isNamed(set, for: trigger.name)
+                && !home.triggers.contains { other in
+                    other.uniqueIdentifier != trigger.uniqueIdentifier
+                        && other.actionSets.contains { $0.uniqueIdentifier == set.uniqueIdentifier }
+                }
+        }
+    }
+
+    private func removeUnreferenced(_ actionSets: [HMActionSet], in home: HMHome) async {
+        for set in actionSets {
+            let referenced = home.triggers.contains { trigger in
+                trigger.actionSets.contains { $0.uniqueIdentifier == set.uniqueIdentifier }
+            }
+            if referenced { continue }
+            await homeKitCallLogged("Remove action set '\(set.name)'") { home.removeActionSet(set, completionHandler: $0) }
+        }
+    }
+
+    /// The name for an action set Homecast makes for an automation. It is never the
+    /// automation's own name, because HomeKit refuses a scene named like an
+    /// automation that has been renamed to it, and refuses renaming an automation
+    /// to a scene's name. Two action sets can't share a name either — every scene
+    /// is one — which is why creating an automation named like a scene used to
+    /// fail with "Object already exists".
+    private func actionSetName(for automation: String, in home: HMHome) -> String {
+        availableName("Homecast: \(automation)", taken: home.actionSets.map(\.name))
+    }
+
+    private func availableName(_ base: String, taken names: [String]) -> String {
+        let taken = Set(names.map { $0.lowercased() })
+        guard taken.contains(base.lowercased()) else { return base }
+        var number = 2
+        while taken.contains("\(base) \(number)".lowercased()) { number += 1 }
+        return "\(base) \(number)"
+    }
+
+    // Comparison keys: each part of an update is compared with what HomeKit holds
+    // through these. Values compare as numbers, because HomeKit hands a stored
+    // `true` back as 1 and a Float back as a Double.
+
+    private func valueKey(_ value: Any?) -> String {
+        guard let value = value else { return "nil" }
+        if let number = value as? NSNumber { return String(format: "n:%.4f", number.doubleValue) }
+        if let string = value as? String { return "s:" + string }
+        return "o:\(value)"
+    }
+
+    private func componentsKey(_ components: DateComponents?, _ fields: [Calendar.Component]) -> String {
+        guard let components = components else { return "" }
+        return fields.compactMap { field -> String? in
+            guard let value = components.value(for: field), value != NSDateComponentUndefined else { return nil }
+            return "\(field)=\(value)"
+        }.joined(separator: ",")
+    }
+
+    private func eventsKey(_ events: [HMEvent]) -> String {
+        events.map { event -> String in
+            if let event = event as? HMCharacteristicEvent<NSCopying> {
+                return "characteristic|\(event.characteristic.uniqueIdentifier)|\(valueKey(event.triggerValue))"
+            }
+            if let event = event as? HMSignificantTimeEvent {
+                let offset = event.offset
+                let part = { (value: Int?) -> Int in
+                    guard let value = value, value != NSDateComponentUndefined else { return 0 }
+                    return value
+                }
+                return "significantTime|\(event.significantEvent.rawValue)|\(part(offset?.hour) * 60 + part(offset?.minute))"
+            }
+            if let event = event as? HMCalendarEvent {
+                return "calendar|" + componentsKey(event.fireDateComponents, [.month, .day, .weekday, .hour, .minute])
+            }
+            if let event = event as? HMDurationEvent {
+                return "duration|\(event.duration)"
+            }
+            // Presence, location, thresholds: nothing a request can restate.
+            return "other|\(event.uniqueIdentifier)"
+        }.sorted().joined(separator: "\n")
+    }
+
+    private func recurrencesKey(_ recurrences: [DateComponents]?) -> String {
+        (recurrences ?? []).map { componentsKey($0, [.weekOfYear, .month, .day, .weekday, .hour, .minute]) }
+            .sorted().joined(separator: "\n")
+    }
+
+    private func conditionsKey(_ predicate: NSPredicate?) -> String {
+        let timeKey = { (time: [String: Int]?) -> String in
+            (time ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        }
+        return AutomationConditionModel.from(predicate: predicate).map { condition -> String in
+            [
+                condition.type,
+                condition.accessoryId ?? "",
+                condition.characteristicType ?? "",
+                condition.comparisonOperator ?? "",
+                valueKey(condition.value?.toFoundation()),
+                timeKey(condition.beforeTime),
+                timeKey(condition.afterTime),
+                condition.beforeEvent ?? "",
+                condition.afterEvent ?? "",
+                condition.type == "unknown" ? condition.predicateFormat ?? "" : "",
+            ].joined(separator: "|")
+        }.sorted().joined(separator: "\n")
+    }
+
+    private func writesKey(_ writes: [AutomationWrite]) -> String {
+        writes.map { "\($0.characteristic.uniqueIdentifier)=\(valueKey($0.value))" }
+            .sorted().joined(separator: "\n")
+    }
+
+    private func actionsKey(of trigger: HMTrigger) -> String {
+        trigger.actionSets.flatMap { $0.actions }.map { action -> String in
+            if let write = action as? HMCharacteristicWriteAction<NSCopying> {
+                return "\(write.characteristic.uniqueIdentifier)=\(valueKey(write.targetValue))"
+            }
+            return "other|\(action.uniqueIdentifier)"
+        }.sorted().joined(separator: "\n")
     }
 
     func deleteAutomation(automationId: String) async throws {
