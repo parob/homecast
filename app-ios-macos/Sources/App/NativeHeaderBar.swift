@@ -633,7 +633,17 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             // launch the page has not yet told the web view its canvas colour
             // when the first heading arrives, and a ghost coloured then was
             // black behind the pop.
-            let ghost = GhostController(snapshot: pendingSnapshot, fallback: { [weak web] in
+            // No picture of the home when the app opened straight onto the
+            // room — nothing was on screen to take one of. The pop then slid
+            // the room away onto the bare backdrop, which read as Back going
+            // to a grey screen (parob/homecast-cloud#227). Stand the home's
+            // loading placeholder in instead, the one a never-visited home
+            // gets on the home swipe: its name, a spinner, a tile skeleton.
+            let placeholder: UIView? = pendingSnapshot == nil
+                ? HomeLoadingView(name: model.title, dark: model.appearance == "dark",
+                                  topInset: nav.navigationBar.frame.maxY)
+                : nil
+            let ghost = GhostController(snapshot: pendingSnapshot ?? placeholder, fallback: { [weak web] in
                 web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
             })
             pendingSnapshot = nil
@@ -1648,6 +1658,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         edge == .top && largeTitleEnabled ? proxy : super.contentScrollView(for: edge)
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // `bind` applies before the view is in a window, so the window's
+        // status-bar style (#228) would wait for the page's next change.
+        if let model = boundModel { apply(model) }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
@@ -1681,10 +1698,19 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// own — the faint gradient at the top of the page. Wanted in portrait,
     /// where it is part of how the bar reads; not in the sidebar layout, where
     /// the bar is two floating buttons and the page should look untouched.
+    ///
+    /// Soft, said outright. Left `.automatic`, UIKit is free to pick the
+    /// HARD style — an opaque slab with a sharp lower edge, filled from the
+    /// colour behind the page — and on iOS 27 that is what it drew: scroll a
+    /// home whose wallpaper has blue sky along its top and the whole bar went
+    /// one flat blue, nothing like the gradient this is here for
+    /// (parob/homecast-cloud#257).
     private func applyEdgeEffects() {
         guard #available(iOS 26.0, *) else { return }
         proxy.topEdgeEffect.isHidden = !largeTitleEnabled
+        proxy.topEdgeEffect.style = .soft
         webScrollView?.topEdgeEffect.isHidden = !largeTitleEnabled
+        webScrollView?.topEdgeEffect.style = .soft
     }
 
     /// The web view is created by SwiftUI some time after this controller's
@@ -2363,6 +2389,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             moreItem.tintColor = ink
             searchItem.tintColor = ink
         }
+        // The status bar itself, set on the window directly (parob/homecast-cloud#228).
+        // `NativeHeaderColorScheme` asks SwiftUI for the same thing through
+        // `preferredColorScheme`, but the clock still went white-on-white over
+        // full-screen Analytics on iOS 27, and nobody has seen that lever work
+        // on a device. The window's style is what a `.default` status bar
+        // resolves its ink from, so this answer cannot be lost on the way.
+        // Same value as the SwiftUI lever (nil when the bar is off), and not
+        // held while pushing: that lever never was.
+        if let window = view.window {
+            let windowStyle: UIUserInterfaceStyle = model.enabled ? style : .unspecified
+            if window.overrideUserInterfaceStyle != windowStyle {
+                window.overrideUserInterfaceStyle = windowStyle
+                window.rootViewController?.setNeedsStatusBarAppearanceUpdate()
+            }
+        }
         refreshControl.tintColor = ink
         refreshIndicator.color = ink ?? .secondaryLabel
         inlineTitle.configuration?.baseForegroundColor = ink ?? .label
@@ -2396,7 +2437,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
                 // standard, blurred background — a band across the top of a
                 // layout that wants none. Transparent in the sidebar layout;
                 // the system defaults, and the scroll-edge effect, in portrait.
-                if largeTitleEnabled {
+                if largeTitleEnabled, #available(iOS 26.0, *) {
+                    // iOS 26 and later: no background of the bar's own. The
+                    // soft edge effect (`applyEdgeEffects`) is the whole
+                    // treatment once the page scrolls under it; a default
+                    // background is what turned that into a solid band of
+                    // the wallpaper's sky colour (parob/homecast-cloud#257).
+                    let edgeOnly = UINavigationBarAppearance()
+                    edgeOnly.configureWithTransparentBackground()
+                    bar.standardAppearance = edgeOnly
+                    bar.scrollEdgeAppearance = edgeOnly
+                    bar.compactAppearance = edgeOnly
+                } else if largeTitleEnabled {
                     bar.standardAppearance = UINavigationBarAppearance()
                     bar.scrollEdgeAppearance = nil
                     bar.compactAppearance = nil
