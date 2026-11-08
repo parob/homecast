@@ -908,6 +908,32 @@ failed only at the App Store archive. That cost build 57 on 2026-08-26 (`cannot 
 'relayWSBridge' in scope`, after a green run). Both are unsigned compile checks; signing and
 upload stay in `testflight.yml`.
 
+### Reproducing iOS reports from the cloud routine
+
+The routine's sandbox being Linux does **not** mean an iOS report is untestable.
+Push a test-first `ios-repro/<issue>-<description>` branch in `parob/homecast`:
+`.github/workflows/ios-reproduction.yml` builds and runs the actual app with
+XCTest UI automation on a hosted Mac. It keeps screenshots, a screen recording,
+accessibility trees, logs, and `.xcresult` on failure as well as success. No
+Actions dispatch, TestFlight upload, Apple credentials, or merge is needed.
+
+Read **[app-ios-macos/UITests/README.md](app-ios-macos/UITests/README.md)** before
+classifying a native UI report as `needs-device-check`. Add an issue-specific
+reproduction first, push it, inspect the failing run, then fix and rerun the
+same scenario. The included local-page smoke test only proves the harness and
+native bridge work; it is not verification of another report. Cite the actual
+native/web revisions and simulator OS with before/after evidence. An unavailable
+reported OS, real HomeKit requirement, or inaccessible artifact is a specific
+remaining limitation, not a reason to claim the issue was reproduced or fixed.
+The production debug connector stays read-only.
+
+Local equivalent: `python3 app-ios-macos/scripts/reproduce-ios.py --output /tmp/homecast-repro`.
+The default fixture needs no account; a reproduction may select a web revision
+and test/OS through `.github/ios-repro.json`. Evidence expires after 30 days;
+copy selected media through the existing report-attachment path for permanent
+inline previews. Keep unverified fixes draft; opening a PR never authorizes a
+release or a merge.
+
 ### Triggering a build from a GitHub App token (the issue routine)
 
 **The routine ships a build by editing a file, because it cannot call an API.**

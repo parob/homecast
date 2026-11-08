@@ -74,6 +74,7 @@
 		C100000DA /* TelemetryReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000DF /* TelemetryReporter.swift */; };
 		D1000001A /* PurchaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000001F /* PurchaseManager.swift */; };
 		D1000002A /* PurchaseBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000002F /* PurchaseBridge.swift */; };
+		F1000001A /* ReproductionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000001F /* ReproductionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -91,6 +92,7 @@
 			remoteGlobalIDString = A2000000T;
 			remoteInfo = MenuBarPlugin;
 		};
+		F1000040P /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A0000000P; proxyType = 1; remoteGlobalIDString = A1000000T; remoteInfo = Homecast; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -181,6 +183,8 @@
 		C100000DF /* TelemetryReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryReporter.swift; sourceTree = "<group>"; };
 		D1000001F /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
 		D1000002F /* PurchaseBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseBridge.swift; sourceTree = "<group>"; };
+		F1000001F /* ReproductionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReproductionTests.swift; sourceTree = "<group>"; };
+		F1000000P /* HomecastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HomecastUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -208,6 +212,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F1000061P /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -225,6 +230,7 @@
 			children = (
 				42BCDD2C2FA7725000692926 /* Products.storekit */,
 				A0000002G /* Sources */,
+				F1000000G /* UITests */,
 				A0000003G /* Resources */,
 				A0000004G /* Frameworks */,
 				A0000005G /* Products */,
@@ -272,6 +278,7 @@
 			isa = PBXGroup;
 			children = (
 				A3000000P /* Homecast.app */,
+				F1000000P /* HomecastUITests.xctest */,
 				A2000000P /* MenuBarPlugin.bundle */,
 				E1000000P /* HomecastNotificationService.appex */,
 			);
@@ -385,6 +392,7 @@
 			path = Purchases;
 			sourceTree = "<group>";
 		};
+		F1000000G /* UITests */ = {isa = PBXGroup; children = (F1000001F /* ReproductionTests.swift */, ); path = UITests; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -442,6 +450,17 @@
 			productReference = A2000000P /* MenuBarPlugin.bundle */;
 			productType = "com.apple.product-type.bundle";
 		};
+		F1000000T /* HomecastUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F1000080L;
+			buildPhases = (F1000060P, F1000061P, );
+			buildRules = ();
+			dependencies = (F1000041D, );
+			name = HomecastUITests;
+			productName = HomecastUITests;
+			productReference = F1000000P;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -451,6 +470,7 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
+					F1000000T = {CreatedOnToolsVersion = 26.0; TestTargetID = A1000000T; };
 					A1000000T = {
 						CreatedOnToolsVersion = 15.0;
 					};
@@ -472,6 +492,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				F1000000T /* HomecastUITests */,
 				A1000000T /* Homecast */,
 				A2000000T /* MenuBarPlugin */,
 				E1000000T /* HomecastNotificationService */,
@@ -599,6 +620,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F1000060P /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F1000001A /* ReproductionTests.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -613,6 +635,7 @@
 			target = A2000000T /* MenuBarPlugin */;
 			targetProxy = A1000040P /* PBXContainerItemProxy */;
 		};
+		F1000041D /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A1000000T /* Homecast */; targetProxy = F1000040P; };
 /* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
@@ -920,6 +943,36 @@
 			};
 			name = Release;
 		};
+		F1000081C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Homecast;
+			};
+			name = Debug;
+		};
+		F1000082C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.homecast.app.UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Homecast;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -959,6 +1012,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F1000080L /* Build configuration list for PBXNativeTarget "HomecastUITests" */ = {isa = XCConfigurationList; buildConfigurations = (F1000081C, F1000082C, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 	};
 	rootObject = A0000000P /* Project object */;
