@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Homecast native reproduction fixture</title>
+<style>
+  :root { color-scheme: dark; font: 18px system-ui; background: #182433; color: white; }
+  body { margin: 0; padding: var(--bar, 160px) 24px 40px; min-height: 220vh;
+    background: repeating-linear-gradient(120deg, #5a7093 0 80px, #96745a 80px 160px, #43576a 160px 240px); background-attachment: fixed; }
+  section { padding: 24px; border-radius: 24px; background: #ffffff18; margin: 24px 0; }
+  #scroll { position: fixed; bottom: 24px; left: 24px; background: #182433; padding: 12px; }
+</style>
+<h1>Native UI test home</h1>
+<p id="ready">Waiting for native bridge</p>
+<p id="event">Waiting for native search</p>
+<section>Synthetic room data. No account or real accessories.</section>
+<section>This page exercises the actual iOS header and scroll view.</section>
+<p id="scroll">Waiting for scroll</p>
+<script>
+  const post = message => window.webkit.messageHandlers.homecast.postMessage(message);
+  window.__homecastNativeHeader = {
+    setEnabled(enabled, bar) {
+      document.documentElement.style.setProperty('--bar', `${bar || 160}px`);
+      document.querySelector('#ready').textContent = enabled ? 'Fixture ready' : 'Header disabled';
+    },
+    tap(control) { document.querySelector('#event').textContent = `Native ${control} received`; },
+    refresh() { post({ action: 'header.refreshDone' }); },
+  };
+  post({ action: 'header.setState', title: 'Native UI test home', heading: 'Native UI test home',
+    showMenu: true, showSearch: true, showOverflow: true, largeTitle: true,
+    covered: false, appearance: 'dark', statusColor: '#10b981', subtitle: 'Test fixture',
+    homes: [{ id: 'fixture', name: 'Native UI test home' }], currentHomeId: 'fixture' });
+  post({ action: 'backgroundColor', color: '#5a7093' });
+  post({ action: 'header.ready' });
+  post({ action: 'header.painted' });
+  addEventListener('scroll', () => {
+    if (scrollY > 30) document.querySelector('#scroll').textContent = 'Scroll received';
+  });
+</script>
+</html>

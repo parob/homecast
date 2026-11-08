@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html{background:#263950;color:white;font:20px system-ui}body{margin:0;padding:180px 24px}button{font:inherit;padding:18px}#cover{display:none;position:fixed;inset:0;background:white;color:black;padding:100px 24px}</style>
+<p id="ready">Waiting for native bridge</p><button onclick="showCover()">Open light Analytics cover</button>
+<div id="cover"><h1>Analytics fixture</h1><p>The system clock and battery should be dark on this white cover.</p><button onclick="closeCover()">Close Analytics cover</button></div>
+<script>
+const post = message => window.webkit.messageHandlers.homecast.postMessage(message);
+window.__homecastNativeHeader={setEnabled(enabled,bar){document.body.style.paddingTop=`${bar||180}px`;document.querySelector('#ready').textContent='Status fixture ready';}};
+function showCover(){document.querySelector('#cover').style.display='block';post({action:'header.setState',covered:true,coverAppearance:'light'});post({action:'backgroundColor',color:'#ffffff'});}
+function closeCover(){document.querySelector('#cover').style.display='none';post({action:'header.setState',covered:false});post({action:'backgroundColor',color:'#263950'});}
+post({action:'header.setState',title:'Fixture home',heading:'Fixture home',largeTitle:true,covered:false,appearance:'dark',showSearch:true});
+post({action:'backgroundColor',color:'#263950'});post({action:'header.ready'});post({action:'header.painted'});
+</script></html>

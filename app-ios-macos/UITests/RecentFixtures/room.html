@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html {background:#697681;color:white;font:20px system-ui} body{margin:0;padding:180px 24px} section{padding:30px;background:#ffffff20;border-radius:24px}</style>
+<h1 id="heading">Restored bedroom</h1><section id="ready">Waiting for native bridge</section>
+<script>
+const post = message => window.webkit.messageHandlers.homecast.postMessage(message);
+window.__homecastNativeHeader = {
+  setEnabled(enabled, bar) { document.body.style.paddingTop = `${bar || 180}px`; document.querySelector('#ready').textContent = 'Room fixture ready'; },
+  navigate(id) {
+    if (id !== 'home:') return;
+    // A delayed web response makes the native cold-start destination visible.
+    setTimeout(() => {
+      document.querySelector('#heading').textContent = 'Home content ready';
+      post({action:'header.setState', heading:'Fixture home'});
+      requestAnimationFrame(() => requestAnimationFrame(() => post({action:'header.painted'})));
+    }, 1300);
+  },
+};
+post({action:'backgroundColor', color:'#697681'});
+// Start on a room: never render a Home frame for the navigator to snapshot.
+post({action:'header.setState', title:'Fixture home', heading:'Restored bedroom',
+  largeTitle:true, covered:false, appearance:'dark', showSearch:true,
+  homes:[{id:'fixture',name:'Fixture home'}],currentHomeId:'fixture'});
+post({action:'header.ready'}); post({action:'header.painted'});
+</script></html>

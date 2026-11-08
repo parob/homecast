@@ -88,12 +88,22 @@ jobs:
           if [[ -n "$REQUEST_OS" ]]; then args+=(--os "$REQUEST_OS"); fi
           if [[ -n "$REQUEST_TEST" ]]; then args+=(--only-testing "$REQUEST_TEST"); fi
           if [[ -n "$REQUEST_WEB_REF" ]]; then args+=(--web-root "$GITHUB_WORKSPACE/app-web/dist"); fi
+          node app-ios-macos/UITests/prepare-recent.mjs "$GITHUB_WORKSPACE/app-web" > "$RUNNER_TEMP/ios-mock-api.log" 2>&1 &
+          mock_pid=$!
+          trap 'kill "$mock_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..50}; do
+            if grep -q '^READY ' "$RUNNER_TEMP/ios-mock-api.log"; then break; fi
+            if ! kill -0 "$mock_pid" 2>/dev/null; then cat "$RUNNER_TEMP/ios-mock-api.log"; exit 1; fi
+            sleep 0.2
+          done
+          grep '^READY ' "$RUNNER_TEMP/ios-mock-api.log"
           python3 app-ios-macos/scripts/reproduce-ios.py "${args[@]}"
 
       - name: Record checked out revisions
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/ios-evidence"
+          cp "$RUNNER_TEMP/ios-mock-api.log" "$RUNNER_TEMP/ios-evidence/" || true
           git rev-parse HEAD > "$RUNNER_TEMP/ios-evidence/native-sha.txt"
           if [[ -d app-web/.git ]]; then
             git -C app-web rev-parse HEAD > "$RUNNER_TEMP/ios-evidence/web-sha.txt"
