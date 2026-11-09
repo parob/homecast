@@ -1337,6 +1337,14 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             if let snapshot {
                 self.snapshot = nil
                 snapshot.removeFromSuperview()
+                // A picture covers every pixel; the loading placeholder does
+                // not — it is drawn over this controller's backdrop. Lifted
+                // off it bare, it became a see-through cover and the room
+                // the page was still showing read through it, title over
+                // title (parob/homecast-cloud#227). Take the backdrop along.
+                if !(snapshot is UIImageView), snapshot.backgroundColor == nil {
+                    snapshot.backgroundColor = view.backgroundColor ?? fallback()
+                }
                 return snapshot
             }
             let flat = UIView()
