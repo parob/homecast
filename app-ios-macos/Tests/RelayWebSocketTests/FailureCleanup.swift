@@ -56,4 +56,6 @@ extension RelayWebSocketBridge {
     }
 }
 
-exit(RelayWebSocketBridge.testFailureCleanup() ? 0 : 1)
+let cleanupPassed = RelayWebSocketBridge.testFailureCleanup()
+let recoveryPassed = RelayWebSocketBridge.testRecovery()
+exit(cleanupPassed && recoveryPassed ? 0 : 1)

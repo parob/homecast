@@ -238,6 +238,31 @@ Messages use this JSON format:
 | `observe.reset` | Reset all observers |
 | `ping` | Heartbeat / keepalive |
 
+### Relay connection recovery
+
+The cloud relay has two independent opening deadlines. `NativeRelayWebSocket`
+expires an unanswered opening after 30 seconds, closes the native task and emits
+one terminal close so `ServerWebSocket` can apply its normal reconnect backoff.
+Late callbacks cannot reopen a retired adapter, and a deliberate close removes
+it from the page registry even if Swift never answers.
+
+`RelayWebSocketBridge` also checks opening age on a native five-second watchdog,
+independent of JavaScript and URLSession callbacks. Two consecutive opening
+failures invalidate the URLSession; the next attempt creates a fresh one. A
+successful open resets that counter. All native lifecycle events run on the
+transport queue and validate task identity, so callbacks from the discarded
+session cannot affect its replacement. Each page owns one relay socket; a new
+connect retires any socket left by a previous page load.
+
+The dashboard's ten-minute page reload is only a final UI fallback. It does not
+reset the native networking session. Native `relay-ws` lifecycle logs now ship
+at INFO, including connectivity waits; failures include error domain/code and
+attempt age. Never log the authenticated WebSocket URL.
+
+Run `bash app-ios-macos/scripts/test-relay-websocket.sh` for native cleanup and
+recovery tests, and the web `native-relay-ws` / `relay-connecting-recovery` tests
+for silent handshakes, reconnects, explicit closes and late callbacks.
+
 ## Key Files
 
 | File | Purpose |

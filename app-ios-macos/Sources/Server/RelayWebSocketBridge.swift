@@ -29,6 +29,7 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         let task: URLSessionWebSocketTask
         let urlString: String
         var hasOpened: Bool = false
+        let createdAt: TimeInterval
         var pingTimer: DispatchSourceTimer?
         // Liveness: we only tear the socket down after several *consecutive*
         // pong misses, not the first one. A single late pong (App Nap wakeup,
@@ -37,10 +38,12 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         var openedAt: Date?
         var lastPongAt: Date?
         var recentRTTsMs: [Int] = []
-        init(socketId: String, task: URLSessionWebSocketTask, urlString: String) {
+        init(socketId: String, task: URLSessionWebSocketTask, urlString: String,
+             createdAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
             self.socketId = socketId
             self.task = task
             self.urlString = urlString
+            self.createdAt = createdAt
         }
     }
 
@@ -56,8 +59,16 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     // termination while still letting the Mac idle-sleep normally.
     private var napActivity: NSObjectProtocol?
 
-    // Lazy so `self` is available as URLSessionDelegate after super.init().
-    private lazy var session: URLSession = {
+    // Owned by pathQueue, like socket lifecycle callbacks. A new session is
+    // needed after repeated stalls; reloading the page kept this one forever.
+    private var session: URLSession?
+    private var stopped = false
+    private var consecutiveOpeningFailures = 0
+    private var recoveryTimer: DispatchSourceTimer?
+    private let queueKey = DispatchSpecificKey<Bool>()
+    private let openingTimeout: TimeInterval = 30
+
+    private func makeSession() -> URLSession {
         let cfg = URLSessionConfiguration.default
         cfg.waitsForConnectivity = true
         cfg.timeoutIntervalForRequest = 30
@@ -66,7 +77,7 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         q.name = "cloud.homecast.relay-ws.delegate"
         q.maxConcurrentOperationCount = 1
         return URLSession(configuration: cfg, delegate: self, delegateQueue: q)
-    }()
+    }
 
     private let pathMonitor = NWPathMonitor()
     private let pathQueue = DispatchQueue(label: "cloud.homecast.relay-ws.path", qos: .utility)
@@ -85,7 +96,13 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
 
     override init() {
         super.init()
+        pathQueue.setSpecific(key: queueKey, value: true)
         startPathMonitor()
+        let timer = DispatchSource.makeTimerSource(queue: pathQueue)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in self?.checkOpeningDeadlines() }
+        recoveryTimer = timer
+        timer.resume()
     }
 
     func attach(webView: WKWebView) {
@@ -123,25 +140,32 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             return
         }
 
-        switch action {
-        case "connect":
-            guard let urlString = body["url"] as? String else { return }
-            connect(socketId: socketId, urlString: urlString)
-        case "send":
-            guard let data = body["data"] as? String else { return }
-            send(socketId: socketId, text: data)
-        case "close":
-            let code = body["code"] as? Int ?? 1000
-            let reason = body["reason"] as? String
-            close(socketId: socketId, code: code, reason: reason)
-        default:
-            Log.warning("unknown action from JS: \(action)", category: "relay-ws")
+        pathQueue.async { [weak self] in
+            guard let self = self else { return }
+            switch action {
+            case "connect":
+                guard let urlString = body["url"] as? String else { return }
+                self.connect(socketId: socketId, urlString: urlString)
+            case "send":
+                guard let data = body["data"] as? String else { return }
+                self.send(socketId: socketId, text: data)
+            case "close":
+                let code = body["code"] as? Int ?? 1000
+                let reason = body["reason"] as? String
+                self.close(socketId: socketId, code: code, reason: reason)
+            default:
+                Log.warning("unknown action from JS: \(action)", category: "relay-ws")
+            }
         }
     }
 
     // MARK: - Socket lifecycle
 
     private func connect(socketId: String, urlString: String) {
+        guard !stopped else {
+            emitClose(socketId: socketId, code: 1006, reason: "bridge-stopped", wasClean: false)
+            return
+        }
         guard let url = URL(string: urlString) else {
             emitEvent(socketId: socketId, type: "error",
                       extra: ["message": "invalid URL"])
@@ -150,16 +174,15 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             return
         }
 
-        // Tear down any existing socket with this id (e.g. reconnect with same id).
-        if let existing = takeSocket(socketId) {
-            existing.pingTimer?.cancel()
-            existing.task.cancel(with: .goingAway, reason: nil)
-        }
+        // One relay connection belongs to this page. A page reload loses its
+        // JS registry, so explicitly retire any socket the old page left behind.
+        forceCloseAll(code: 1001, reason: "connection-replaced")
 
         var req = URLRequest(url: url)
         req.timeoutInterval = 30
 
-        let task = session.webSocketTask(with: req)
+        if session == nil { session = makeSession() }
+        let task = session!.webSocketTask(with: req)
         task.taskDescription = socketId
         let state = SocketState(socketId: socketId, task: task, urlString: urlString)
         putSocket(state)
@@ -178,20 +201,23 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         guard let state = getSocket(socketId) else { return }
         state.task.receive { [weak self] result in
             guard let self = self else { return }
-            switch result {
-            case .success(let message):
-                let text: String
-                switch message {
-                case .string(let s): text = s
-                case .data(let d): text = String(data: d, encoding: .utf8) ?? ""
-                @unknown default: text = ""
+            self.pathQueue.async {
+                guard self.getSocket(socketId)?.task === state.task else { return }
+                switch result {
+                case .success(let message):
+                    let text: String
+                    switch message {
+                    case .string(let s): text = s
+                    case .data(let d): text = String(data: d, encoding: .utf8) ?? ""
+                    @unknown default: text = ""
+                    }
+                    self.emitEvent(socketId: socketId, type: "message",
+                                   extra: ["data": text])
+                    // Keep pumping; URLSessionWebSocketTask.receive is one-shot.
+                    self.startReceive(socketId: socketId)
+                case .failure(let error):
+                    self.handleTaskFailure(socketId: socketId, error: error)
                 }
-                self.emitEvent(socketId: socketId, type: "message",
-                               extra: ["data": text])
-                // Keep pumping; URLSessionWebSocketTask.receive is one-shot.
-                self.startReceive(socketId: socketId)
-            case .failure(let error):
-                self.handleTaskFailure(socketId: socketId, error: error)
             }
         }
     }
@@ -204,14 +230,22 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             return
         }
         state.task.send(.string(text)) { [weak self] error in
-            self?.emitEvent(socketId: socketId, type: "sent", extra: ["bytes": text.utf8.count])
-            if let error = error {
-                self?.handleTaskFailure(socketId: socketId, error: error)
+            guard let self = self else { return }
+            self.pathQueue.async {
+                guard self.getSocket(socketId)?.task === state.task else { return }
+                self.emitEvent(socketId: socketId, type: "sent", extra: ["bytes": text.utf8.count])
+                if let error = error {
+                    self.handleTaskFailure(socketId: socketId, error: error)
+                }
             }
         }
     }
 
     private func close(socketId: String, code: Int, reason: String?) {
+        if reason == "connect-timeout", getSocket(socketId)?.hasOpened == false {
+            failOpening(socketId: socketId)
+            return
+        }
         guard let state = takeSocket(socketId) else { return }
         state.pingTimer?.cancel()
         let closeCode = URLSessionWebSocketTask.CloseCode(rawValue: code) ?? .normalClosure
@@ -225,17 +259,46 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     private func handleTaskFailure(socketId: String, error: Error) {
         let stats = connectionStatsSuffix(socketId)
         guard let state = takeSocket(socketId) else { return }
+        let nsError = error as NSError
         state.pingTimer?.cancel()
         // A ping timeout or failed send can leave URLSession's task alive.
         // Retire the transport as well as its tracking before JS reconnects.
         state.task.cancel(with: .goingAway, reason: nil)
         Log.warning("task failed: \(error.localizedDescription)\(stats)",
                     category: "relay-ws",
-                    metadata: ["socketId": socketId])
+                    metadata: ["socketId": socketId, "errorDomain": nsError.domain,
+                               "errorCode": String(nsError.code),
+                               "ageSeconds": String(Int(ProcessInfo.processInfo.systemUptime - state.createdAt))])
+        if !state.hasOpened { recordOpeningFailure() }
         emitEvent(socketId: socketId, type: "error",
                   extra: ["message": error.localizedDescription])
         emitClose(socketId: socketId, code: 1006,
                   reason: error.localizedDescription, wasClean: false)
+    }
+
+    /// Runs natively, even if JS never gets an open/error/close callback.
+    private func checkOpeningDeadlines(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard !stopped else { return }
+        socketsLock.lock()
+        let expired = sockets.values.filter { !$0.hasOpened && now - $0.createdAt >= openingTimeout }.map(\.socketId)
+        socketsLock.unlock()
+        for id in expired { failOpening(socketId: id) }
+    }
+
+    private func failOpening(socketId: String) {
+        handleTaskFailure(socketId: socketId, error: NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorTimedOut,
+            userInfo: [NSLocalizedDescriptionKey: "relay connection opening timed out after 30s"]))
+    }
+
+    private func recordOpeningFailure() {
+        consecutiveOpeningFailures += 1
+        guard consecutiveOpeningFailures >= 2 else { return }
+        consecutiveOpeningFailures = 0
+        let previous = session
+        session = nil
+        previous?.invalidateAndCancel()
+        Log.warning("resetting native relay session after repeated opening failures", category: "relay-ws")
     }
 
     private func forceCloseAll(code: Int, reason: String) {
@@ -271,6 +334,7 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             if completed { lock.unlock(); return }
             completed = true
             lock.unlock()
+            guard self?.getSocket(socketId)?.task === state.task else { return }
             self?.recordPingMiss(socketId: socketId,
                                  reason: "no pong within \(Int(self?.pingTimeout ?? 0))s")
         }
@@ -282,12 +346,16 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
             completed = true
             lock.unlock()
             timeoutItem.cancel()
-            if let error = error {
-                self?.recordPingMiss(socketId: socketId,
-                                     reason: "ping failed: \(error.localizedDescription)")
-            } else {
-                let rttMs = Int(Date().timeIntervalSince(sentAt) * 1000)
-                self?.recordPingSuccess(socketId: socketId, rttMs: rttMs)
+            guard let self = self else { return }
+            self.pathQueue.async {
+                guard self.getSocket(socketId)?.task === state.task else { return }
+                if let error = error {
+                    self.recordPingMiss(socketId: socketId,
+                                         reason: "ping failed: \(error.localizedDescription)")
+                } else {
+                    let rttMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+                    self.recordPingSuccess(socketId: socketId, rttMs: rttMs)
+                }
             }
         }
     }
@@ -347,14 +415,18 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
                     webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol proto: String?) {
         guard let socketId = webSocketTask.taskDescription else { return }
-        updateSocket(socketId) {
-            $0.hasOpened = true
-            $0.openedAt = Date()
-            $0.missedPings = 0
+        pathQueue.async { [self] in
+            guard getSocket(socketId)?.task === webSocketTask else { return }
+            consecutiveOpeningFailures = 0
+            updateSocket(socketId) {
+                $0.hasOpened = true
+                $0.openedAt = Date()
+                $0.missedPings = 0
+            }
+            Log.info("opened", category: "relay-ws", metadata: ["socketId": socketId])
+            emitEvent(socketId: socketId, type: "open", extra: [:])
+            startPingLoop(socketId: socketId)
         }
-        Log.info("opened", category: "relay-ws", metadata: ["socketId": socketId])
-        emitEvent(socketId: socketId, type: "open", extra: [:])
-        startPingLoop(socketId: socketId)
     }
 
     func urlSession(_ session: URLSession,
@@ -362,17 +434,36 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
                     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
                     reason: Data?) {
         guard let socketId = webSocketTask.taskDescription else { return }
-        let stats = connectionStatsSuffix(socketId)
-        guard let state = takeSocket(socketId) else { return }
-        state.pingTimer?.cancel()
-        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        Log.info("closed code=\(closeCode.rawValue) reason=\(reasonString)\(stats)",
-                 category: "relay-ws",
-                 metadata: ["socketId": socketId])
-        emitClose(socketId: socketId,
-                  code: closeCode.rawValue,
-                  reason: reasonString,
-                  wasClean: true)
+        pathQueue.async { [self] in
+            guard getSocket(socketId)?.task === webSocketTask else { return }
+            let stats = connectionStatsSuffix(socketId)
+            guard let state = takeSocket(socketId) else { return }
+            state.pingTimer?.cancel()
+            let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            Log.info("closed code=\(closeCode.rawValue) reason=\(reasonString)\(stats)",
+                     category: "relay-ws",
+                     metadata: ["socketId": socketId])
+            emitClose(socketId: socketId,
+                      code: closeCode.rawValue,
+                      reason: reasonString,
+                      wasClean: true)
+        }
+    }
+
+    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        pathQueue.async { [self] in
+            guard let id = task.taskDescription, getSocket(id)?.task === task else { return }
+            Log.info("relay connection waiting for network connectivity", category: "relay-ws",
+                     metadata: ["socketId": id])
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error = error, let id = task.taskDescription else { return }
+        pathQueue.async { [self] in
+            guard getSocket(id)?.task === task else { return }
+            handleTaskFailure(socketId: id, error: error)
+        }
     }
 
     // MARK: - Emit events to JS
@@ -465,6 +556,14 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
     ///
     /// Safe to call more than once, and safe to call from any thread.
     func shutdown() {
+        if DispatchQueue.getSpecific(key: queueKey) == nil {
+            pathQueue.sync { self.shutdown() }
+            return
+        }
+        guard !stopped else { return }
+        stopped = true
+        recoveryTimer?.cancel()
+        recoveryTimer = nil
         pathMonitor.cancel()
 
         socketsLock.lock()
@@ -483,7 +582,8 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
 
         // Breaks the session↔delegate retain cycle. Without this the session,
         // its delegate queue and this bridge all leak, once per WebView.
-        session.invalidateAndCancel()
+        session?.invalidateAndCancel()
+        session = nil
 
         webView = nil
         if !live.isEmpty {
@@ -496,5 +596,6 @@ final class RelayWebSocketBridge: NSObject, WKScriptMessageHandler, URLSessionWe
         // Belt and braces: shutdown() is the intended path, but a bridge that
         // is released without one must not leave a live path monitor behind.
         pathMonitor.cancel()
+        recoveryTimer?.cancel()
     }
 }
