@@ -122,7 +122,7 @@ public enum Log {
         }
 
         // 4) Ship WARN+ to the server (fire-and-forget; queues if offline),
-        //    plus INFO from the two categories that explain a dead screen.
+        //    plus INFO explaining a dead screen or a stalled relay connection.
         //
         //    A WebView that was thrown away, or a navigation that started and
         //    never finished, is not a warning in its own right — but it is the
@@ -132,7 +132,7 @@ public enum Log {
         //    events (launch, reload, deep link), not per-route, so the volume
         //    is small. See the 2026-08-24 freeze: every WebView failure path
         //    logged via print(), which reaches neither os_log nor the server.
-        let contextCategories: Set<String> = ["webview", "watchdog"]
+        let contextCategories: Set<String> = ["webview", "watchdog", "relay-ws"]
         let shipAsContext = level.ordinal >= LogLevel.info.ordinal
             && contextCategories.contains(category)
         if level.ordinal >= LogLevel.warn.ordinal || shipAsContext {
