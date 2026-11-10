@@ -1681,10 +1681,19 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
     /// own — the faint gradient at the top of the page. Wanted in portrait,
     /// where it is part of how the bar reads; not in the sidebar layout, where
     /// the bar is two floating buttons and the page should look untouched.
+    ///
+    /// Soft, said outright. Left `.automatic`, UIKit is free to pick the
+    /// HARD style — an opaque slab with a sharp lower edge, filled from the
+    /// colour behind the page — and on iOS 27 that is what it drew: scroll a
+    /// home whose wallpaper has blue sky along its top and the whole bar went
+    /// one flat blue, nothing like the gradient this is here for
+    /// (parob/homecast-cloud#257).
     private func applyEdgeEffects() {
         guard #available(iOS 26.0, *) else { return }
         proxy.topEdgeEffect.isHidden = !largeTitleEnabled
+        proxy.topEdgeEffect.style = .soft
         webScrollView?.topEdgeEffect.isHidden = !largeTitleEnabled
+        webScrollView?.topEdgeEffect.style = .soft
     }
 
     /// The web view is created by SwiftUI some time after this controller's
@@ -2396,7 +2405,18 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
                 // standard, blurred background — a band across the top of a
                 // layout that wants none. Transparent in the sidebar layout;
                 // the system defaults, and the scroll-edge effect, in portrait.
-                if largeTitleEnabled {
+                if largeTitleEnabled, #available(iOS 26.0, *) {
+                    // iOS 26 and later: no background of the bar's own. The
+                    // soft edge effect (`applyEdgeEffects`) is the whole
+                    // treatment once the page scrolls under it; a default
+                    // background is what turned that into a solid band of
+                    // the wallpaper's sky colour (parob/homecast-cloud#257).
+                    let edgeOnly = UINavigationBarAppearance()
+                    edgeOnly.configureWithTransparentBackground()
+                    bar.standardAppearance = edgeOnly
+                    bar.scrollEdgeAppearance = edgeOnly
+                    bar.compactAppearance = edgeOnly
+                } else if largeTitleEnabled {
                     bar.standardAppearance = UINavigationBarAppearance()
                     bar.scrollEdgeAppearance = nil
                     bar.compactAppearance = nil
