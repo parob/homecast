@@ -633,7 +633,17 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             // launch the page has not yet told the web view its canvas colour
             // when the first heading arrives, and a ghost coloured then was
             // black behind the pop.
-            let ghost = GhostController(snapshot: pendingSnapshot, fallback: { [weak web] in
+            // No picture of the home when the app opened straight onto the
+            // room — nothing was on screen to take one of. The pop then slid
+            // the room away onto the bare backdrop, which read as Back going
+            // to a grey screen (parob/homecast-cloud#227). Stand the home's
+            // loading placeholder in instead, the one a never-visited home
+            // gets on the home swipe: its name, a spinner, a tile skeleton.
+            let placeholder: UIView? = pendingSnapshot == nil
+                ? HomeLoadingView(name: model.title, dark: model.appearance == "dark",
+                                  topInset: nav.navigationBar.frame.maxY)
+                : nil
+            let ghost = GhostController(snapshot: pendingSnapshot ?? placeholder, fallback: { [weak web] in
                 web.map { Self.backdropColor(of: $0.view) } ?? .systemBackground
             })
             pendingSnapshot = nil
@@ -1327,6 +1337,14 @@ final class NativeHeaderNavigator: NSObject, UINavigationControllerDelegate, UIG
             if let snapshot {
                 self.snapshot = nil
                 snapshot.removeFromSuperview()
+                // A picture covers every pixel; the loading placeholder does
+                // not — it is drawn over this controller's backdrop. Lifted
+                // off it bare, it became a see-through cover and the room
+                // the page was still showing read through it, title over
+                // title (parob/homecast-cloud#227). Take the backdrop along.
+                if !(snapshot is UIImageView), snapshot.backgroundColor == nil {
+                    snapshot.backgroundColor = view.backgroundColor ?? fallback()
+                }
                 return snapshot
             }
             let flat = UIView()
