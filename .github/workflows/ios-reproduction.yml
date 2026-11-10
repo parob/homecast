@@ -1,0 +1,126 @@
+name: iOS Reproduction
+
+# The cloud issue routine can push branches but cannot dispatch Actions through
+# its GitHub MCP connection. This is the execution path from that Linux sandbox
+# to an actual iOS app. No Apple account, signing certificate or release needed.
+on:
+  push:
+    branches: ['ios-repro/**']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app-ios-macos/**'
+      - '.github/workflows/ios-reproduction.yml'
+      - '.github/ios-repro.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-reproduction-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  reproduce:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read reproduction request
+        id: request
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('.github/ios-repro.json')
+          config = json.loads(path.read_text()) if path.exists() else {}
+          allowed = {'os', 'only_testing', 'web_ref'}
+          if not isinstance(config, dict) or set(config) - allowed:
+              raise SystemExit('Expected an object with only os, only_testing, web_ref')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key in sorted(allowed):
+                  value = config.get(key, '')
+                  if not isinstance(value, str) or any(c in value for c in '\r\n\0'):
+                      raise SystemExit(f'Invalid {key}')
+                  output.write(f'{key}={value}\n')
+          PY
+
+      # Optional: exercise a specific web commit in the real shell. Tests must
+      # supply their own synthetic API data; there are no production credentials.
+      - uses: actions/checkout@v4
+        if: steps.request.outputs.web_ref != ''
+        with:
+          repository: parob/homecast-web
+          ref: ${{ steps.request.outputs.web_ref }}
+          path: app-web
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        if: steps.request.outputs.web_ref != ''
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-web/package-lock.json
+
+      - name: Build requested web revision
+        if: steps.request.outputs.web_ref != ''
+        working-directory: app-web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Run the app in iOS Simulator
+        env:
+          REQUEST_OS: ${{ steps.request.outputs.os }}
+          REQUEST_TEST: ${{ steps.request.outputs.only_testing }}
+          REQUEST_WEB_REF: ${{ steps.request.outputs.web_ref }}
+        run: |
+          args=(--output "$RUNNER_TEMP/ios-evidence")
+          if [[ -n "$REQUEST_OS" ]]; then args+=(--os "$REQUEST_OS"); fi
+          if [[ -n "$REQUEST_TEST" ]]; then args+=(--only-testing "$REQUEST_TEST"); fi
+          if [[ -n "$REQUEST_WEB_REF" ]]; then args+=(--web-root "$GITHUB_WORKSPACE/app-web/dist"); fi
+          python3 app-ios-macos/scripts/reproduce-ios.py "${args[@]}"
+
+      - name: Record checked out revisions
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/ios-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/ios-evidence/native-sha.txt"
+          if [[ -d app-web/.git ]]; then
+            git -C app-web rev-parse HEAD > "$RUNNER_TEMP/ios-evidence/web-sha.txt"
+          fi
+
+      - name: Keep screenshots, recording and test results
+        if: always()
+        id: evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-evidence/*
+            !${{ runner.temp }}/ios-evidence/DerivedData/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Link the evidence
+        if: always()
+        env:
+          EVIDENCE_URL: ${{ steps.evidence.outputs.artifact-url }}
+        run: |
+          {
+            echo '### iOS simulator evidence'
+            echo
+            echo "[Download screenshots, video, logs and Xcode test results]($EVIDENCE_URL)"
+            echo
+            echo 'Check environment.json for the exact device, OS and source revision.'
+            echo 'A fixture smoke test proves the harness works; an issue needs its own failing reproduction and passing retest.'
+          } >> "$GITHUB_STEP_SUMMARY"
