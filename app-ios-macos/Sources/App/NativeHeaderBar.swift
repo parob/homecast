@@ -1648,6 +1648,13 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
         edge == .top && largeTitleEnabled ? proxy : super.contentScrollView(for: edge)
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // `bind` applies before the view is in a window, so the window's
+        // status-bar style (#228) would wait for the page's next change.
+        if let model = boundModel { apply(model) }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         attachWebScrollViewIfNeeded()
@@ -2362,6 +2369,21 @@ final class WebHostingController<Content: View>: UIHostingController<Content>, P
             navigationController?.navigationBar.tintColor = ink
             moreItem.tintColor = ink
             searchItem.tintColor = ink
+        }
+        // The status bar itself, set on the window directly (parob/homecast-cloud#228).
+        // `NativeHeaderColorScheme` asks SwiftUI for the same thing through
+        // `preferredColorScheme`, but the clock still went white-on-white over
+        // full-screen Analytics on iOS 27, and nobody has seen that lever work
+        // on a device. The window's style is what a `.default` status bar
+        // resolves its ink from, so this answer cannot be lost on the way.
+        // Same value as the SwiftUI lever (nil when the bar is off), and not
+        // held while pushing: that lever never was.
+        if let window = view.window {
+            let windowStyle: UIUserInterfaceStyle = model.enabled ? style : .unspecified
+            if window.overrideUserInterfaceStyle != windowStyle {
+                window.overrideUserInterfaceStyle = windowStyle
+                window.rootViewController?.setNeedsStatusBarAppearanceUpdate()
+            }
         }
         refreshControl.tintColor = ink
         refreshIndicator.color = ink ?? .secondaryLabel
